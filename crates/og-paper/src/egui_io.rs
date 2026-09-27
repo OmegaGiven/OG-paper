@@ -101,8 +101,8 @@ mod web {
             }
         }
 
-        fn ppp(window: &Window) -> f32 {
-            window.scale_factor() as f32
+        fn ppp(_window: &Window) -> f32 {
+            crate::web_dpr()
         }
 
         pub fn on_event(&mut self, window: &Window, event: &WindowEvent) -> (bool, bool) {
@@ -187,7 +187,10 @@ mod web {
                         }
                     }
                     // Decide with the position of this touch: is it on a panel?
-                    let over = self.ctx.layer_id_at(p).is_some();
+                    let over = self
+                        .ctx
+                        .layer_id_at(p)
+                        .is_some_and(|l| l.order != egui::Order::Background);
                     (over || self.ctx.egui_is_using_pointer(), true)
                 }
                 WindowEvent::ModifiersChanged(m) => {
@@ -246,7 +249,8 @@ mod web {
 
         pub fn take(&mut self, window: &Window) -> egui::RawInput {
             let ppp = Self::ppp(window);
-            let size = window.inner_size();
+            let (w, h) = crate::web_canvas_size(window).unwrap_or((1, 1));
+            let size = winit::dpi::PhysicalSize::new(w, h);
             let mut raw = egui::RawInput {
                 screen_rect: Some(Rect::from_min_size(
                     Pos2::ZERO,

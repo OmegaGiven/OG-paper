@@ -23,7 +23,7 @@ use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Window, WindowId};
 
 use render::{Renderer, UiPaint, Wet};
-use ui::{Action, Tool, UiState};
+use ui::{Action, Menu, Tool, UiState};
 
 #[cfg(not(target_arch = "wasm32"))]
 use ogpaper_file::OgpFile;
@@ -78,7 +78,10 @@ pub struct App {
     erased: Vec<u32>,
     touches: HashMap<u64, [f64; 2]>,
     touch_ink: Option<u64>,
+    /// Multi-finger tap tracking: (started, most fingers, moved too far).
+    multi_tap: Option<(Instant, usize, bool)>,
     message_until: Option<Instant>,
+    last_dbg: (u32, u32, u32),
 }
 
 impl App {
@@ -109,7 +112,9 @@ impl App {
             erased: Vec::new(),
             touches: HashMap::new(),
             touch_ink: None,
+            multi_tap: None,
             message_until: None,
+            last_dbg: (0, 0, 0),
         }
     }
 
@@ -144,6 +149,11 @@ impl App {
     // ---- ink -------------------------------------------------------------
 
     fn ink_add(&mut self, p: [f64; 2], pressure: f32) {
+        let pressure = if self.ui.tool == Tool::Pen && !self.ui.pen.pressure {
+            1.0
+        } else {
+            pressure
+        };
         let q = [p[0] as f32, p[1] as f32, pressure];
         if let Some(l) = self.wet.last() {
             if (l[0] - q[0]).hypot(l[1] - q[1]) < 1.2 {
@@ -222,6 +232,13 @@ impl App {
     }
 
     fn begin(&mut self, p: [f64; 2], pressure: f32) {
+        // A tap on the canvas while a menu is open only closes the menu.
+        if self.ui.menu_open() {
+            self.ui.menu = Menu::None;
+            self.gesture = Gesture::None;
+            self.redraw();
+            return;
+        }
         self.gesture = match self.ui.tool {
             _ if self.space => Gesture::Pan,
             Tool::Hand => Gesture::Pan,
@@ -460,10 +477,16 @@ impl App {
             TouchPhase::Started => {
                 if self.touches.is_empty() {
                     self.touch_ink = Some(id);
+                    self.multi_tap = None;
                     self.begin(pos, pressure);
-                } else if self.touch_ink.take().is_some() {
-                    // Second finger: the first touch becomes a pinch instead.
-                    self.end(true);
+                } else {
+                    if self.touch_ink.take().is_some() {
+                        // Second finger: the first touch becomes a pinch instead.
+                        self.end(true);
+                    }
+                    let n = self.touches.len() + 1;
+                    let e = self.multi_tap.get_or_insert((Instant::now(), n, false));
+                    e.1 = e.1.max(n);
                 }
                 self.touches.insert(id, pos);
             }
@@ -494,6 +517,18 @@ impl App {
                     self.end(phase == TouchPhase::Cancelled);
                 }
                 self.touches.remove(&id);
+                // Two-finger tap = undo, three-finger tap = redo.
+                if self.touches.is_empty() {
+                    if let Some((t0, n, moved)) = self.multi_tap.take() {
+                        if !moved && t0.elapsed() < Duration::from_millis(350) {
+                            match n {
+                                2 => self.undo_redo(false),
+                                3 => self.undo_redo(true),
+                                _ => {}
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -521,6 +556,14 @@ impl App {
         if self.gpu.is_none() {
             log::debug!("frame: no gpu yet");
             return;
+        }
+        // Web: size the drawing buffer from the browser (CSS size x devicePixelRatio).
+        #[cfg(target_arch = "wasm32")]
+        if let Some((w, h)) = web_canvas_size(&window) {
+            let g = self.gpu.as_mut().expect("gpu");
+            if g.config.width != w || g.config.height != h {
+                g.resize(w, h);
+            }
         }
         log::debug!("frame");
         if self.message_until.is_some_and(|t| Instant::now() > t) {
@@ -559,6 +602,24 @@ impl App {
             window.request_redraw();
         }
         let prims = self.egui_ctx.tessellate(out.shapes, out.pixels_per_point);
+        {
+            let key = (
+                window.inner_size().width,
+                self.size()[0] as u32,
+                (out.pixels_per_point * 100.0) as u32,
+            );
+            if self.last_dbg != key {
+                self.last_dbg = key;
+                log::info!(
+                    "sizes: inner {:?} scale {} surface {:?} egui ppp {} content {:?}",
+                    window.inner_size(),
+                    window.scale_factor(),
+                    self.size(),
+                    out.pixels_per_point,
+                    self.egui_ctx.content_rect()
+                );
+            }
+        }
 
         // Canvas
         let [w, h] = self.size();
@@ -802,4 +863,29 @@ pub fn web_start() {
     let el = EventLoop::new().expect("event loop");
     el.set_control_flow(ControlFlow::Wait);
     el.spawn_app(App::new(None));
+}
+
+/// The canvas's real drawing-buffer size, kept in sync with its CSS size and
+/// the device pixel ratio (winit's report can lag or miss the ratio).
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn web_canvas_size(window: &Window) -> Option<(u32, u32)> {
+    use winit::platform::web::WindowExtWebSys;
+    let c = window.canvas()?;
+    let dpr = web_sys::window()?.device_pixel_ratio();
+    let w = ((c.client_width() as f64 * dpr).round() as u32).max(1);
+    let h = ((c.client_height() as f64 * dpr).round() as u32).max(1);
+    if c.width() != w {
+        c.set_width(w);
+    }
+    if c.height() != h {
+        c.set_height(h);
+    }
+    Some((w, h))
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn web_dpr() -> f32 {
+    web_sys::window()
+        .map(|w| w.device_pixel_ratio() as f32)
+        .unwrap_or(1.0)
 }
