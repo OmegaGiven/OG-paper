@@ -114,6 +114,13 @@ pub struct Demo {
 }
 
 pub fn build(mass: usize, depth: usize, seed: u64) -> Demo {
+    build_with(mass, depth, seed, false)
+}
+
+/// `dense`: pack the mass pages solid (every cell holds a stroke, no gaps
+/// between lines or words) as a worst case for on-screen density.
+pub fn build_with(mass: usize, depth: usize, seed: u64, dense: bool) -> Demo {
+    let (line_gap, word_gap) = if dense { (1, 0) } else { (10, 1) };
     let mut scene = Scene::new();
     let mut rng = Rng::new(seed);
     let ink = [
@@ -130,17 +137,29 @@ pub fn build(mass: usize, depth: usize, seed: u64) -> Demo {
         scene.add_stroke(&page, &frame, 0.002, rgba(150, 150, 160, 255));
     }
 
-    // Mass page: level-12 cells inside page (0, 1, 0), lines of words.
+    // Mass pages: level-12 cells inside pages (0, 1, 0), (0, 2, 0), ... in
+    // lines of words; each page holds ~1.3M strokes.
     const L: i64 = 12;
     let per = 1i64 << L;
-    let base_x = per; // page x = 1
+    let mut page = 1i64;
     let mut placed = 0usize;
     let mut line = 0i64;
     'outer: while placed < mass {
-        let row = 40 + line * 10;
+        let row = 40 + line * line_gap;
         if row >= per - 40 {
-            break; // page full (~1.3M strokes)
+            // Page full: continue on the next page to the right.
+            page += 1;
+            line = 0;
+            let frame = vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0], [0.0, 0.0]];
+            scene.add_stroke(
+                &CellAddr::new(0, page, 0),
+                &frame,
+                0.002,
+                rgba(150, 150, 160, 255),
+            );
+            continue;
         }
+        let base_x = per * page;
         let mut col = 60 + rng.int(20) as i64;
         let color = ink[(line as usize / 40) % ink.len()];
         while col < per - 60 {
@@ -155,7 +174,12 @@ pub fn build(mass: usize, depth: usize, seed: u64) -> Demo {
                     break 'outer;
                 }
             }
-            col += word + 1 + rng.int(2) as i64;
+            col += word
+                + if dense {
+                    0
+                } else {
+                    word_gap + rng.int(2) as i64
+                };
         }
         line += 1;
     }

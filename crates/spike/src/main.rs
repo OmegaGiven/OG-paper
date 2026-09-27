@@ -13,12 +13,13 @@ fn main() {
     while let Some(a) = args.next() {
         match a.as_str() {
             "--bench" => opts.bench = true,
+            "--dense" => opts.dense = true,
             "--mass" => opts.mass = args.next().and_then(|v| v.parse().ok()).expect("--mass N"),
             "--start-chain" => opts.start_chain = args.next().and_then(|v| v.parse().ok()),
             "--start-mass" => opts.start_mass = args.next().and_then(|v| v.parse().ok()),
             "--depth" => opts.depth = args.next().and_then(|v| v.parse().ok()).expect("--depth N"),
             _ => {
-                eprintln!("usage: og-spike [--bench] [--mass N] [--depth N] [--start-chain K] [--start-mass LEVEL]");
+                eprintln!("usage: og-spike [--bench] [--dense] [--mass N] [--depth N] [--start-chain K] [--start-mass LEVEL]");
                 std::process::exit(2);
             }
         }

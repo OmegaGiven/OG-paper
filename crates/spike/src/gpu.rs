@@ -21,8 +21,9 @@ const HEADROOM_STROKES: usize = 65_536;
 const HEADROOM_POINTS: usize = 1 << 20;
 /// The last WET_PTS points (and top stroke slots) hold the wet (in-progress) stroke.
 const WET_PTS: usize = 1024;
-/// Data texture width in texels (well under every backend's 2D limit).
-const TEX_W: u32 = 4096;
+/// Preferred data texture width in texels; capped by the GPU's 2D limit.
+/// Capacity is width x max rows (e.g. 8192 x 16384 = 134M points).
+const TEX_W_MAX: u32 = 8192;
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -46,8 +47,9 @@ fn as_bytes<T>(v: &[T]) -> &[u8] {
     unsafe { std::slice::from_raw_parts(v.as_ptr() as *const u8, std::mem::size_of_val(v)) }
 }
 
-/// A 1-D array stored row-major in a TEX_W-wide 2-D texture.
+/// A 1-D array stored row-major in a `w`-wide 2-D texture.
 struct DataTex {
+    w: u32,
     tex: wgpu::Texture,
     view: wgpu::TextureView,
     cap: usize,
@@ -62,11 +64,17 @@ impl DataTex {
         texel: usize,
         min_cap: usize,
     ) -> Self {
-        let rows = min_cap.div_ceil(TEX_W as usize).max(1);
+        let max = device.limits().max_texture_dimension_2d;
+        let w = max.min(TEX_W_MAX);
+        let mut rows = min_cap.div_ceil(w as usize).max(1);
+        if rows > max as usize {
+            log::error!("{label}: {min_cap} elements exceed one {w}x{max} texture; the rest will not render");
+            rows = max as usize;
+        }
         let tex = device.create_texture(&wgpu::TextureDescriptor {
             label: Some(label),
             size: wgpu::Extent3d {
-                width: TEX_W,
+                width: w,
                 height: rows as u32,
                 depth_or_array_layers: 1,
             },
@@ -79,9 +87,10 @@ impl DataTex {
         });
         let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
         Self {
+            w,
             tex,
             view,
-            cap: rows * TEX_W as usize,
+            cap: rows * w as usize,
             texel,
         }
     }
@@ -90,7 +99,7 @@ impl DataTex {
     fn write(&self, queue: &wgpu::Queue, start: usize, data: &[u8]) {
         let t = self.texel;
         let n = data.len() / t;
-        let w = TEX_W as usize;
+        let w = self.w as usize;
         let mut i = 0;
         while i < n {
             let idx = start + i;
@@ -233,12 +242,6 @@ impl Gpu {
         );
         // Lowest common denominator (WebGL2) plus whatever texture size the adapter allows.
         let al = adapter.limits();
-        if al.max_texture_dimension_2d < TEX_W {
-            return Err(format!(
-                "GPU max texture size {} < {TEX_W}",
-                al.max_texture_dimension_2d
-            ));
-        }
         let limits = wgpu::Limits::downlevel_webgl2_defaults().using_resolution(al);
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
@@ -502,7 +505,7 @@ impl Gpu {
             0,
             bytemuck::bytes_of(&Globals {
                 viewport: [self.config.width as f32, self.config.height as f32],
-                tex_w: TEX_W,
+                tex_w: self.points.w,
                 _pad: 0,
             }),
         );

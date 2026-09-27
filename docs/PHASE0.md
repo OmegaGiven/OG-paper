@@ -20,6 +20,48 @@ canvas, on desktop and the reference phone (Galaxy S24).
 Numbers are from `og-spike --bench` (chain flight in and out, then a sweep over
 the dense 1M-stroke page) and `cargo test --release -p ogpaper-core`.
 
+## Scale test (2026-09-27)
+
+Same flight (chain in/out + dense-page sweep), RX 6600 XT, vsync off.
+
+| Canvas | Frame avg / p99 | Query p99 / max | Max drawn per frame | Build | Peak RAM | GPU data |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1M strokes | 0.17 / 0.28 ms | 31 / 138 µs | 1,822 strokes | 1.7 s | 0.94 GB | 118 MB |
+| 2M | 0.17 / 0.26 ms | 28 / 190 µs | 1,823 | 3.4 s | 1.74 GB | 225 MB |
+| 5M | 0.17 / 0.43 ms | 29 / 152 µs | 1,823 | 8.6 s | 3.76 GB | 550 MB |
+| 10M | 0.17 / 0.27 ms | 30 / 204 µs | 1,823 | 18.8 s | 7.36 GB | 1.09 GB |
+| 5M, packed solid (`--dense`) | 0.18 / 0.41 ms | 81 / 1,372 µs | 23,351 | 6.3 s | 2.53 GB | 550 MB |
+
+**Frame cost does not grow with canvas size** — it depends only on what is on
+screen. 1M and 10M strokes render identically.
+
+**What does grow, linearly, is what this spike keeps in memory:**
+
+- RAM ~0.74 GB per 1M strokes: the whole cell tree is resident, ~2.1 cells per
+  stroke at ~350 bytes each (a big-integer address per cell, stored twice).
+- GPU ~110 MB per 1M strokes: every point is uploaded up front.
+- Startup ~1.9 s per 1M strokes (synthetic generation standing in for loading).
+- Hard ceiling: one data texture holds 8192 x 16384 = 134M points, ~11.6M strokes.
+
+On a Galaxy S24 (8 GB) or in a browser tab, that caps this spike at a few
+million strokes. The renderer is not the limit; residency is.
+
+**The worst case is density, not total count:** a screen packed solid with
+small strokes drew 23k strokes in one frame and the query peaked at 1.4 ms —
+fine on desktop, tight on a phone at 120 Hz.
+
+### What Phase 1 must add (all already in the design)
+
+1. **Lazy cell loading** from the `.ogp` SQLite file: only cells near the view in
+   RAM, evicted LRU. Memory and open time then track the screen, not the canvas.
+2. **GPU paging:** upload points per cell on demand into pooled pages, not the
+   whole canvas at startup (removes the 134M-point ceiling).
+3. **Compact cells:** store addresses relative to the parent (big integers only at
+   the top), no duplicate address in the index — target < 64 bytes per cell.
+4. **Quantized points** (u16 cell-local, as in the file spec): 4-6 bytes per point.
+5. **Density cap:** fewer segments for small strokes (mesh LOD) and real
+   thumbnails for cells under ~128 px, bounding per-frame work on packed screens.
+
 ## What was built
 
 - `crates/ogpaper-core`

@@ -29,6 +29,8 @@ pub struct Options {
     pub mass: usize,
     pub depth: usize,
     pub bench: bool,
+    /// Pack the mass pages solid (worst-case on-screen density).
+    pub dense: bool,
     /// Start centred on chain step K instead of home.
     pub start_chain: Option<usize>,
     /// Start on the mass page at this level instead of home.
@@ -41,6 +43,7 @@ impl Default for Options {
             mass: 1_000_000,
             depth: 40,
             bench: false,
+            dense: false,
             start_chain: None,
             start_mass: None,
         }
@@ -123,6 +126,7 @@ struct Spike {
     fps_window: (Instant, u32, f64),
     bench: BenchStats,
     dirty: bool,
+    build_secs: f64,
     /// Frames rendered so far.
     frames: u64,
 }
@@ -130,7 +134,7 @@ struct Spike {
 impl Spike {
     fn new(opts: Options) -> Self {
         let t = Instant::now();
-        let demo = gen::build(opts.mass, opts.depth, 7);
+        let demo = gen::build_with(opts.mass, opts.depth, 7, opts.dense);
         log::info!(
             "built {} strokes / {} points / {} cells in {:?}",
             demo.scene.strokes.len(),
@@ -138,6 +142,7 @@ impl Spike {
             demo.scene.nodes.len(),
             t.elapsed()
         );
+        let build_secs = t.elapsed().as_secs_f64();
         let cam = Camera::new(demo.home.clone(), [0.5, 0.25], 700.0);
         Self {
             opts,
@@ -163,6 +168,7 @@ impl Spike {
             fps_window: (Instant::now(), 0, 0.0),
             bench: BenchStats::default(),
             dirty: true,
+            build_secs,
             frames: 0,
         }
     }
@@ -370,6 +376,11 @@ impl Spike {
         }
         let avg = b.frame_ms.iter().sum::<f64>() / b.frame_ms.len() as f64;
         println!("== OG Paper Phase 0 bench ==");
+        println!(
+            "canvas build: {:.1} s | peak memory: {}",
+            self.build_secs,
+            peak_rss()
+        );
         println!(
             "canvas: {} strokes, {} cells",
             self.scene.strokes.len(),
@@ -721,4 +732,18 @@ pub fn web_start() {
     let el = EventLoop::new().expect("event loop");
     el.set_control_flow(ControlFlow::Wait);
     el.spawn_app(Spike::new(opts));
+}
+
+/// Peak resident memory (Linux), for the bench report.
+fn peak_rss() -> String {
+    std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|s| {
+            s.lines()
+                .find(|l| l.starts_with("VmHWM"))
+                .map(|l| l.split_whitespace().nth(1).unwrap_or("0").to_string())
+        })
+        .and_then(|kb| kb.parse::<f64>().ok())
+        .map(|kb| format!("{:.2} GB", kb / 1024.0 / 1024.0))
+        .unwrap_or_else(|| "n/a".into())
 }
