@@ -123,6 +123,8 @@ struct Spike {
     fps_window: (Instant, u32, f64),
     bench: BenchStats,
     dirty: bool,
+    /// Frames rendered so far.
+    frames: u64,
 }
 
 impl Spike {
@@ -161,6 +163,7 @@ impl Spike {
             fps_window: (Instant::now(), 0, 0.0),
             bench: BenchStats::default(),
             dirty: true,
+            frames: 0,
         }
     }
 
@@ -313,12 +316,10 @@ impl Spike {
 
         // Stats
         let st = self.draw.stats;
+        self.frames += 1;
         self.fps_window.1 += 1;
         self.fps_window.2 = self.fps_window.2.max(q_us);
-        if self.opts.bench
-            && self.auto != Auto::Off
-            && self.fps_window.1 + self.bench.frame_ms.len() as u32 > 10
-        {
+        if self.opts.bench && self.auto != Auto::Off && self.frames > 10 {
             self.bench.frame_ms.push(dt * 1e3);
             self.bench.query_us.push(q_us);
             self.bench.max_strokes = self.bench.max_strokes.max(st.strokes);
@@ -328,9 +329,7 @@ impl Spike {
         }
         let el = self.fps_window.0.elapsed();
         // Refresh at least every 0.5 s; also on the very first frame.
-        if el >= Duration::from_millis(500)
-            || self.bench.frame_ms.is_empty() && self.fps_window.1 == 1
-        {
+        if el >= Duration::from_millis(500) || self.frames == 1 {
             let fps = self.fps_window.1 as f64 / el.as_secs_f64();
             let msg = format!(
                 "OG Paper spike | mode: {} | zoom 10^{:.1} (level {}) | {:.0} fps | {} strokes, {} tiles, {} dots | query max {:.2} ms | {} strokes in canvas",

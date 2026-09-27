@@ -5,25 +5,31 @@
 
 //! wgpu renderer for the spike: all stroke points live on the GPU once;
 //! each frame uploads only the small per-instance draw list.
+//!
+//! Stroke data lives in data textures (not storage buffers) so the same
+//! renderer runs on WebGL2 and old GLES devices as well as WebGPU, Vulkan,
+//! Metal and DX12.
 
 use std::sync::Arc;
 
 use ogpaper_core::{gen::MAX_PTS, DotInst, DrawList, Scene, StrokeInst, TileInst};
-use wgpu::util::DeviceExt;
 use winit::window::Window;
 
 const MAX_SEG: u32 = (MAX_PTS - 1) as u32;
-/// Room reserved for strokes drawn live, before buffers must grow.
+/// Room reserved for strokes drawn live, before textures must grow.
 const HEADROOM_STROKES: usize = 65_536;
 const HEADROOM_POINTS: usize = 1 << 20;
-/// The last stroke slot / last MAX_PTS points hold the wet (in-progress) stroke.
+/// The last WET_PTS points (and top stroke slots) hold the wet (in-progress) stroke.
 const WET_PTS: usize = 1024;
+/// Data texture width in texels (well under every backend's 2D limit).
+const TEX_W: u32 = 4096;
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct Globals {
     viewport: [f32; 2],
-    _pad: [f32; 2],
+    tex_w: u32,
+    _pad: u32,
 }
 
 #[repr(C)]
@@ -40,19 +46,101 @@ fn as_bytes<T>(v: &[T]) -> &[u8] {
     unsafe { std::slice::from_raw_parts(v.as_ptr() as *const u8, std::mem::size_of_val(v)) }
 }
 
+/// A 1-D array stored row-major in a TEX_W-wide 2-D texture.
+struct DataTex {
+    tex: wgpu::Texture,
+    view: wgpu::TextureView,
+    cap: usize,
+    texel: usize,
+}
+
+impl DataTex {
+    fn new(
+        device: &wgpu::Device,
+        label: &str,
+        format: wgpu::TextureFormat,
+        texel: usize,
+        min_cap: usize,
+    ) -> Self {
+        let rows = min_cap.div_ceil(TEX_W as usize).max(1);
+        let tex = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some(label),
+            size: wgpu::Extent3d {
+                width: TEX_W,
+                height: rows as u32,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+        Self {
+            tex,
+            view,
+            cap: rows * TEX_W as usize,
+            texel,
+        }
+    }
+
+    /// Write `data` (whole texels) starting at element `start`.
+    fn write(&self, queue: &wgpu::Queue, start: usize, data: &[u8]) {
+        let t = self.texel;
+        let n = data.len() / t;
+        let w = TEX_W as usize;
+        let mut i = 0;
+        while i < n {
+            let idx = start + i;
+            let (x, y) = (idx % w, idx / w);
+            // Whole rows at once when aligned, else the rest of this row.
+            let (width, rows) = if x == 0 && n - i >= w {
+                (w, (n - i) / w)
+            } else {
+                ((w - x).min(n - i), 1)
+            };
+            let count = width * rows;
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &self.tex,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d {
+                        x: x as u32,
+                        y: y as u32,
+                        z: 0,
+                    },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &data[i * t..(i + count) * t],
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some((width * t) as u32),
+                    rows_per_image: Some(rows as u32),
+                },
+                wgpu::Extent3d {
+                    width: width as u32,
+                    height: rows as u32,
+                    depth_or_array_layers: 1,
+                },
+            );
+            i += count;
+        }
+    }
+}
+
 pub struct Gpu {
     instance: wgpu::Instance,
-    adapter: wgpu::Adapter,
     device: wgpu::Device,
     queue: wgpu::Queue,
     surface: Option<wgpu::Surface<'static>>,
     pub config: wgpu::SurfaceConfiguration,
-    no_vsync: bool,
+    #[allow(dead_code)]
+    pub backend: wgpu::Backend,
     globals: wgpu::Buffer,
-    strokes: wgpu::Buffer,
-    points: wgpu::Buffer,
-    stroke_cap: usize,
-    point_cap: usize,
+    strokes: DataTex,
+    points: DataTex,
     /// Strokes/points of the scene already on the GPU.
     stroke_len: usize,
     point_len: usize,
@@ -69,24 +157,73 @@ pub struct Gpu {
     dots_cap: usize,
 }
 
+fn adapter_opts<'a, 'b>(
+    surface: Option<&'a wgpu::Surface<'b>>,
+) -> wgpu::RequestAdapterOptions<'a, 'b> {
+    wgpu::RequestAdapterOptions {
+        power_preference: wgpu::PowerPreference::HighPerformance,
+        compatible_surface: surface,
+        force_fallback_adapter: false,
+        apply_limit_buckets: false,
+    }
+}
+
+/// Pick a backend. On the web, WebGPU is used only if it really yields an
+/// adapter (some browsers expose `navigator.gpu` with none, e.g. Brave on
+/// Linux); otherwise WebGL2. A canvas can only ever hold one context type, so
+/// the check happens before the surface is created.
+async fn pick(
+    window: Arc<Window>,
+) -> Result<(wgpu::Instance, wgpu::Surface<'static>, wgpu::Adapter), String> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let base = wgpu::InstanceDescriptor::new_without_display_handle;
+        let webgpu = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::BROWSER_WEBGPU,
+            ..base()
+        });
+        if webgpu.request_adapter(&adapter_opts(None)).await.is_ok() {
+            let s = webgpu
+                .create_surface(window)
+                .map_err(|e| format!("WebGPU surface: {e}"))?;
+            if let Ok(a) = webgpu.request_adapter(&adapter_opts(Some(&s))).await {
+                return Ok((webgpu, s, a));
+            }
+            return Err("WebGPU adapter vanished; reload the page.".into());
+        }
+        log::info!("no WebGPU adapter; falling back to WebGL2");
+        let gl = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::GL,
+            ..base()
+        });
+        let s = gl
+            .create_surface(window)
+            .map_err(|e| format!("WebGL2 surface: {e}"))?;
+        let a = gl
+            .request_adapter(&adapter_opts(Some(&s)))
+            .await
+            .map_err(|_| "This browser offers neither WebGPU nor WebGL2.".to_string())?;
+        Ok((gl, s, a))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let instance =
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+        let s = instance
+            .create_surface(window)
+            .map_err(|e| format!("surface: {e}"))?;
+        let a = instance
+            .request_adapter(&adapter_opts(Some(&s)))
+            .await
+            .map_err(|e| format!("no GPU adapter: {e}"))?;
+        Ok((instance, s, a))
+    }
+}
+
 impl Gpu {
     /// Create the device and pipelines; call `upload_new` afterwards to load a scene.
     pub async fn new(window: Arc<Window>, no_vsync: bool) -> Result<Self, String> {
-        let scene = &Scene::new();
-        let instance =
-            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
-        let surface = instance
-            .create_surface(window.clone())
-            .map_err(|e| format!("surface: {e}"))?;
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                compatible_surface: Some(&surface),
-                force_fallback_adapter: false,
-                apply_limit_buckets: false,
-            })
-            .await
-            .expect("adapter");
+        let (instance, surface, adapter) = pick(window.clone()).await?;
         let info = adapter.get_info();
         log::info!(
             "GPU: {} ({:?}, {:?})",
@@ -94,12 +231,15 @@ impl Gpu {
             info.backend,
             info.device_type
         );
+        // Lowest common denominator (WebGL2) plus whatever texture size the adapter allows.
         let al = adapter.limits();
-        let limits = wgpu::Limits {
-            max_storage_buffer_binding_size: al.max_storage_buffer_binding_size,
-            max_buffer_size: al.max_buffer_size,
-            ..wgpu::Limits::downlevel_defaults()
-        };
+        if al.max_texture_dimension_2d < TEX_W {
+            return Err(format!(
+                "GPU max texture size {} < {TEX_W}",
+                al.max_texture_dimension_2d
+            ));
+        }
+        let limits = wgpu::Limits::downlevel_webgl2_defaults().using_resolution(al);
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("og-spike"),
@@ -146,6 +286,16 @@ impl Gpu {
             mapped_at_creation: false,
         });
 
+        let tex_entry = |binding, sample_type| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::VERTEX,
+            ty: wgpu::BindingType::Texture {
+                sample_type,
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        };
         let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("bgl"),
             entries: &[
@@ -159,8 +309,8 @@ impl Gpu {
                     },
                     count: None,
                 },
-                storage_entry(1),
-                storage_entry(2),
+                tex_entry(1, wgpu::TextureSampleType::Uint),
+                tex_entry(2, wgpu::TextureSampleType::Float { filterable: false }),
             ],
         });
 
@@ -227,44 +377,34 @@ impl Gpu {
             std::mem::size_of::<TileInst>(),
             &tile_attrs,
         );
-        let tiles_cap = 1 << 12;
+
+        let empty = Scene::new();
+        let (strokes, points) = upload_scene(&device, &queue, &empty);
+        let bind = make_bind(&device, &bgl, &globals, &strokes, &points);
+        let (inst_cap, dots_cap, tiles_cap) = (1 << 16, 1 << 16, 1 << 12);
         let tiles = instance_buffer(
             &device,
             "tiles",
             tiles_cap * std::mem::size_of::<TileInst>(),
         );
-
-        let (strokes, points, stroke_cap, point_cap) = upload_scene(&device, scene);
-        let bind = make_bind(&device, &bgl, &globals, &strokes, &points);
-        let inst_cap = 1 << 16;
-        let dots_cap = 1 << 16;
         let inst = instance_buffer(
             &device,
             "inst",
             inst_cap * std::mem::size_of::<StrokeInst>(),
         );
         let dots = instance_buffer(&device, "dots", dots_cap * std::mem::size_of::<DotInst>());
-        log::info!(
-            "GPU buffers: {:.0} MB points, {:.1} MB strokes",
-            (point_cap * 8) as f64 / 1e6,
-            (stroke_cap * 16) as f64 / 1e6
-        );
-
         Ok(Self {
             instance,
-            adapter,
             device,
             queue,
             surface: Some(surface),
             config,
-            no_vsync,
+            backend: info.backend,
             globals,
             strokes,
             points,
-            stroke_cap,
-            point_cap,
-            stroke_len: scene.strokes.len(),
-            point_len: scene.points.len(),
+            stroke_len: 0,
+            point_len: 0,
             bgl,
             bind,
             stroke_pipe,
@@ -288,7 +428,6 @@ impl Gpu {
             let size = window.inner_size();
             self.config.width = size.width.max(1);
             self.config.height = size.height.max(1);
-            let _ = &self.adapter;
             s.configure(&self.device, &self.config);
             self.surface = Some(s);
         }
@@ -308,14 +447,12 @@ impl Gpu {
 
     /// Upload strokes added to the scene since the last upload.
     pub fn upload_new(&mut self, scene: &Scene, _first: usize) {
-        let need_s = scene.strokes.len() + 1;
+        let need_s = scene.strokes.len() + WET_PTS;
         let need_p = scene.points.len() + WET_PTS;
-        if need_s > self.stroke_cap || need_p > self.point_cap {
-            let (s, p, sc, pc) = upload_scene(&self.device, scene);
+        if need_s > self.strokes.cap || need_p > self.points.cap {
+            let (s, p) = upload_scene(&self.device, &self.queue, scene);
             self.strokes = s;
             self.points = p;
-            self.stroke_cap = sc;
-            self.point_cap = pc;
             self.bind = make_bind(
                 &self.device,
                 &self.bgl,
@@ -323,19 +460,21 @@ impl Gpu {
                 &self.strokes,
                 &self.points,
             );
+            log::info!(
+                "GPU data: {:.0} MB points, {:.1} MB strokes",
+                (self.points.cap * 8) as f64 / 1e6,
+                (self.strokes.cap * 16) as f64 / 1e6
+            );
         } else {
             let gs: Vec<StrokeGpu> = scene.strokes[self.stroke_len..]
                 .iter()
                 .map(to_gpu)
                 .collect();
-            self.queue.write_buffer(
-                &self.strokes,
-                (self.stroke_len * 16) as u64,
-                bytemuck::cast_slice(&gs),
-            );
-            self.queue.write_buffer(
-                &self.points,
-                (self.point_len * 8) as u64,
+            self.strokes
+                .write(&self.queue, self.stroke_len, bytemuck::cast_slice(&gs));
+            self.points.write(
+                &self.queue,
+                self.point_len,
                 bytemuck::cast_slice(&scene.points[self.point_len..]),
             );
         }
@@ -354,7 +493,6 @@ impl Gpu {
             }
             _ => return,
         };
-        let _ = self.no_vsync;
         let view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
@@ -364,12 +502,12 @@ impl Gpu {
             0,
             bytemuck::bytes_of(&Globals {
                 viewport: [self.config.width as f32, self.config.height as f32],
-                _pad: [0.0; 2],
+                tex_w: TEX_W,
+                _pad: 0,
             }),
         );
 
-        // Instances: scene strokes, plus the wet stroke in its reserved slot.
-        let wet_slot = (self.stroke_cap - 1) as u32;
+        // Instances: scene strokes, plus the wet stroke in reserved slots.
         let mut insts: Vec<StrokeInst> =
             Vec::with_capacity(draw.strokes.len() + wet.len() / MAX_SEG as usize + 1);
         insts.extend_from_slice(&draw.strokes);
@@ -377,31 +515,22 @@ impl Gpu {
             // Wet points are in screen pixels: identity transform. Longer wet strokes
             // are drawn as successive MAX_PTS windows over the reserved point region.
             let n = wet.len().min(WET_PTS);
-            let base = self.point_cap - WET_PTS;
-            self.queue.write_buffer(
-                &self.points,
-                (base * 8) as u64,
-                bytemuck::cast_slice(&wet[..n]),
-            );
+            let base = self.points.cap - WET_PTS;
+            self.points
+                .write(&self.queue, base, bytemuck::cast_slice(&wet[..n]));
             let windows = (n - 1).div_ceil(MAX_SEG as usize);
-            let mut slots = Vec::with_capacity(windows);
-            for k in 0..windows {
-                let start = base + k * MAX_SEG as usize;
-                let len = (n - k * MAX_SEG as usize).min(MAX_PTS);
-                slots.push(StrokeGpu {
-                    start: start as u32,
-                    len: len as u32,
+            let slots: Vec<StrokeGpu> = (0..windows)
+                .map(|k| StrokeGpu {
+                    start: (base + k * MAX_SEG as usize) as u32,
+                    len: (n - k * MAX_SEG as usize).min(MAX_PTS) as u32,
                     width: 3.0,
                     color: 0xFF5A28C8,
-                });
-            }
-            // Wet windows use the top stroke slots, counting down.
-            let first_slot = wet_slot as usize + 1 - windows;
-            self.queue.write_buffer(
-                &self.strokes,
-                (first_slot * 16) as u64,
-                bytemuck::cast_slice(&slots),
-            );
+                })
+                .collect();
+            // Wet windows use the top stroke slots.
+            let first_slot = self.strokes.cap - windows;
+            self.strokes
+                .write(&self.queue, first_slot, bytemuck::cast_slice(&slots));
             for k in 0..windows {
                 insts.push(StrokeInst {
                     stroke: (first_slot + k) as u32,
@@ -495,19 +624,6 @@ impl Gpu {
     }
 }
 
-fn storage_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
-    wgpu::BindGroupLayoutEntry {
-        binding,
-        visibility: wgpu::ShaderStages::VERTEX,
-        ty: wgpu::BindingType::Buffer {
-            ty: wgpu::BufferBindingType::Storage { read_only: true },
-            has_dynamic_offset: false,
-            min_binding_size: None,
-        },
-        count: None,
-    }
-}
-
 fn to_gpu(s: &ogpaper_core::Stroke) -> StrokeGpu {
     StrokeGpu {
         start: s.start,
@@ -527,44 +643,33 @@ fn instance_buffer(device: &wgpu::Device, label: &str, bytes: usize) -> wgpu::Bu
 }
 
 /// Upload all strokes and points with headroom for live drawing.
-fn upload_scene(
-    device: &wgpu::Device,
-    scene: &Scene,
-) -> (wgpu::Buffer, wgpu::Buffer, usize, usize) {
-    let stroke_cap = scene.strokes.len() + HEADROOM_STROKES;
-    let point_cap = scene.points.len() + HEADROOM_POINTS + WET_PTS;
-    let mut gs: Vec<StrokeGpu> = scene.strokes.iter().map(to_gpu).collect();
-    gs.resize(
-        stroke_cap,
-        StrokeGpu {
-            start: 0,
-            len: 0,
-            width: 0.0,
-            color: 0,
-        },
+fn upload_scene(device: &wgpu::Device, queue: &wgpu::Queue, scene: &Scene) -> (DataTex, DataTex) {
+    let strokes = DataTex::new(
+        device,
+        "strokes",
+        wgpu::TextureFormat::Rgba32Uint,
+        16,
+        scene.strokes.len() + HEADROOM_STROKES + WET_PTS,
     );
-    let mut pts = scene.points.clone();
-    pts.resize(point_cap, [0.0; 2]);
-    let usage = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST;
-    let strokes = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("strokes"),
-        contents: bytemuck::cast_slice(&gs),
-        usage,
-    });
-    let points = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("points"),
-        contents: bytemuck::cast_slice(&pts),
-        usage,
-    });
-    (strokes, points, stroke_cap, point_cap)
+    let points = DataTex::new(
+        device,
+        "points",
+        wgpu::TextureFormat::Rg32Float,
+        8,
+        scene.points.len() + HEADROOM_POINTS + WET_PTS,
+    );
+    let gs: Vec<StrokeGpu> = scene.strokes.iter().map(to_gpu).collect();
+    strokes.write(queue, 0, bytemuck::cast_slice(&gs));
+    points.write(queue, 0, bytemuck::cast_slice(&scene.points));
+    (strokes, points)
 }
 
 fn make_bind(
     device: &wgpu::Device,
     bgl: &wgpu::BindGroupLayout,
     globals: &wgpu::Buffer,
-    strokes: &wgpu::Buffer,
-    points: &wgpu::Buffer,
+    strokes: &DataTex,
+    points: &DataTex,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("bind"),
@@ -576,11 +681,11 @@ fn make_bind(
             },
             wgpu::BindGroupEntry {
                 binding: 1,
-                resource: strokes.as_entire_binding(),
+                resource: wgpu::BindingResource::TextureView(&strokes.view),
             },
             wgpu::BindGroupEntry {
                 binding: 2,
-                resource: points.as_entire_binding(),
+                resource: wgpu::BindingResource::TextureView(&points.view),
             },
         ],
     })

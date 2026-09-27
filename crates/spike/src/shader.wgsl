@@ -11,7 +11,8 @@
 
 struct Globals {
     viewport: vec2<f32>,
-    _pad: vec2<f32>,
+    tex_w: u32,
+    _pad: u32,
 };
 
 struct StrokeGpu {
@@ -21,9 +22,24 @@ struct StrokeGpu {
     color: u32,
 };
 
+// Stroke records and points live in data textures (WebGL2-compatible):
+// element i is at texel (i % tex_w, i / tex_w).
 @group(0) @binding(0) var<uniform> g: Globals;
-@group(0) @binding(1) var<storage, read> strokes: array<StrokeGpu>;
-@group(0) @binding(2) var<storage, read> points: array<vec2<f32>>;
+@group(0) @binding(1) var strokes_tex: texture_2d<u32>;
+@group(0) @binding(2) var points_tex: texture_2d<f32>;
+
+fn texel(i: u32) -> vec2<i32> {
+    return vec2<i32>(i32(i % g.tex_w), i32(i / g.tex_w));
+}
+
+fn stroke_at(i: u32) -> StrokeGpu {
+    let v = textureLoad(strokes_tex, texel(i), 0);
+    return StrokeGpu(v.x, v.y, bitcast<f32>(v.z), v.w);
+}
+
+fn point_at(i: u32) -> vec2<f32> {
+    return textureLoad(points_tex, texel(i), 0).xy;
+}
 
 struct VsOut {
     @builtin(position) pos: vec4<f32>,
@@ -56,14 +72,14 @@ fn vs_stroke(
     @location(1) o: vec2<f32>,
     @location(2) scale: f32,
 ) -> VsOut {
-    let s = strokes[sid];
+    let s = stroke_at(sid);
     let seg = vi / 6u;
     let corner = vi % 6u;
     if (seg + 1u >= s.len) {
         return collapsed();
     }
-    let a = o + points[s.start + seg] * scale;
-    let b = o + points[s.start + seg + 1u] * scale;
+    let a = o + point_at(s.start + seg) * scale;
+    let b = o + point_at(s.start + seg + 1u) * scale;
     let hw_true = s.width * scale * 0.5;
     let hw = max(hw_true, 0.5);
     let r = hw + 1.0;
