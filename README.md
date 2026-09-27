@@ -18,6 +18,12 @@ Proprietary infinite-canvas apps such as Endless Paper keep your work in undocum
 - **Files you own** — one `.ogp` file per canvas, open spec, plus SVG/PDF/PNG/JSON and self-contained HTML exports.
 - **Sync without a company** — multi-device sync through a folder you already sync (iCloud, Google Drive, Dropbox, Syncthing) or a relay you self-host for free.
 
+## Try it
+
+- **Web:** https://omegagiven.github.io/OG-paper/ — open the app, then “Install app” / “Add to Home screen” for full screen.
+- **Windows, macOS, Linux, Android:** [latest release](https://github.com/OmegaGiven/OG-paper/releases/latest)
+  (every push to `main` also produces builds under the CI run's artifacts).
+
 ## Planned stack
 
 Rust core · wgpu renderer · winit · egui · SQLite. See [`docs/DESIGN.md`](docs/DESIGN.md) for architecture, file format, sync design and roadmap.

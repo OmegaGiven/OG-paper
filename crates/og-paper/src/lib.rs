@@ -901,14 +901,22 @@ fn file_label(p: &std::path::Path) -> String {
         .unwrap_or_else(|| "canvas".into())
 }
 
+/// App-private storage on platforms without a home directory (Android).
+#[cfg(not(target_arch = "wasm32"))]
+static DATA_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
 /// Where a new canvas is saved before you pick a name: ~/OG Paper/.
 #[cfg(not(target_arch = "wasm32"))]
 fn default_path() -> Result<PathBuf, String> {
-    let home = std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(PathBuf::from)
-        .ok_or("no home directory")?;
-    let dir = home.join("OG Paper");
+    let dir = match DATA_DIR.get() {
+        // Android: the app's private storage.
+        Some(d) => d.join("canvases"),
+        None => std::env::var_os("HOME")
+            .or_else(|| std::env::var_os("USERPROFILE"))
+            .map(PathBuf::from)
+            .ok_or("no home directory")?
+            .join("OG Paper"),
+    };
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     for n in 1.. {
         let p = dir.join(if n == 1 {
@@ -984,4 +992,25 @@ pub(crate) fn web_dpr() -> f32 {
     web_sys::window()
         .map(|w| w.device_pixel_ratio() as f32)
         .unwrap_or(1.0)
+}
+
+#[cfg(target_os = "android")]
+#[no_mangle]
+fn android_main(app: winit::platform::android::activity::AndroidApp) {
+    use winit::platform::android::EventLoopBuilderExtAndroid;
+    android_logger::init_once(
+        android_logger::Config::default()
+            .with_max_level(log::LevelFilter::Info)
+            .with_tag("og-paper"),
+    );
+    if let Some(dir) = app.internal_data_path() {
+        let _ = DATA_DIR.set(dir);
+    }
+    let el = EventLoop::builder()
+        .with_android_app(app)
+        .build()
+        .expect("event loop");
+    el.set_control_flow(ControlFlow::Wait);
+    let mut a = App::new(None);
+    el.run_app(&mut a).expect("event loop");
 }

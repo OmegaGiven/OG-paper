@@ -2,5 +2,5 @@
 *.ogp-wal
 *.ogp-shm
 .DS_Store
-web/pkg/
+web/spike/pkg/
 web/app/pkg/

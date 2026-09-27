@@ -26,6 +26,7 @@ web-time = "1"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 pollster = "0.4"
+egui-winit = { version = "0.36", default-features = false, features = ["links"] }
 ogpaper-file = { path = "../ogpaper-file" }
 
 [target.'cfg(not(any(target_os = "android", target_arch = "wasm32")))'.dependencies]
@@ -40,3 +41,24 @@ wasm-bindgen-futures = "0.4"
 console_error_panic_hook = "0.1"
 console_log = "1"
 web-sys = { version = "0.3", features = ["Window", "MediaQueryList", "HtmlCanvasElement"] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+android_logger = "0.15"
+egui-winit = { version = "0.36", default-features = false, features = ["links", "android-native-activity"] }
+winit = { version = "0.30", features = ["android-native-activity"] }
+
+[package.metadata.android]
+package = "app.ogpaper"
+apk_name = "og-paper"
+build_targets = ["aarch64-linux-android"]
+
+[package.metadata.android.sdk]
+min_sdk_version = 29
+target_sdk_version = 34
+
+[package.metadata.android.application]
+label = "OG Paper"
+
+[package.metadata.android.application.activity]
+orientation = "unspecified"
+config_changes = "orientation|screenSize|screenLayout|keyboardHidden|density"

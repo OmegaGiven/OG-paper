@@ -1,42 +1,156 @@
+# Build and test OG Paper for every platform. Runs on every push and pull
+# request; the release workflow reuses it and publishes its artifacts.
 name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
 
 jobs:
   test:
-    name: core tests + spike build (${{ matrix.os }})
+    name: Tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test --release -p ogpaper-core
-      - run: cargo build --release -p og-spike
+      - run: cargo test --release -p ogpaper-core -p ogpaper-file -p og-paper
 
-  android:
-    name: spike APK (arm64)
+  linux:
+    name: Linux x86_64
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release -p og-paper
+      - name: Package
+        run: |
+          mkdir -p dist/og-paper
+          cp target/release/og-paper README.md LICENSE dist/og-paper/
+          tar -C dist -czf og-paper-linux-x86_64.tar.gz og-paper
+      - uses: actions/upload-artifact@v4
+        with:
+          name: og-paper-linux-x86_64
+          path: og-paper-linux-x86_64.tar.gz
+
+  windows:
+    name: Windows x86_64
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release -p og-paper
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist/og-paper | Out-Null
+          Copy-Item target/release/og-paper.exe, README.md, LICENSE dist/og-paper/
+          Compress-Archive -Path dist/og-paper -DestinationPath og-paper-windows-x86_64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: og-paper-windows-x86_64
+          path: og-paper-windows-x86_64.zip
+
+  macos:
+    name: macOS universal
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - run: |
+          cargo build --release -p og-paper --target aarch64-apple-darwin
+          cargo build --release -p og-paper --target x86_64-apple-darwin
+      - name: Package .app (universal, unsigned)
+        run: |
+          APP="dist/OG Paper.app"
+          mkdir -p "$APP/Contents/MacOS"
+          lipo -create -output "$APP/Contents/MacOS/og-paper" \
+            target/aarch64-apple-darwin/release/og-paper target/x86_64-apple-darwin/release/og-paper
+          cat > "$APP/Contents/Info.plist" <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>CFBundleName</key><string>OG Paper</string>
+            <key>CFBundleIdentifier</key><string>app.ogpaper</string>
+            <key>CFBundleExecutable</key><string>og-paper</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleShortVersionString</key><string>0.1.0</string>
+            <key>NSHighResolutionCapable</key><true/>
+          </dict></plist>
+          PLIST
+          cd dist && ditto -c -k --keepParent "OG Paper.app" ../og-paper-macos-universal.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: og-paper-macos-universal
+          path: og-paper-macos-universal.zip
+
+  android:
+    name: Android arm64
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android
       - uses: Swatinem/rust-cache@v2
       - run: cargo install cargo-apk --locked
-      - name: Build APK (debug-signed)
+      - name: Build APK
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
         run: |
-          keytool -genkeypair -keystore debug.keystore -storepass android -alias androiddebugkey \
-            -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+          # A stable key (repo secret) lets new APKs install over old ones;
+          # without it a throwaway debug key is used.
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > release.keystore
+            export CARGO_APK_RELEASE_KEYSTORE_PASSWORD="$KEYSTORE_PASSWORD"
+          else
+            keytool -genkeypair -keystore release.keystore -storepass android -alias androiddebugkey \
+              -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+            export CARGO_APK_RELEASE_KEYSTORE_PASSWORD=android
+          fi
           export ANDROID_NDK_ROOT=$ANDROID_NDK_LATEST_HOME
-          export CARGO_APK_RELEASE_KEYSTORE=$PWD/debug.keystore CARGO_APK_RELEASE_KEYSTORE_PASSWORD=android
-          cargo apk build -p og-spike --release --lib
+          export CARGO_APK_RELEASE_KEYSTORE=$PWD/release.keystore
+          cargo apk build -p og-paper --release --lib
+          cp target/release/apk/og-paper.apk og-paper-android-arm64.apk
       - uses: actions/upload-artifact@v4
         with:
-          name: og-spike-apk
-          path: target/release/apk/og-spike.apk
+          name: og-paper-android-arm64
+          path: og-paper-android-arm64.apk
+
+  web:
+    name: Web (WASM)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-bindgen@0.2.129
+      - run: ./scripts/build-web.sh
+      - name: Package
+        run: cd web && zip -qr ../og-paper-web.zip .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: og-paper-web
+          path: og-paper-web.zip

@@ -2,45 +2,76 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
-<title>OG Paper — zoom spike</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OG Paper</title>
+<meta name="description" content="An open-source infinite canvas: endless zoom, fast on every device, and files you own.">
+<link rel="icon" href="app/icon-192.png">
 <style>
-  html, body { margin: 0; height: 100%; overflow: hidden; background: #f5f3ec; font: 13px/1.4 system-ui, sans-serif; }
-  canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; touch-action: none; outline: none; }
-  #hud { position: fixed; left: 12px; top: 12px; padding: 8px 10px; background: rgba(255,255,255,.85);
-         border: 1px solid #ddd; border-radius: 8px; white-space: pre; color: #222; pointer-events: none; max-width: calc(100vw - 48px); overflow: hidden; }
-  #help { position: fixed; left: 12px; bottom: 12px; padding: 8px 10px; background: rgba(255,255,255,.85);
-          border: 1px solid #ddd; border-radius: 8px; color: #444; pointer-events: none; }
-  #mode { position: fixed; right: 12px; top: 12px; padding: 10px 16px; font: 600 15px system-ui, sans-serif;
-          border-radius: 10px; border: 1px solid #bbb; background: #fff; color: #222; cursor: pointer; }
-  #mode.on { background: #c8285a; color: #fff; border-color: #c8285a; }
-  #hud, #help, #mode { z-index: 10; }
-  @media (prefers-color-scheme: dark) { #hud, #help { background: rgba(30,30,34,.85); color: #eee; border-color: #444; } }
+  :root { --bg: #f5f3ec; --card: #fcfbf8; --ink: #1c1c24; --muted: #5d5d68; --edge: #d9d6cc; --accent: #c8285a; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #16161b; --card: #1f1f26; --ink: #ecebe6; --muted: #a3a2ab; --edge: #34343d; --accent: #ff5c8d; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 17px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 860px; margin: 0 auto; padding: 48px 20px 64px; }
+  header { display: flex; align-items: center; gap: 16px; }
+  header img { width: 64px; height: 64px; border-radius: 14px; }
+  h1 { font-size: 2.4rem; margin: 0; letter-spacing: -0.02em; }
+  .lead { font-size: 1.2rem; color: var(--muted); margin: 18px 0 28px; }
+  .cta { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 36px; }
+  .btn { display: inline-block; padding: 12px 20px; border-radius: 12px; text-decoration: none; font-weight: 600;
+         border: 1px solid var(--edge); color: var(--ink); background: var(--card); }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; }
+  .card { background: var(--card); border: 1px solid var(--edge); border-radius: 14px; padding: 16px 18px; }
+  .card h3 { margin: 0 0 6px; font-size: 1.05rem; }
+  .card p { margin: 0; color: var(--muted); font-size: 0.95rem; }
+  h2 { margin: 40px 0 12px; font-size: 1.3rem; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.95rem; }
+  td, th { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--edge); }
+  th { color: var(--muted); font-weight: 600; }
+  a { color: var(--accent); }
+  footer { margin-top: 48px; color: var(--muted); font-size: 0.9rem; }
+  code { background: var(--card); border: 1px solid var(--edge); border-radius: 6px; padding: 1px 5px; font-size: 0.9em; }
 </style>
 </head>
 <body>
-<div id="hud">Building the test canvas (250,000 strokes + a zoom chain 10^48 deep)…</div>
-<button id="mode" title="Toggle draw mode (D)">Pan mode</button>
-<div id="help">
-  <b>Mouse</b>: left-drag draw · wheel zoom · right/middle-drag pan · <b>A</b> auto-zoom · <b>H</b> home · <b>D</b> draw mode<br>
-  <b>Touch/pen</b>: pan mode — 1 finger pans, double-tap auto-zoom · draw mode — 1 finger/pen draws · pinch zooms in both<br>
-  URL options: <code>?mass=1000000</code> · <code>?chain=25</code> (start deep)
-</div>
-<script type="module">
-  import init, { set_draw_mode, get_draw_mode } from './pkg/og_spike.js';
-  const btn = document.getElementById('mode');
-  const sync = () => { const on = get_draw_mode(); btn.textContent = on ? 'Draw mode' : 'Pan mode'; btn.classList.toggle('on', on); };
-  btn.addEventListener('pointerdown', e => e.stopPropagation());
-  btn.addEventListener('click', () => { set_draw_mode(!get_draw_mode()); sync(); });
-  // Let the loading text paint before the (blocking) canvas build starts.
-  requestAnimationFrame(() => setTimeout(async () => {
-    try { await init(); } catch (e) { document.getElementById('hud').textContent = 'Failed: ' + e; }
-    // Touch devices usually want to draw; start in draw mode there.
-    if (matchMedia('(pointer: coarse)').matches) set_draw_mode(true);
-    sync(); setInterval(sync, 300);
-    // Keyboard shortcuts need the canvas focused.
-    document.addEventListener('pointerdown', () => { const c = document.querySelector('canvas'); if (c) { c.tabIndex = 0; c.focus(); } });
-  }, 30));
-</script>
+<main>
+  <header>
+    <img src="app/icon-192.png" alt="">
+    <h1>OG Paper</h1>
+  </header>
+  <p class="lead">An open-source infinite canvas. Zoom in forever, draw at any depth, and keep your work in an open
+    file format that outlives the app.</p>
+  <div class="cta">
+    <a class="btn primary" href="app/">Open the app</a>
+    <a class="btn" href="https://github.com/OmegaGiven/OG-paper/releases/latest">Downloads</a>
+    <a class="btn" href="spike/?chain=25">Zoom demo (10<sup>48</sup> deep)</a>
+    <a class="btn" href="https://github.com/OmegaGiven/OG-paper">Source</a>
+  </div>
+
+  <div class="grid">
+    <div class="card"><h3>Truly endless</h3><p>Unlimited zoom depth with no precision loss: tested from 10<sup>-0.6</sup> to 10<sup>49</sup>.</p></div>
+    <div class="card"><h3>Fast at any size</h3><p>Only what is on screen is drawn: the same frame time at 1M or 10M strokes.</p></div>
+    <div class="card"><h3>Files you own</h3><p>Every canvas is one <code>.ogp</code> SQLite file with a published, openly licensed format.</p></div>
+    <div class="card"><h3>Everywhere</h3><p>One Rust engine for Windows, macOS, Linux, Android and the web. Installs as an app from your browser.</p></div>
+  </div>
+
+  <h2>Get it</h2>
+  <table>
+    <tr><th>Platform</th><th>How</th></tr>
+    <tr><td>Any browser</td><td><a href="app/">Open the app</a>, then “Install app” / “Add to Home screen” for full screen and offline use</td></tr>
+    <tr><td>Windows, macOS, Linux</td><td><a href="https://github.com/OmegaGiven/OG-paper/releases/latest">Latest release</a> (unsigned builds; macOS: right-click → Open the first time)</td></tr>
+    <tr><td>Android</td><td>APK from the <a href="https://github.com/OmegaGiven/OG-paper/releases/latest">latest release</a></td></tr>
+    <tr><td>iPhone / iPad</td><td>Use the web app for now; a native build needs Apple signing</td></tr>
+  </table>
+
+  <h2>Status</h2>
+  <p>Early development (Phase 1). Working: pen, marker, highlighter with pressure, color dial and picker, eraser,
+    undo/redo, autosave to <code>.ogp</code> on desktop. Next: stickers (paste PNG/JPG/SVG), shapes and selection,
+    textured brushes, multi-device sync. The web demo keeps drawings only until you close the tab.</p>
+
+  <footer>Created by OmegaGiven and contributors · App: MPL-2.0 · File format spec: CC BY 4.0</footer>
+</main>
 </body>
 </html>
