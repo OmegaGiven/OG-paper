@@ -2,3 +2,4 @@
 *.ogp-wal
 *.ogp-shm
 .DS_Store
+web/pkg/

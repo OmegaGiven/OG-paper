@@ -18,12 +18,22 @@ path = "src/main.rs"
 ogpaper-core = { path = "../ogpaper-core" }
 wgpu = "30"
 winit = "0.30"
-pollster = "0.4"
 bytemuck = { version = "1", features = ["derive"] }
 log = "0.4"
+web-time = "1"
 
-[target.'cfg(not(target_os = "android"))'.dependencies]
+[target.'cfg(not(any(target_os = "android", target_arch = "wasm32")))'.dependencies]
 env_logger = "0.11"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+pollster = "0.4"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "=0.2.129"
+wasm-bindgen-futures = "0.4"
+console_error_panic_hook = "0.1"
+console_log = "1"
+web-sys = { version = "0.3", features = ["Document", "Window", "Element", "Location", "UrlSearchParams"] }
 
 [target.'cfg(target_os = "android")'.dependencies]
 android_logger = "0.15"

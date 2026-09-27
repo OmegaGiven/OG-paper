@@ -70,10 +70,14 @@ pub struct Gpu {
 }
 
 impl Gpu {
-    pub async fn new(window: Arc<Window>, scene: &Scene, no_vsync: bool) -> Self {
+    /// Create the device and pipelines; call `upload_new` afterwards to load a scene.
+    pub async fn new(window: Arc<Window>, no_vsync: bool) -> Result<Self, String> {
+        let scene = &Scene::new();
         let instance =
             wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
-        let surface = instance.create_surface(window.clone()).expect("surface");
+        let surface = instance
+            .create_surface(window.clone())
+            .map_err(|e| format!("surface: {e}"))?;
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
@@ -104,7 +108,7 @@ impl Gpu {
                 ..Default::default()
             })
             .await
-            .expect("device");
+            .map_err(|e| format!("device: {e}"))?;
 
         let size = window.inner_size();
         let caps = surface.get_capabilities(&adapter);
@@ -246,7 +250,7 @@ impl Gpu {
             (stroke_cap * 16) as f64 / 1e6
         );
 
-        Self {
+        Ok(Self {
             instance,
             adapter,
             device,
@@ -272,7 +276,7 @@ impl Gpu {
             inst_cap,
             dots,
             dots_cap,
-        }
+        })
     }
 
     pub fn resume(&mut self, window: Arc<Window>) {

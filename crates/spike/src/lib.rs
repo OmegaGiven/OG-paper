@@ -14,7 +14,7 @@ mod gpu;
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use web_time::{Duration, Instant};
 
 use ogpaper_core::{gen, query, Camera, CellAddr, DrawList, Params, Scene};
 use winit::application::ApplicationHandler;
@@ -81,6 +81,9 @@ struct Spike {
     opts: Options,
     window: Option<Arc<Window>>,
     gpu: Option<Gpu>,
+    /// Web: the GPU is created asynchronously and dropped in here when ready.
+    #[cfg(target_arch = "wasm32")]
+    pending_gpu: std::rc::Rc<std::cell::RefCell<Option<Gpu>>>,
     scene: Scene,
     chain: Vec<CellAddr>,
     home: CellAddr,
@@ -118,6 +121,8 @@ impl Spike {
             opts,
             window: None,
             gpu: None,
+            #[cfg(target_arch = "wasm32")]
+            pending_gpu: Default::default(),
             scene: demo.scene,
             chain: demo.chain,
             home: demo.home,
@@ -239,6 +244,20 @@ impl Spike {
     }
 
     fn frame(&mut self) {
+        #[cfg(target_arch = "wasm32")]
+        if self.gpu.is_none() {
+            let ready = self.pending_gpu.borrow_mut().take();
+            if let Some(mut g) = ready {
+                g.upload_new(&self.scene, 0);
+                if let Some(w) = &self.window {
+                    let s = w.inner_size();
+                    g.resize(s.width, s.height);
+                }
+                self.gpu = Some(g);
+            } else {
+                return;
+            }
+        }
         let now = Instant::now();
         let dt = now.duration_since(self.last_frame).as_secs_f64();
         self.last_frame = now;
@@ -287,7 +306,10 @@ impl Spike {
             self.bench.max_zoom = self.bench.max_zoom.max(self.cam.log10_zoom());
         }
         let el = self.fps_window.0.elapsed();
-        if el >= Duration::from_millis(500) {
+        // Refresh at least every 0.5 s; also on the very first frame.
+        if el >= Duration::from_millis(500)
+            || self.bench.frame_ms.is_empty() && self.fps_window.1 == 1
+        {
             let fps = self.fps_window.1 as f64 / el.as_secs_f64();
             let msg = format!(
                 "OG Paper spike | zoom 10^{:.1} (level {}) | {:.0} fps | {} strokes, {} tiles, {} dots | query max {:.2} ms | {} strokes in canvas",
@@ -303,6 +325,8 @@ impl Spike {
             if let Some(win) = &self.window {
                 win.set_title(&msg);
             }
+            #[cfg(target_arch = "wasm32")]
+            set_hud(&msg.replace(" | ", "\n"));
             if cfg!(target_os = "android") || self.opts.bench {
                 log::info!("{msg}");
             }
@@ -410,6 +434,11 @@ impl ApplicationHandler for Spike {
             Some(w) => w.clone(),
             None => {
                 let attrs = Window::default_attributes().with_title("OG Paper spike");
+                #[cfg(target_arch = "wasm32")]
+                let attrs = {
+                    use winit::platform::web::WindowAttributesExtWebSys;
+                    attrs.with_append(true)
+                };
                 let w = Arc::new(el.create_window(attrs).expect("create window"));
                 self.window = Some(w.clone());
                 w
@@ -417,9 +446,24 @@ impl ApplicationHandler for Spike {
         };
         match self.gpu.as_mut() {
             Some(g) => g.resume(window.clone()),
+            #[cfg(not(target_arch = "wasm32"))]
             None => {
-                let g = pollster::block_on(Gpu::new(window.clone(), &self.scene, self.opts.bench));
+                let mut g = pollster::block_on(Gpu::new(window.clone(), self.opts.bench))
+                    .expect("GPU init");
+                g.upload_new(&self.scene, 0);
                 self.gpu = Some(g);
+            }
+            #[cfg(target_arch = "wasm32")]
+            None => {
+                let slot = self.pending_gpu.clone();
+                let (w, bench) = (window.clone(), self.opts.bench);
+                wasm_bindgen_futures::spawn_local(async move {
+                    match Gpu::new(w.clone(), bench).await {
+                        Ok(g) => *slot.borrow_mut() = Some(g),
+                        Err(e) => set_hud(&e),
+                    }
+                    w.request_redraw();
+                });
             }
         }
         if self.opts.bench {
@@ -546,13 +590,14 @@ impl ApplicationHandler for Spike {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn run(el: EventLoop<()>, opts: Options) {
     el.set_control_flow(ControlFlow::Wait);
     let mut app = Spike::new(opts);
     el.run_app(&mut app).expect("event loop");
 }
 
-#[cfg(not(target_os = "android"))]
+#[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
 pub fn run_desktop(opts: Options) {
     env_logger::Builder::from_env(
         env_logger::Env::default().default_filter_or("info,wgpu_core=warn,wgpu_hal=warn"),
@@ -576,4 +621,42 @@ fn android_main(app: winit::platform::android::activity::AndroidApp) {
         .build()
         .expect("event loop");
     run(el, Options::default());
+}
+
+#[cfg(target_arch = "wasm32")]
+fn set_hud(text: &str) {
+    if let Some(el) = web_sys::window()
+        .and_then(|w| w.document())
+        .and_then(|d| d.get_element_by_id("hud"))
+    {
+        el.set_text_content(Some(text));
+    }
+}
+
+/// Browser entry point. URL options: `?mass=N&depth=N&chain=K`.
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen::prelude::wasm_bindgen(start)]
+pub fn web_start() {
+    use winit::platform::web::EventLoopExtWebSys;
+    console_error_panic_hook::set_once();
+    let _ = console_log::init_with_level(log::Level::Info);
+    let params = web_sys::window()
+        .and_then(|w| w.location().search().ok())
+        .and_then(|q| web_sys::UrlSearchParams::new_with_str(&q).ok());
+    let get = |k: &str| {
+        params
+            .as_ref()
+            .and_then(|p| p.get(k))
+            .and_then(|v| v.parse::<u64>().ok())
+    };
+    let opts = Options {
+        // Browser default is lighter: generation is single-threaded here.
+        mass: get("mass").unwrap_or(250_000) as usize,
+        depth: get("depth").unwrap_or(40) as usize,
+        start_chain: get("chain").map(|v| v as usize),
+        ..Options::default()
+    };
+    let el = EventLoop::new().expect("event loop");
+    el.set_control_flow(ControlFlow::Wait);
+    el.spawn_app(Spike::new(opts));
 }
