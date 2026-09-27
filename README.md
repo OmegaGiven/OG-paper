@@ -21,7 +21,7 @@ Proprietary infinite-canvas apps such as Endless Paper keep your work in undocum
 ## Try it
 
 - **Web:** https://omegagiven.github.io/OG-paper/ — open the app, then “Install app” / “Add to Home screen” for full screen.
-- **Windows, macOS, Linux, Android:** [latest release](https://github.com/OmegaGiven/OG-paper/releases/latest)
+- **Windows, macOS, Linux, Android:** [releases page](https://github.com/OmegaGiven/OG-paper/releases)
   (every push to `main` also produces builds under the CI run's artifacts).
 
 ## Planned stack
