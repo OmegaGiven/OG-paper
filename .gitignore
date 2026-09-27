@@ -3,3 +3,4 @@
 *.ogp-shm
 .DS_Store
 web/pkg/
+web/app/pkg/

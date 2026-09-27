@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/ogpaper-core", "crates/spike"]
+members = ["crates/ogpaper-core", "crates/ogpaper-file", "crates/spike", "crates/og-paper"]
 
 [workspace.package]
 edition = "2021"

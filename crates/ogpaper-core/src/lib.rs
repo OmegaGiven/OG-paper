@@ -9,12 +9,15 @@
 pub mod addr;
 pub mod camera;
 pub mod gen;
+pub mod history;
+pub mod hit;
 pub mod scene;
 pub mod visible;
 
 pub use addr::{CellAddr, Level};
 pub use camera::Camera;
-pub use scene::{Scene, Stroke};
+pub use history::{Change, History};
+pub use scene::{Brush, Point, Scene, Stroke};
 pub use visible::{query, DotInst, DrawList, Params, StrokeInst, TileInst};
 
 #[cfg(test)]

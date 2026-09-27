@@ -35,6 +35,29 @@ pub struct Node {
     pub near: u8,
 }
 
+/// How a stroke is drawn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[repr(u8)]
+pub enum Brush {
+    /// Round nib; width follows pressure.
+    #[default]
+    Pen = 0,
+    /// Round nib, constant width.
+    Marker = 1,
+    /// Wide translucent ink that darkens but never hides what is under it.
+    Highlighter = 2,
+}
+
+impl Brush {
+    pub fn from_u8(v: u8) -> Self {
+        match v {
+            1 => Brush::Marker,
+            2 => Brush::Highlighter,
+            _ => Brush::Pen,
+        }
+    }
+}
+
 /// Points are in the anchor cell's local space: [0,1] is the cell, and a
 /// stroke may overflow its cell by up to one cell side (so up to [-1, 2]).
 #[derive(Clone, Copy, Debug)]
@@ -46,7 +69,16 @@ pub struct Stroke {
     pub width: f32,
     /// RGBA8, straight alpha.
     pub color: u32,
+    pub brush: Brush,
+    /// Deleted strokes stay in the arrays (undo, file tombstones) but never draw.
+    pub deleted: bool,
+    /// Permanent id (UUIDv7 in files); 0 for synthetic content.
+    pub uid: u128,
 }
+
+/// A point: x, y in the anchor cell's local space, pressure in [0, 1], and a
+/// reserved lane (tilt later).
+pub type Point = [f32; 4];
 
 #[derive(Default)]
 pub struct Scene {
@@ -55,7 +87,7 @@ pub struct Scene {
     pub roots: Vec<u32>,
     pub roots_level: Level,
     pub strokes: Vec<Stroke>,
-    pub points: Vec<[f32; 2]>,
+    pub points: Vec<Point>,
 }
 
 impl Scene {
@@ -183,8 +215,22 @@ impl Scene {
         }
     }
 
-    /// Add a stroke anchored at `addr` with points in that cell's local space.
+    /// Add a pen stroke at full pressure (synthetic content, tests).
     pub fn add_stroke(&mut self, addr: &CellAddr, pts: &[[f32; 2]], width: f32, color: u32) -> u32 {
+        let pts: Vec<Point> = pts.iter().map(|p| [p[0], p[1], 1.0, 0.0]).collect();
+        self.add_stroke_styled(addr, &pts, width, color, Brush::Pen, 0)
+    }
+
+    /// Add a stroke anchored at `addr` with points in that cell's local space.
+    pub fn add_stroke_styled(
+        &mut self,
+        addr: &CellAddr,
+        pts: &[Point],
+        width: f32,
+        color: u32,
+        brush: Brush,
+        uid: u128,
+    ) -> u32 {
         let node = self.ensure(addr);
         let id = self.strokes.len() as u32;
         let start = self.points.len() as u32;
@@ -195,6 +241,9 @@ impl Scene {
             len: pts.len() as u32,
             width,
             color,
+            brush,
+            deleted: false,
+            uid,
         });
         self.nodes[node as usize].strokes.push(id);
         let mut n = node;
@@ -206,11 +255,64 @@ impl Scene {
         id
     }
 
+    /// Hide a stroke (undoable). Returns false if it was already deleted.
+    pub fn delete(&mut self, id: u32) -> bool {
+        self.set_deleted(id, true)
+    }
+
+    /// Bring back a deleted stroke. Returns false if it was not deleted.
+    pub fn restore(&mut self, id: u32) -> bool {
+        self.set_deleted(id, false)
+    }
+
+    fn set_deleted(&mut self, id: u32, deleted: bool) -> bool {
+        let s = &mut self.strokes[id as usize];
+        if s.deleted == deleted {
+            return false;
+        }
+        s.deleted = deleted;
+        // Keep subtree counts live so empty regions are skipped. (Occupancy
+        // masks may keep a stale bit until the next rebuild; harmless.)
+        let mut n = s.node;
+        while n != NONE {
+            let node = &mut self.nodes[n as usize];
+            if deleted {
+                node.subtree -= 1;
+            } else {
+                node.subtree += 1;
+            }
+            n = node.parent;
+        }
+        true
+    }
+
+    /// Points of one stroke.
+    pub fn stroke_points(&self, id: u32) -> &[Point] {
+        let s = &self.strokes[id as usize];
+        &self.points[s.start as usize..(s.start + s.len) as usize]
+    }
+
+    /// Anchor cell of one stroke.
+    pub fn stroke_cell(&self, id: u32) -> &CellAddr {
+        &self.nodes[self.strokes[id as usize].node as usize].addr
+    }
+
     /// Pick an anchor cell for a stroke whose points are given in camera-cell
     /// units relative to `cam_cell`'s origin, and return the points converted to
     /// that cell's local space. The anchor is the cell whose side is the
     /// smallest power of two >= the stroke's extent, containing its min corner.
     pub fn anchor_for(cam_cell: &CellAddr, pts: &[[f64; 2]]) -> (CellAddr, Vec<[f32; 2]>, f64) {
+        Self::anchor_for_min(cam_cell, pts, 1e-12)
+    }
+
+    /// Like [`Scene::anchor_for`], treating the stroke as at least `min_extent`
+    /// camera cells across (its ink width), so dots and short dashes anchor to a
+    /// cell as big as what is actually drawn.
+    pub fn anchor_for_min(
+        cam_cell: &CellAddr,
+        pts: &[[f64; 2]],
+        min_extent: f64,
+    ) -> (CellAddr, Vec<[f32; 2]>, f64) {
         let (mut lo, mut hi) = ([f64::MAX; 2], [f64::MIN; 2]);
         for p in pts {
             for a in 0..2 {
@@ -218,7 +320,10 @@ impl Scene {
                 hi[a] = hi[a].max(p[a]);
             }
         }
-        let extent = (hi[0] - lo[0]).max(hi[1] - lo[1]).max(1e-12);
+        let extent = (hi[0] - lo[0])
+            .max(hi[1] - lo[1])
+            .max(min_extent)
+            .max(1e-12);
         // side = 2^n camera cells.
         let n = extent.log2().ceil() as i64;
         let level = cam_cell.level - n;

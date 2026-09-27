@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>OG Paper</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #f5f3ec; }
+  canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; touch-action: none; outline: none; }
+</style>
+</head>
+<body>
+<script type="module">
+  import init from './pkg/og_paper.js';
+  init();
+  document.addEventListener('pointerdown', () => { const c = document.querySelector('canvas'); if (c) { c.tabIndex = 0; c.focus(); } });
+</script>
+</body>
+</html>

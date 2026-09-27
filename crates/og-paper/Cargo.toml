@@ -1,0 +1,42 @@
+[package]
+name = "og-paper"
+version = "0.1.0"
+description = "OG Paper: an open-source infinite canvas"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["lib", "cdylib"]
+
+[[bin]]
+name = "og-paper"
+path = "src/main.rs"
+
+[dependencies]
+ogpaper-core = { path = "../ogpaper-core" }
+wgpu = "30"
+winit = "0.30"
+egui = "0.36"
+egui-wgpu = "0.36"
+bytemuck = { version = "1", features = ["derive"] }
+log = "0.4"
+web-time = "1"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+pollster = "0.4"
+ogpaper-file = { path = "../ogpaper-file" }
+
+[target.'cfg(not(any(target_os = "android", target_arch = "wasm32")))'.dependencies]
+env_logger = "0.11"
+rfd = "0.15"
+egui-winit = { version = "0.36", default-features = false, features = ["links", "clipboard", "wayland", "x11"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wgpu = { version = "30", features = ["webgl"] }
+wasm-bindgen = "=0.2.129"
+wasm-bindgen-futures = "0.4"
+console_error_panic_hook = "0.1"
+console_log = "1"
+web-sys = { version = "0.3", features = ["Window", "MediaQueryList"] }

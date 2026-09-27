@@ -149,13 +149,17 @@ impl Ctx<'_> {
             // 1 of the cell); anything smaller draws nothing.
             if inside && side_px >= 4.0 {
                 for &s in &n.strokes {
-                    out.strokes.push(self.inst(s, origin, side));
+                    if !self.scene.strokes[s as usize].deleted {
+                        out.strokes.push(self.inst(s, origin, side));
+                    }
                 }
             }
             return;
         }
         for &s in &n.strokes {
-            out.strokes.push(self.inst(s, origin, side));
+            if !self.scene.strokes[s as usize].deleted {
+                out.strokes.push(self.inst(s, origin, side));
+            }
         }
         let child_depth = match tile_depth {
             Some(d) => d + 1,
@@ -273,7 +277,9 @@ pub fn query(scene: &Scene, cam: &Camera, vw: f64, vh: f64, params: Params, out:
                     let s = a.side_in(&cam.cell);
                     if ctx.overlaps(o[0] - s, o[1] - s, o[0] + 2.0 * s, o[1] + 2.0 * s) {
                         for &st in &n.strokes {
-                            out.strokes.push(ctx.inst(st, o, s));
+                            if !scene.strokes[st as usize].deleted {
+                                out.strokes.push(ctx.inst(st, o, s));
+                            }
                         }
                     }
                 }
