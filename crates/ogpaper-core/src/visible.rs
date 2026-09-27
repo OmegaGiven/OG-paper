@@ -67,6 +67,10 @@ pub struct DrawList {
     pub stats: Stats,
 }
 
+/// How far a cell's ink can reach, in cell sides, before and after its origin.
+const INK_BEFORE: f64 = 0.5;
+const INK_AFTER: f64 = 2.5;
+
 #[derive(Clone, Copy)]
 pub struct Params {
     /// Cells smaller than this on screen collapse to a dot.
@@ -126,12 +130,13 @@ impl Ctx<'_> {
         if n.subtree == 0 {
             return;
         }
-        // Strokes may overflow their cell by one side, so cull on the expanded rect.
+        // Ink reaches [-0.5, 2.5] cell sides from a cell's origin (points in
+        // [0, 2) plus at most half a side of stroke width), so cull on that.
         if !self.overlaps(
-            origin[0] - side,
-            origin[1] - side,
-            origin[0] + 2.0 * side,
-            origin[1] + 2.0 * side,
+            origin[0] - INK_BEFORE * side,
+            origin[1] - INK_BEFORE * side,
+            origin[0] + INK_AFTER * side,
+            origin[1] + INK_AFTER * side,
         ) {
             return;
         }
@@ -251,8 +256,10 @@ pub fn query(scene: &Scene, cam: &Camera, vw: f64, vh: f64, params: Params, out:
     }
 
     let anc = cam.cell.ancestor(top);
-    for dy in -1..=1 {
-        for dx in -1..=1 {
+    // Cells whose ink can reach the view: from 2 before to 1 after (ink runs
+    // to 2.5 sides past a cell's origin).
+    for dy in -2..=1 {
+        for dx in -2..=1 {
             let a = anc.offset(dx, dy);
             if let Some(id) = scene.lookup(&a) {
                 ctx.descend(id, a.origin_in(&cam.cell), a.side_in(&cam.cell), None, out);
@@ -261,12 +268,15 @@ pub fn query(scene: &Scene, cam: &Camera, vw: f64, vh: f64, params: Params, out:
     }
 
     // Ancestor levels: draw only their own strokes (their children are covered above).
-    let lowest = (top - params.ancestor_levels).max(scene.roots_level);
+    // Every coarser level up to the tree's top: a stroke drawn while zoomed
+    // far out stays visible however far you zoom into it.
+    let _ = params.ancestor_levels;
+    let lowest = scene.roots_level;
     let mut lvl = top - 1;
     while lvl >= lowest {
         let a0: CellAddr = cam.cell.ancestor(lvl);
-        for dy in -1..=1 {
-            for dx in -1..=1 {
+        for dy in -2..=1 {
+            for dx in -2..=1 {
                 let a = a0.offset(dx, dy);
                 if let Some(id) = scene.lookup(&a) {
                     let n = scene.node(id);
@@ -275,7 +285,12 @@ pub fn query(scene: &Scene, cam: &Camera, vw: f64, vh: f64, params: Params, out:
                     }
                     let o = a.origin_in(&cam.cell);
                     let s = a.side_in(&cam.cell);
-                    if ctx.overlaps(o[0] - s, o[1] - s, o[0] + 2.0 * s, o[1] + 2.0 * s) {
+                    if ctx.overlaps(
+                        o[0] - INK_BEFORE * s,
+                        o[1] - INK_BEFORE * s,
+                        o[0] + INK_AFTER * s,
+                        o[1] + INK_AFTER * s,
+                    ) {
                         for &st in &n.strokes {
                             if !scene.strokes[st as usize].deleted {
                                 out.strokes.push(ctx.inst(st, o, s));
@@ -290,4 +305,105 @@ pub fn query(scene: &Scene, cam: &Camera, vw: f64, vh: f64, params: Params, out:
     out.stats.strokes = out.strokes.len() as u32;
     out.stats.dots = out.dots.len() as u32;
     out.stats.tiles = out.tiles.len() as u32;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::gen::Rng;
+    use std::collections::HashSet;
+
+    /// Brute force: every stroke whose ink is on screen and whose cell is at
+    /// least `min_cell_px` must be in the draw list.
+    #[test]
+    fn query_matches_brute_force_under_random_pan_and_zoom() {
+        let mut rng = Rng::new(99);
+        let mut scene = Scene::new();
+        let mut cam = Camera::new(CellAddr::new(0, 0, 0), [0.5, 0.5], 800.0);
+        let (vw, vh) = (390.0 * 3.0, 844.0 * 3.0);
+        // Draw strokes the way the app does: at random zooms and places, with
+        // widths given in screen pixels.
+        for _ in 0..3000 {
+            cam.zoom_at(
+                2f64.powf(rng.range(-2.0, 2.0) as f64),
+                [
+                    rng.range(-500.0, 500.0) as f64,
+                    rng.range(-900.0, 900.0) as f64,
+                ],
+            );
+            cam.pan_px(
+                rng.range(-600.0, 600.0) as f64,
+                rng.range(-600.0, 600.0) as f64,
+            );
+            let n = 2 + rng.int(20) as usize;
+            let (x0, y0) = (
+                rng.range(-600.0, 600.0) as f64,
+                rng.range(-1200.0, 1200.0) as f64,
+            );
+            let len = rng.range(2.0, 900.0) as f64;
+            let pts: Vec<[f64; 2]> = (0..n)
+                .map(|i| {
+                    let t = i as f64 / (n - 1) as f64;
+                    cam.screen_to_cam([x0 + t * len, y0 + (t * 7.0).sin() * len * 0.2])
+                })
+                .collect();
+            let width_px = rng.range(1.0, 40.0) as f64;
+            let width_cam = width_px / cam.ppc();
+            let (cell, local, side) = Scene::anchor_for_min(&cam.cell, &pts, width_cam);
+            let p4: Vec<[f32; 4]> = local.iter().map(|l| [l[0], l[1], 1.0, 0.0]).collect();
+            scene.add_stroke_styled(
+                &cell,
+                &p4,
+                (width_cam / side) as f32,
+                0,
+                crate::scene::Brush::Pen,
+                1,
+            );
+        }
+        let params = Params {
+            min_cell_px: 2.0,
+            tile_px: 0.0,
+            ancestor_levels: 8,
+        };
+        let mut out = DrawList::default();
+        let mut missing_total = 0;
+        for step in 0..400 {
+            cam.zoom_at(2f64.powf(rng.range(-1.5, 1.5) as f64), [0.0, 0.0]);
+            cam.pan_px(
+                rng.range(-900.0, 900.0) as f64,
+                rng.range(-900.0, 900.0) as f64,
+            );
+            query(&scene, &cam, vw, vh, params, &mut out);
+            let drawn: HashSet<u32> = out.strokes.iter().map(|s| s.stroke).collect();
+            let ppc = cam.ppc();
+            for (id, s) in scene.strokes.iter().enumerate() {
+                let cell = scene.stroke_cell(id as u32);
+                let side_px = cell.side_in(&cam.cell) * ppc;
+                if side_px < params.min_cell_px || side_px > 1e7 {
+                    continue;
+                }
+                let hw = s.width as f64 * side_px * 0.5;
+                let (mut lo, mut hi) = ([f64::MAX; 2], [f64::MIN; 2]);
+                for p in scene.stroke_points(id as u32) {
+                    let q = cam.to_screen(cell, [p[0] as f64, p[1] as f64]);
+                    let q = [q[0] + vw * 0.5, q[1] + vh * 0.5];
+                    for a in 0..2 {
+                        lo[a] = lo[a].min(q[a] - hw);
+                        hi[a] = hi[a].max(q[a] + hw);
+                    }
+                }
+                let on_screen = hi[0] >= 0.0 && lo[0] <= vw && hi[1] >= 0.0 && lo[1] <= vh;
+                if on_screen && !drawn.contains(&(id as u32)) {
+                    missing_total += 1;
+                    if missing_total <= 5 {
+                        eprintln!(
+                            "step {step}: stroke {id} missing: cell level {} (cam level {}), side {:.1}px, bbox {:?}..{:?}",
+                            cell.level, cam.cell.level, side_px, lo, hi
+                        );
+                    }
+                }
+            }
+        }
+        assert_eq!(missing_total, 0, "strokes on screen but not drawn");
+    }
 }

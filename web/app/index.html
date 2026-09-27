@@ -2,18 +2,52 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#f5f3ec">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
 <title>OG Paper</title>
 <style>
-  html, body { margin: 0; height: 100%; overflow: hidden; background: #f5f3ec; }
-  canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; touch-action: none; outline: none; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #f5f3ec; overscroll-behavior: none; }
+  /* dvh = the height actually visible between the browser's toolbars; the
+     safe-area insets keep the corner buttons clear of notches/home bars. */
+  canvas { position: fixed; left: 0; top: 0; display: block; touch-action: none; outline: none;
+           width: calc(100vw - env(safe-area-inset-right));
+           height: calc(100vh - env(safe-area-inset-bottom));
+           height: calc(100dvh - env(safe-area-inset-bottom)); }
+  #fs { position: fixed; top: 10px; right: 10px; z-index: 10; width: 40px; height: 40px; border-radius: 20px;
+        border: 1px solid #c8c6be; background: #fcfbf8; box-shadow: 0 1px 3px rgba(0,0,0,.15); padding: 0; display: none; }
+  #fs svg { width: 22px; height: 22px; }
 </style>
 </head>
 <body>
+<button id="fs" title="Full screen" aria-label="Full screen">
+  <svg viewBox="0 0 24 24" fill="none" stroke="#2d2d37" stroke-width="2.2" stroke-linecap="round">
+    <path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>
+</button>
 <script type="module">
   import init from './pkg/og_paper.js';
   init();
   document.addEventListener('pointerdown', () => { const c = document.querySelector('canvas'); if (c) { c.tabIndex = 0; c.focus(); } });
+
+  // Full screen: a real DOM button, because browsers only allow it from a
+  // direct tap. Hidden when already full screen or installed as an app.
+  const fs = document.getElementById('fs');
+  const standalone = matchMedia('(display-mode: fullscreen), (display-mode: standalone)').matches;
+  const canFs = document.documentElement.requestFullscreen && !standalone;
+  const sync = () => { fs.style.display = canFs && !document.fullscreenElement ? 'block' : 'none'; };
+  fs.addEventListener('click', async () => {
+    try { await document.documentElement.requestFullscreen({ navigationUI: 'hide' }); } catch (e) { console.warn(e); }
+  });
+  document.addEventListener('fullscreenchange', sync);
+  sync();
+
+  // Installable app (Add to Home screen): opens with no browser bars.
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 </script>
 </body>
 </html>
