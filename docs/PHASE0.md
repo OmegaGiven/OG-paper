@@ -69,6 +69,9 @@ seconds on the phone). CI also builds the APK as a downloadable artifact.
   dense page). Occupancy tiles + skipping cells with nothing in the next three
   levels cut that to ~500 tiles and < 0.1 ms: the design's thumbnail step is needed
   from the start, and a 16×16 bitmask is a cheap first version of it.
+- Rule adopted (2026-09-27): content that would be under ~1 px on screen draws
+  nothing — no dots or placeholder marks. Tiles only record content that lands
+  at >= 1 px when drawn.
 - Strokes are anchored to the cell matching their size and may overflow it by
   one cell side; culling on the expanded cell rect handles that.
 - Stroke width lives in cell-local units, so the ring around each deeper scene

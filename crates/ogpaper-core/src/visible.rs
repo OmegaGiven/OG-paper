@@ -10,8 +10,8 @@
 //!    least twice the viewport (exact big-integer math, done once per frame).
 //! 2. Descend through existing children only, culling off-screen cells, all in
 //!    small camera-relative f64 numbers.
-//! 3. Stop at cells smaller than `min_cell_px`: their whole subtree becomes one
-//!    dot, so millions of tiny strokes cost one instance each per ~8x8 px.
+//! 3. The first cell under `tile_px` draws its content 4-6 levels down as one
+//!    occupancy tile; content that would be under a pixel draws nothing.
 //! 4. Also draw the strokes of a few ancestor levels (big objects covering the view).
 
 use crate::addr::CellAddr;
@@ -144,15 +144,13 @@ impl Ctx<'_> {
         };
         let inside = self.overlaps(origin[0], origin[1], origin[0] + side, origin[1] + side);
         if side_px < self.params.min_cell_px {
-            // Only reached for top cells when zoomed far out.
-            if inside {
-                let c = px([origin[0] + side * 0.5, origin[1] + side * 0.5]);
-                out.dots.push(DotInst {
-                    x: c[0],
-                    y: c[1],
-                    size: side_px.max(1.5) as f32,
-                    alpha: (0.25 + 0.1 * (n.subtree as f32).log2()).min(0.9),
-                });
+            // Only reached when zoomed far out past the tile level. Draw this
+            // cell's own strokes while they are still >= ~1 px (they span 1/4 to
+            // 1 of the cell); anything smaller draws nothing.
+            if inside && side_px >= 4.0 {
+                for &s in &n.strokes {
+                    out.strokes.push(self.inst(s, origin, side));
+                }
             }
             return;
         }
@@ -162,7 +160,10 @@ impl Ctx<'_> {
         let child_depth = match tile_depth {
             Some(d) => d + 1,
             None if side_px < self.params.tile_px => {
-                if inside && n.mask.iter().any(|&w| w != 0) {
+                // The mask holds content 4-6 levels down; at >= 64 px that content
+                // is >= 1 px. Smaller tile nodes skip it (sub-pixel draws nothing).
+                if inside && side_px >= self.params.tile_px * 0.5 && n.mask.iter().any(|&w| w != 0)
+                {
                     let p = px(origin);
                     out.tiles.push(TileInst {
                         x: p[0],

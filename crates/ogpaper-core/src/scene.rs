@@ -26,8 +26,10 @@ pub struct Node {
     pub subtree: u32,
     /// Quadrant within the parent (cached so walks never touch big integers).
     pub quad: u8,
-    /// 16x16 occupancy of content 4+ levels below this node (bit = y*16 + x).
-    /// Lets a whole region of too-small-to-read content draw as one tile.
+    /// 16x16 occupancy of content 4 to 6 levels below this node (bit = y*16 + x).
+    /// Lets a whole region of too-small-to-read content draw as one tile. Content
+    /// 7+ levels down is left out: when the tile is drawn (node >= 64 px) it is
+    /// under a pixel, and sub-pixel content draws nothing.
     pub mask: [u32; 8],
     /// Bit d set if a stroke sits exactly d levels below (d = 0..=3).
     pub near: u8,
@@ -165,7 +167,7 @@ impl Scene {
             if d <= 3 {
                 self.nodes[n as usize].near |= 1 << d;
             }
-            if d >= 4 {
+            if (4..=6).contains(&d) {
                 let bx = ((fo[0] * 16.0) as usize).min(15);
                 let by = ((fo[1] * 16.0) as usize).min(15);
                 let bit = by * 16 + bx;
