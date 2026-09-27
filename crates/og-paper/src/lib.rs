@@ -35,6 +35,12 @@ const VIEW: Params = Params {
     ancestor_levels: 8,
 };
 const ERASER_PX: f32 = 10.0;
+/// How far (physical px) a finger may drift and still count as a tap.
+const TAP_SLOP: f64 = 24.0;
+
+fn dist(a: [f64; 2], b: [f64; 2]) -> f64 {
+    (a[0] - b[0]).hypot(a[1] - b[1])
+}
 
 fn home_camera() -> Camera {
     Camera::new(CellAddr::new(0, 0, 0), [0.5, 0.5], 800.0)
@@ -80,6 +86,8 @@ pub struct App {
     touch_ink: Option<u64>,
     /// Multi-finger tap tracking: (started, most fingers, moved too far).
     multi_tap: Option<(Instant, usize, bool)>,
+    /// Where each current touch started (tap vs. pinch/drag detection).
+    touch_start: HashMap<u64, [f64; 2]>,
     message_until: Option<Instant>,
     last_dbg: (u32, u32, u32),
 }
@@ -113,6 +121,7 @@ impl App {
             touches: HashMap::new(),
             touch_ink: None,
             multi_tap: None,
+            touch_start: HashMap::new(),
             message_until: None,
             last_dbg: (0, 0, 0),
         }
@@ -485,15 +494,30 @@ impl App {
                         self.end(true);
                     }
                     let n = self.touches.len() + 1;
+                    // Fingers already down that have travelled are a gesture, not a tap.
+                    let travelled = self.touches.iter().any(|(k, p)| {
+                        self.touch_start
+                            .get(k)
+                            .is_some_and(|s0| dist(*s0, *p) > TAP_SLOP)
+                    });
                     let e = self.multi_tap.get_or_insert((Instant::now(), n, false));
                     e.1 = e.1.max(n);
+                    e.2 |= travelled;
                 }
+                self.touch_start.insert(id, pos);
                 self.touches.insert(id, pos);
             }
             TouchPhase::Moved => {
                 let Some(&old) = self.touches.get(&id) else {
                     return;
                 };
+                // A finger that travels from where it started makes this a
+                // pinch/pan, never a multi-finger tap.
+                if let (Some(e), Some(s0)) = (self.multi_tap.as_mut(), self.touch_start.get(&id)) {
+                    if dist(*s0, pos) > TAP_SLOP {
+                        e.2 = true;
+                    }
+                }
                 if self.touch_ink == Some(id) {
                     self.moved(old, pos, pressure);
                 } else if self.touches.len() >= 2 {
@@ -517,10 +541,11 @@ impl App {
                     self.end(phase == TouchPhase::Cancelled);
                 }
                 self.touches.remove(&id);
+                self.touch_start.remove(&id);
                 // Two-finger tap = undo, three-finger tap = redo.
                 if self.touches.is_empty() {
                     if let Some((t0, n, moved)) = self.multi_tap.take() {
-                        if !moved && t0.elapsed() < Duration::from_millis(350) {
+                        if !moved && t0.elapsed() < Duration::from_millis(300) {
                             match n {
                                 2 => self.undo_redo(false),
                                 3 => self.undo_redo(true),
