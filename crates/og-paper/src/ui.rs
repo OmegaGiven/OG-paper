@@ -206,8 +206,9 @@ fn geo(ctx: &egui::Context, touch: bool) -> Geo {
     let tool = pos2(screen.right() - m - r, screen.bottom() - m - r);
     let color = tool - vec2(0.0, 2.0 * r + 14.0);
     let small = r * 0.72;
-    let undo = tool - vec2(r + 14.0 + small, r - small);
-    let redo = undo - vec2(2.0 * small + 10.0, 0.0);
+    // Redo sits next to the tool button, undo to its left.
+    let redo = tool - vec2(r + 14.0 + small, r - small);
+    let undo = redo - vec2(2.0 * small + 10.0, 0.0);
     Geo {
         r,
         tool,
