@@ -263,6 +263,8 @@ impl Spike {
         if let Some(g) = self.gpu.as_mut() {
             g.upload_new(&self.scene, first);
         }
+        // Show the new stroke count right away.
+        self.fps_window.0 -= Duration::from_secs(1);
         self.wet.clear();
         self.dirty = true;
     }
