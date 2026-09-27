@@ -34,9 +34,11 @@ const VIEW: Params = Params {
     tile_px: 0.0,
     ancestor_levels: 8,
 };
-const ERASER_PX: f32 = 10.0;
+/// Eraser and picker reach, in points (scaled to physical pixels by `ppp`).
+const ERASER_PT: f64 = 10.0;
+const PICK_PT: f64 = 8.0;
 /// How far (physical px) a finger may drift and still count as a tap.
-const TAP_SLOP: f64 = 24.0;
+const TAP_SLOP_PT: f64 = 10.0;
 
 fn dist(a: [f64; 2], b: [f64; 2]) -> f64 {
     (a[0] - b[0]).hypot(a[1] - b[1])
@@ -53,6 +55,7 @@ enum Gesture {
     Ink,
     Erase,
     Pan,
+    Pick,
 }
 
 pub struct App {
@@ -127,6 +130,22 @@ impl App {
         }
     }
 
+    /// Physical pixels per point: widths and touch radii are in points, so a
+    /// 3 px pen looks the same on a 1x monitor and a 3x phone.
+    fn ppp(&self) -> f64 {
+        #[cfg(target_arch = "wasm32")]
+        {
+            web_dpr() as f64
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.window
+                .as_ref()
+                .map(|w| w.scale_factor())
+                .unwrap_or(1.0)
+        }
+    }
+
     fn size(&self) -> [f64; 2] {
         self.gpu
             .as_ref()
@@ -191,7 +210,7 @@ impl App {
                     .screen_to_cam(self.centred([p[0] as f64, p[1] as f64]))
             })
             .collect();
-        let width_cam = ink.width as f64 / ppc;
+        let width_cam = ink.width as f64 * self.ppp() / ppc;
         let (cell, local, side) = Scene::anchor_for_min(&self.cam.cell, &cam_pts, width_cam);
         let pts: Vec<[f32; 4]> = local
             .iter()
@@ -222,7 +241,7 @@ impl App {
             &self.scene,
             &self.draw,
             [p[0] as f32, p[1] as f32],
-            ERASER_PX,
+            (ERASER_PT * self.ppp()) as f32,
         );
         for id in hits {
             if self.scene.delete(id) {
@@ -252,6 +271,7 @@ impl App {
             _ if self.space => Gesture::Pan,
             Tool::Hand => Gesture::Pan,
             Tool::Eraser => Gesture::Erase,
+            Tool::Picker => Gesture::Pick,
             _ => Gesture::Ink,
         };
         match self.gesture {
@@ -260,6 +280,7 @@ impl App {
                 self.ink_add(p, pressure);
             }
             Gesture::Erase => self.erase_at(p),
+            Gesture::Pick => self.pick_preview(p),
             _ => {}
         }
     }
@@ -270,7 +291,7 @@ impl App {
             Gesture::Erase => {
                 // Sweep the whole path so fast swipes cannot skip a stroke.
                 let d = (to[0] - from[0]).hypot(to[1] - from[1]);
-                let steps = (d / (ERASER_PX as f64 * 0.5)).ceil().max(1.0) as usize;
+                let steps = (d / (ERASER_PT * self.ppp() * 0.5)).ceil().max(1.0) as usize;
                 for i in 1..=steps {
                     let t = i as f64 / steps as f64;
                     self.erase_at([
@@ -283,7 +304,46 @@ impl App {
                 self.cam.pan_px(to[0] - from[0], to[1] - from[1]);
                 self.view_changed();
             }
+            Gesture::Pick => self.pick_preview(to),
             Gesture::None => {}
+        }
+    }
+
+    /// Color of the topmost stroke under screen point `p` (physical px).
+    fn color_at(&self, p: [f64; 2]) -> Option<egui::Color32> {
+        let ids = hit::strokes_near(
+            &self.scene,
+            &self.draw,
+            [p[0] as f32, p[1] as f32],
+            (PICK_PT * self.ppp()) as f32,
+        );
+        // Ids grow with creation, and newer ink draws on top.
+        let top = *ids.iter().max()?;
+        let [r, g, b, _] = self.scene.strokes[top as usize].color.to_le_bytes();
+        Some(egui::Color32::from_rgb(r, g, b))
+    }
+
+    fn pick_preview(&mut self, p: [f64; 2]) {
+        let ppp = self.ppp() as f32;
+        self.ui.pick_preview = Some((
+            egui::pos2(p[0] as f32 / ppp, p[1] as f32 / ppp),
+            self.color_at(p),
+        ));
+        self.redraw();
+    }
+
+    /// Finish a pick: hand the color to the last ink tool and switch back to it.
+    fn pick_end(&mut self) {
+        let picked = self.ui.pick_preview.take().and_then(|(_, c)| c);
+        match picked {
+            Some(c) => {
+                let back = self.ui.last_ink;
+                self.ui.tool = back;
+                if let Some(ink) = self.ui.ink() {
+                    ink.color = c;
+                }
+            }
+            None => self.say("No ink here — tap a stroke to take its color"),
         }
     }
 
@@ -292,6 +352,8 @@ impl App {
             Gesture::Ink if !cancel => self.ink_commit(),
             Gesture::Ink => self.wet.clear(),
             Gesture::Erase => self.erase_end(),
+            Gesture::Pick if !cancel => self.pick_end(),
+            Gesture::Pick => self.ui.pick_preview = None,
             _ => {}
         }
         self.gesture = Gesture::None;
@@ -468,11 +530,19 @@ impl App {
             (true, _, "n") => self.action(Action::New),
             (true, _, "o") => self.action(Action::Open),
             (true, true, "s") | (true, false, "s") => self.action(Action::SaveAs),
-            (false, _, "1") => self.ui.tool = Tool::Pen,
-            (false, _, "2") => self.ui.tool = Tool::Marker,
-            (false, _, "3") => self.ui.tool = Tool::Highlighter,
+            (false, _, "1") => (self.ui.tool, self.ui.last_ink) = (Tool::Pen, Tool::Pen),
+            (false, _, "2") => (self.ui.tool, self.ui.last_ink) = (Tool::Marker, Tool::Marker),
+            (false, _, "3") => {
+                (self.ui.tool, self.ui.last_ink) = (Tool::Highlighter, Tool::Highlighter)
+            }
             (false, _, "e") => self.ui.tool = Tool::Eraser,
             (false, _, "h") => self.ui.tool = Tool::Hand,
+            (false, _, "i") => {
+                if self.ui.tool.brush().is_some() {
+                    self.ui.last_ink = self.ui.tool;
+                }
+                self.ui.tool = Tool::Picker;
+            }
             _ => return false,
         }
         self.redraw();
@@ -482,6 +552,7 @@ impl App {
     // ---- touch -----------------------------------------------------------
 
     fn touch(&mut self, id: u64, phase: TouchPhase, pos: [f64; 2], pressure: f32) {
+        let slop_scale = self.ppp();
         match phase {
             TouchPhase::Started => {
                 if self.touches.is_empty() {
@@ -498,7 +569,7 @@ impl App {
                     let travelled = self.touches.iter().any(|(k, p)| {
                         self.touch_start
                             .get(k)
-                            .is_some_and(|s0| dist(*s0, *p) > TAP_SLOP)
+                            .is_some_and(|s0| dist(*s0, *p) > TAP_SLOP_PT * slop_scale)
                     });
                     let e = self.multi_tap.get_or_insert((Instant::now(), n, false));
                     e.1 = e.1.max(n);
@@ -514,7 +585,7 @@ impl App {
                 // A finger that travels from where it started makes this a
                 // pinch/pan, never a multi-finger tap.
                 if let (Some(e), Some(s0)) = (self.multi_tap.as_mut(), self.touch_start.get(&id)) {
-                    if dist(*s0, pos) > TAP_SLOP {
+                    if dist(*s0, pos) > TAP_SLOP_PT * slop_scale {
                         e.2 = true;
                     }
                 }
@@ -655,7 +726,7 @@ impl App {
                 let [r, g, b, a] = ink.color.to_array();
                 Some(Wet {
                     pts: &self.wet,
-                    width_px: ink.width,
+                    width_px: ink.width * self.ppp() as f32,
                     color: u32::from_le_bytes([r, g, b, a]),
                     brush,
                 })

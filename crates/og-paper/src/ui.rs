@@ -19,12 +19,15 @@ pub enum Tool {
     Highlighter,
     Eraser,
     Hand,
+    /// Eyedropper: take the color of the ink under the finger.
+    Picker,
 }
 
-const TOOLS: [Tool; 5] = [
+const TOOLS: [Tool; 6] = [
     Tool::Pen,
     Tool::Marker,
     Tool::Highlighter,
+    Tool::Picker,
     Tool::Eraser,
     Tool::Hand,
 ];
@@ -46,6 +49,7 @@ impl Tool {
             Tool::Highlighter => "Highlighter",
             Tool::Eraser => "Eraser",
             Tool::Hand => "Pan",
+            Tool::Picker => "Picker",
         }
     }
 }
@@ -69,6 +73,10 @@ pub enum Menu {
 
 pub struct UiState {
     pub tool: Tool,
+    /// The ink tool the picker hands its color to (the last one used).
+    pub last_ink: Tool,
+    /// Picker loupe while dragging: position (points) and the color under it.
+    pub pick_preview: Option<(Pos2, Option<Color32>)>,
     /// Hue kept while the color is grey, so the dial remembers it.
     pub dial_hue: f32,
     pub pen: InkSettings,
@@ -89,6 +97,8 @@ impl Default for UiState {
     fn default() -> Self {
         Self {
             tool: Tool::Pen,
+            last_ink: Tool::Pen,
+            pick_preview: None,
             dial_hue: 0.0,
             pen: InkSettings {
                 color: Color32::from_rgb(28, 28, 36),
@@ -234,7 +244,7 @@ pub fn draw(ctx: &egui::Context, st: &mut UiState) -> Vec<Action> {
         .union(sq(g.undo, small))
         .union(sq(g.redo, small));
     if t > 0.0 {
-        let reach = g.r * 5.4 * t + g.r * 1.2;
+        let reach = g.r * (5.4 + 0.9 * (TOOLS.len() as f32 - 5.0)) * t + g.r * 1.2;
         bbox = bbox.union(Rect::from_min_max(
             g.tool - vec2(reach, reach + 16.0),
             g.tool + vec2(g.r, g.r),
@@ -253,7 +263,7 @@ pub fn draw(ctx: &egui::Context, st: &mut UiState) -> Vec<Action> {
             // ---- tool fan: a quarter circle up and left of the tool button
             if t > 0.0 {
                 let n = TOOLS.len();
-                let radius = g.r * 5.4 * t;
+                let radius = g.r * (5.4 + 0.9 * (n as f32 - 5.0)) * t;
                 for (i, &tool) in TOOLS.iter().enumerate() {
                     let a = PI + FRAC_PI_2 * (i as f32 / (n - 1) as f32);
                     let pc = g.tool + Vec2::angled(a) * radius;
@@ -283,6 +293,9 @@ pub fn draw(ctx: &egui::Context, st: &mut UiState) -> Vec<Action> {
                             st.menu = Menu::Settings;
                         } else {
                             st.tool = tool;
+                            if tool.brush().is_some() {
+                                st.last_ink = tool;
+                            }
                             st.menu = Menu::None;
                         }
                     }
@@ -468,6 +481,28 @@ pub fn draw(ctx: &egui::Context, st: &mut UiState) -> Vec<Action> {
             });
         });
 
+    // Picker loupe: a disc above the finger showing the color under it.
+    if let Some((at, col)) = st.pick_preview {
+        let r = if st.touch_ui { 34.0 } else { 26.0 };
+        let c = at - vec2(0.0, r + 40.0);
+        let p = ctx.layer_painter(egui::LayerId::new(Order::Tooltip, Id::new("loupe")));
+        p.circle_filled(c + vec2(0.0, 2.0), r + 4.0, Color32::from_black_alpha(50));
+        p.circle_filled(c, r + 3.0, FACE);
+        match col {
+            Some(col) => {
+                p.circle_filled(c, r, col);
+            }
+            None => {
+                p.circle_stroke(c, r * 0.8, Stroke::new(2.0, EDGE));
+                p.line_segment(
+                    [c + vec2(-r * 0.5, r * 0.5), c + vec2(r * 0.5, -r * 0.5)],
+                    Stroke::new(2.0, EDGE),
+                );
+            }
+        }
+        p.circle_stroke(at, 6.0, Stroke::new(2.0, INKY));
+    }
+
     if let Some(msg) = &st.message {
         egui::Area::new(Id::new("msg"))
             .anchor(Align2::CENTER_TOP, vec2(0.0, 14.0))
@@ -550,6 +585,7 @@ fn tool_icon(p: &egui::Painter, c: Pos2, r: f32, tool: Tool, ink: Color32) {
                 Stroke::new(1.5, INKY),
             );
         }
+        Tool::Picker => eyedropper(p, c, r, ink),
         Tool::Hand => {
             let st = Stroke::new(r * 0.09, INKY);
             for dir in [
@@ -613,6 +649,7 @@ fn color_dial(ctx: &egui::Context, st: &mut UiState, open: f32) {
     let hl = st.tool == Tool::Highlighter;
     let mut dial_hue = st.dial_hue;
     let mut close = false;
+    let mut pick = false;
     egui::Area::new(Id::new("color_dial"))
         .order(Order::Foreground)
         .fixed_pos(area.min)
@@ -727,6 +764,20 @@ fn color_dial(ctx: &egui::Context, st: &mut UiState, open: f32) {
                 close = true;
             }
 
+            // Eyedropper, just outside the dial's lower-left edge.
+            let ep = center + vec2(-r_out * 0.86, r_out * 0.86);
+            let er = (r_out * 0.12).max(20.0);
+            let eresp = ui.interact(
+                Rect::from_center_size(ep, Vec2::splat(2.0 * er)),
+                Id::new("dial_picker"),
+                Sense::click(),
+            );
+            disc(&p, ep, er, FACE, false);
+            eyedropper(&p, ep, er, INKY);
+            if eresp.clicked() {
+                pick = true;
+            }
+
             // Saturation and brightness bars.
             let hsv = {
                 let mut h = HsvaGamma::from(ink.color);
@@ -805,4 +856,23 @@ fn color_dial(ctx: &egui::Context, st: &mut UiState, open: f32) {
     if close {
         st.menu = Menu::None;
     }
+    if pick {
+        if st.tool.brush().is_some() {
+            st.last_ink = st.tool;
+        }
+        st.tool = Tool::Picker;
+        st.menu = Menu::None;
+    }
+}
+
+/// A pipette: glass tube tilted up-right with a rubber bulb.
+fn eyedropper(p: &egui::Painter, c: Pos2, r: f32, tip: Color32) {
+    let s = r * 0.5;
+    let a = c + vec2(-s * 0.95, s * 0.95);
+    let b = c + vec2(s * 0.35, -s * 0.35);
+    p.line_segment([a, b], Stroke::new(r * 0.16, INKY));
+    p.line_segment([a, a + (b - a) * 0.25], Stroke::new(r * 0.12, tip));
+    p.circle_filled(c + vec2(s * 0.6, -s * 0.6), r * 0.2, INKY);
+    let n = vec2(1.0, 1.0).normalized() * r * 0.22;
+    p.line_segment([b - n, b + n], Stroke::new(r * 0.1, INKY));
 }

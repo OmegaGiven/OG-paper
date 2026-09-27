@@ -307,11 +307,13 @@ impl Renderer {
 
         let size = window.inner_size();
         let caps = surface.get_capabilities(&adapter);
+        // Colors are sRGB bytes end to end (UI and ink alike), so use a surface
+        // that stores them as-is rather than one that re-encodes to sRGB.
         let format = caps
             .formats
             .iter()
             .copied()
-            .find(|f| f.is_srgb())
+            .find(|f| !f.is_srgb())
             .unwrap_or(caps.formats[0]);
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
