@@ -1,4 +1,4 @@
-# `.ogpaper` file format specification
+# `.ogp` file format specification
 
 Licensed under [CC BY 4.0](LICENSE) — anyone may implement the format; copies of this spec must credit
 "OG Paper, by OmegaGiven and contributors".

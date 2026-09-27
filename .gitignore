@@ -1,4 +1,4 @@
 /target
-*.ogpaper-wal
-*.ogpaper-shm
+*.ogp-wal
+*.ogp-shm
 .DS_Store

@@ -15,7 +15,7 @@ Proprietary infinite-canvas apps such as Endless Paper keep your work in undocum
 - **Truly endless** — unbounded zoom depth, not just 0.1×–10×. Only what's visible and big enough to see gets drawn.
 - **Everywhere** — Windows, macOS, Linux, Android, iOS/iPadOS and the web, on phones, tablets and desktops.
 - **Fast** — 2024 flagship phones are the performance bar: 120 fps pan/zoom, low-latency ink.
-- **Files you own** — one `.ogpaper` file per canvas, open spec, plus SVG/PDF/PNG/JSON and self-contained HTML exports.
+- **Files you own** — one `.ogp` file per canvas, open spec, plus SVG/PDF/PNG/JSON and self-contained HTML exports.
 - **Sync without a company** — multi-device sync through a folder you already sync (iCloud, Google Drive, Dropbox, Syncthing) or a relay you self-host for free.
 
 ## Planned stack

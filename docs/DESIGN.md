@@ -59,7 +59,7 @@ flowchart TB
     SC --> ST[Storage: SQLite]
   end
   D & A & I & W --> core
-  ST --> F[.ogpaper file]
+  ST --> F[.ogp file]
   F --> X[Exports: SVG, PDF, PNG, JSON, HTML]
 ```
 
@@ -127,7 +127,7 @@ Design targets to verify in Phase 0, not measured numbers.
 
 ## Data model and file format
 
-A canvas is one `.ogpaper` file: a SQLite database with a published, openly licensed schema. SQLite is a [Library of Congress recommended storage format](https://www.sqlite.org/locrsf.html) and its developers [intend to support it through 2050](https://www.sqlite.org/lts.html).
+A canvas is one `.ogp` file: a SQLite database with a published, openly licensed schema. SQLite is a [Library of Congress recommended storage format](https://www.sqlite.org/locrsf.html) and its developers [intend to support it through 2050](https://www.sqlite.org/lts.html).
 
 ### Schema (v1 draft)
 
@@ -158,7 +158,7 @@ A canvas is one `.ogpaper` file: a SQLite database with a published, openly lice
 
 ## Multi-device sync (v1)
 
-Local-first: every device keeps a full `.ogpaper` file and exchanges small op-log segments merged by a simple CRDT. Syncing the live SQLite file itself through Dropbox/iCloud/Syncthing would corrupt it, so only append-only segments travel.
+Local-first: every device keeps a full `.ogp` file and exchanges small op-log segments merged by a simple CRDT. Syncing the live SQLite file itself through Dropbox/iCloud/Syncthing would corrupt it, so only append-only segments travel.
 
 - **Clock:** hybrid logical clock + device id → one total order everywhere.
 - **Objects:** add-wins set keyed by UUIDv7; deletes are tombstones.
@@ -171,20 +171,20 @@ Local-first: every device keeps a full `.ogpaper` file and exchanges small op-lo
 | Transport | How it works | Good for |
 | --- | --- | --- |
 | Sync folder (v1) | Each device writes `sync/<device-id>/<seq>.ops` into a folder synced by iCloud Drive, Google Drive, Dropbox, OneDrive, Syncthing or Nextcloud | Zero setup; minutes of delay |
-| Self-hosted relay (v1) | `ogpaper-relay`, a small Rust server, store-and-forward over WebSocket | Near-real-time across a user's devices |
+| Self-hosted relay (v1) | `ogpaper-relay`, a small Rust server in one Docker container, store-and-forward over WebSocket | Near-real-time across a user's devices |
 | LAN peer-to-peer (later) | mDNS discovery | No cloud at all |
 
 Relay traffic is end-to-end encrypted (XChaCha20-Poly1305, key shared by QR code), so a relay operator sees only ciphertext.
 
 ### Free ways to run a relay
 
-The project hosts nothing. The relay is written once in Rust and built as a Docker image and as a Cloudflare Worker (workers-rs).
+The project hosts nothing. The relay is written once in Rust. v1 ships the Docker image; a Cloudflare Worker build (workers-rs) follows in a point release.
 
 | Option | Cost | Catches |
 | --- | --- | --- |
 | Sync folder (no relay) | Free with existing cloud storage | Not live |
 | Home machine + Tailscale | Free: old laptop, Pi or NAS runs the Docker image | Machine must stay on |
-| Own Cloudflare account (Worker + Durable Object) | Free plan: [100k requests/day, 100k SQLite rows written/day, 5 GB](https://developers.cloudflare.com/durable-objects/platform/pricing/) | Batch strokes per segment to stay far under limits |
+| Own Cloudflare account (Worker + Durable Object) | Free plan: [100k requests/day, 100k SQLite rows written/day, 5 GB](https://developers.cloudflare.com/durable-objects/platform/pricing/) | Point release after v1; batch strokes per segment to stay far under limits |
 | Oracle Cloud Always Free VM | [2 Arm OCPUs, 12 GB RAM, 10 TB/mo egress](https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm) | Idle instances may be reclaimed |
 
 ## Tech stack
@@ -202,7 +202,7 @@ The project hosts nothing. The relay is written once in Rust and built as a Dock
 | Big integers | i64 fast path, num-bigint fallback |
 | Text | cosmic-text |
 | PDF | pdfium-render (import), krilla (export) |
-| Distribution | winget/MSIX, DMG + Mac App Store, Flathub + AppImage, Play + F-Droid, App Store, GitHub Pages web/PWA |
+| Distribution | winget/MSIX, DMG + Mac App Store, Flathub + AppImage, Play + F-Droid, App Store, web/PWA on GitHub Pages |
 
 Hosted macOS CI runners build and sign Apple targets; everything else builds from Linux. CI matrix covers all six targets from day one.
 
@@ -223,13 +223,15 @@ Estimates assume one part-time developer: roughly 10–14 months to 1.0 on all s
 | Phase | Scope | Gate to pass |
 | --- | --- | --- |
 | 0 · Zoom spike (3–4 wk) | Cell tree, camera re-anchoring, synthetic strokes, wgpu renderer on Linux + Galaxy S24 | No jitter across 10^30× zoom; 120 fps with 1M strokes, on the phone too |
-| 1 · Desktop MVP (6–8 wk) | Windows/macOS/Linux; ink, erasers, undo, `.ogpaper` autosave, SVG/PNG export, spec v1 draft, `ogpaper-dump.py` | 2 weeks of daily use; file fully recovered by `ogpaper-dump.py` alone |
+| 1 · Desktop MVP (6–8 wk) | Windows/macOS/Linux; ink, erasers, undo, `.ogp` autosave, SVG/PNG export, spec v1 draft, `ogpaper-dump.py` | 2 weeks of daily use; file fully recovered by `ogpaper-dump.py` alone |
 | 2 · Android + web (6–8 wk) | Android phones/tablets, WASM web app, adaptive layout, HTML export | Same file identical on all targets; 120 fps on 2024 flagships |
 | 3 · iPhone + iPad (4–6 wk) | UIKit pen glue, Pencil prediction, Files integration, TestFlight | < 20 ms pen-to-pixel; 120 fps pan/zoom on iPad Pro |
 | 4 · Sync + v1 features (12–16 wk) | Sync folder + relay, lasso, images, layers, bookmarks, PDF, gallery, text + shapes | 1.0 release on all stores; spec 1.0 frozen |
 
 ## Open questions
 
-- [ ] File extension `.ogpaper` — keep it, or shorter (`.ogp`)? Fix before spec v1.
-- [ ] Cloudflare Worker relay in v1 alongside Docker, or in a point release?
-- [ ] Web app hosting on GitHub Pages — OK?
+- [x] File extension: `.ogp` (decided 2026-09-26).
+- [x] Relay: Docker image in v1; Cloudflare Worker build in a point release.
+- [x] Web app hosting: GitHub Pages from the repo.
+
+No open questions right now; new ones go in [GitHub issues](https://github.com/OmegaGiven/OG-paper/issues).
