@@ -11,21 +11,33 @@
          border: 1px solid #ddd; border-radius: 8px; white-space: pre; color: #222; pointer-events: none; max-width: calc(100vw - 48px); overflow: hidden; }
   #help { position: fixed; left: 12px; bottom: 12px; padding: 8px 10px; background: rgba(255,255,255,.85);
           border: 1px solid #ddd; border-radius: 8px; color: #444; pointer-events: none; }
+  #mode { position: fixed; right: 12px; top: 12px; padding: 10px 16px; font: 600 15px system-ui, sans-serif;
+          border-radius: 10px; border: 1px solid #bbb; background: #fff; color: #222; cursor: pointer; }
+  #mode.on { background: #c8285a; color: #fff; border-color: #c8285a; }
+  #hud, #help, #mode { z-index: 10; }
   @media (prefers-color-scheme: dark) { #hud, #help { background: rgba(30,30,34,.85); color: #eee; border-color: #444; } }
 </style>
 </head>
 <body>
 <div id="hud">Building the test canvas (250,000 strokes + a zoom chain 10^48 deep)…</div>
+<button id="mode" title="Toggle draw mode (D)">Pan mode</button>
 <div id="help">
-  <b>Mouse</b>: wheel zoom · right/middle-drag pan · left-drag draw · <b>A</b> auto-zoom · <b>H</b> home<br>
-  <b>Touch</b>: 1 finger pan · pinch zoom · double-tap auto-zoom<br>
+  <b>Mouse</b>: left-drag draw · wheel zoom · right/middle-drag pan · <b>A</b> auto-zoom · <b>H</b> home · <b>D</b> draw mode<br>
+  <b>Touch/pen</b>: pan mode — 1 finger pans, double-tap auto-zoom · draw mode — 1 finger/pen draws · pinch zooms in both<br>
   URL options: <code>?mass=1000000</code> · <code>?chain=25</code> (start deep)
 </div>
 <script type="module">
-  import init from './pkg/og_spike.js';
+  import init, { set_draw_mode, get_draw_mode } from './pkg/og_spike.js';
+  const btn = document.getElementById('mode');
+  const sync = () => { const on = get_draw_mode(); btn.textContent = on ? 'Draw mode' : 'Pan mode'; btn.classList.toggle('on', on); };
+  btn.addEventListener('pointerdown', e => e.stopPropagation());
+  btn.addEventListener('click', () => { set_draw_mode(!get_draw_mode()); sync(); });
   // Let the loading text paint before the (blocking) canvas build starts.
   requestAnimationFrame(() => setTimeout(async () => {
     try { await init(); } catch (e) { document.getElementById('hud').textContent = 'Failed: ' + e; }
+    // Touch devices usually want to draw; start in draw mode there.
+    if (matchMedia('(pointer: coarse)').matches) set_draw_mode(true);
+    sync(); setInterval(sync, 300);
     // Keyboard shortcuts need the canvas focused.
     document.addEventListener('pointerdown', () => { const c = document.querySelector('canvas'); if (c) { c.tabIndex = 0; c.focus(); } });
   }, 30));

@@ -52,6 +52,24 @@ fn mass_spot() -> (CellAddr, [f64; 2]) {
     (CellAddr::new(0, 1, 0), [0.37, 0.12])
 }
 
+/// Draw mode: when on, a single touch/pen draws instead of panning. Mouse
+/// left-drag always draws.
+static DRAW_MODE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn draw_mode() -> bool {
+    DRAW_MODE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen::prelude::wasm_bindgen)]
+pub fn set_draw_mode(on: bool) {
+    DRAW_MODE.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen::prelude::wasm_bindgen)]
+pub fn get_draw_mode() -> bool {
+    draw_mode()
+}
+
 #[derive(Clone, Copy, PartialEq)]
 enum Auto {
     Off,
@@ -97,6 +115,8 @@ struct Spike {
     wet: Vec<[f64; 2]>,
     drawing: bool,
     touches: HashMap<u64, [f64; 2]>,
+    /// Touch id currently drawing (draw mode).
+    touch_draw: Option<u64>,
     last_tap: Option<(Instant, [f64; 2])>,
     // Timing
     last_frame: Instant,
@@ -135,6 +155,7 @@ impl Spike {
             wet: Vec::new(),
             drawing: false,
             touches: HashMap::new(),
+            touch_draw: None,
             last_tap: None,
             last_frame: Instant::now(),
             fps_window: (Instant::now(), 0, 0.0),
@@ -312,7 +333,8 @@ impl Spike {
         {
             let fps = self.fps_window.1 as f64 / el.as_secs_f64();
             let msg = format!(
-                "OG Paper spike | zoom 10^{:.1} (level {}) | {:.0} fps | {} strokes, {} tiles, {} dots | query max {:.2} ms | {} strokes in canvas",
+                "OG Paper spike | mode: {} | zoom 10^{:.1} (level {}) | {:.0} fps | {} strokes, {} tiles, {} dots | query max {:.2} ms | {} strokes in canvas",
+                if draw_mode() { "DRAW (touch/pen draws)" } else { "PAN (touch pans; mouse left-drag draws)" },
                 self.cam.log10_zoom(),
                 self.cam.level(),
                 fps,
@@ -383,7 +405,13 @@ impl Spike {
         match phase {
             TouchPhase::Started => {
                 if self.touches.is_empty() {
-                    if let Some((t, p)) = self.last_tap {
+                    if draw_mode() {
+                        // One finger (or pen) draws.
+                        self.touch_draw = Some(id);
+                        self.wet = vec![pos];
+                        self.dirty = true;
+                    } else if let Some((t, p)) = self.last_tap {
+                        // Double-tap toggles auto-zoom (pan mode only).
                         if t.elapsed() < Duration::from_millis(300)
                             && (p[0] - pos[0]).hypot(p[1] - pos[1]) < 40.0
                         {
@@ -395,6 +423,16 @@ impl Spike {
                         }
                     }
                     self.last_tap = Some((Instant::now(), pos));
+                } else {
+                    // A second finger turns a stroke in progress into pan/pinch.
+                    if self.touch_draw.take().is_some() {
+                        self.wet.clear();
+                    }
+                    // Three-finger tap toggles draw mode.
+                    if self.touches.len() == 2 {
+                        set_draw_mode(!draw_mode());
+                        log::info!("draw mode: {}", draw_mode());
+                    }
                 }
                 self.touches.insert(id, pos);
             }
@@ -402,7 +440,16 @@ impl Spike {
                 if !self.touches.contains_key(&id) {
                     return;
                 }
-                if self.touches.len() == 1 {
+                if self.touch_draw == Some(id) {
+                    let far = self
+                        .wet
+                        .last()
+                        .map(|l| (l[0] - pos[0]).hypot(l[1] - pos[1]) >= 2.0)
+                        .unwrap_or(true);
+                    if far {
+                        self.wet.push(pos);
+                    }
+                } else if self.touches.len() == 1 {
                     let old = self.touches[&id];
                     self.cam.pan_px(pos[0] - old[0], pos[1] - old[1]);
                 } else {
@@ -422,7 +469,16 @@ impl Spike {
                 self.dirty = true;
             }
             TouchPhase::Ended | TouchPhase::Cancelled => {
+                if self.touch_draw == Some(id) {
+                    self.touch_draw = None;
+                    if phase == TouchPhase::Ended {
+                        self.commit_wet();
+                    } else {
+                        self.wet.clear();
+                    }
+                }
                 self.touches.remove(&id);
+                self.dirty = true;
             }
         }
     }
@@ -521,6 +577,11 @@ impl ApplicationHandler for Spike {
                         };
                     }
                     Key::Character(c) if c.eq_ignore_ascii_case("h") => self.go_home(),
+                    Key::Character(c) if c.eq_ignore_ascii_case("d") => {
+                        set_draw_mode(!draw_mode());
+                        self.fps_window.0 -= Duration::from_secs(1); // refresh HUD now
+                        self.dirty = true;
+                    }
                     _ => {}
                 }
             }

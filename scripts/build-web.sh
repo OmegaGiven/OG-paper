@@ -7,4 +7,4 @@ cargo build --release -p og-spike --lib --target wasm32-unknown-unknown
 "$(command -v wasm-bindgen || echo "$HOME/.cargo/bin/wasm-bindgen")" --target web --no-typescript --out-dir web/pkg \
   target/wasm32-unknown-unknown/release/og_spike.wasm
 if command -v wasm-opt >/dev/null; then wasm-opt -O3 -o web/pkg/og_spike_bg.wasm web/pkg/og_spike_bg.wasm; fi
-echo "Built web/pkg. Serve with: python3 -m http.server -d web 8990 --bind 127.0.0.1"
+echo "Built web/pkg. Serve with: scripts/serve-web.py  (http://localhost:8990)"
