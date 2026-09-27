@@ -1,0 +1,15 @@
+[workspace]
+resolver = "2"
+members = ["crates/ogpaper-core", "crates/spike"]
+
+[workspace.package]
+edition = "2021"
+license = "MPL-2.0"
+authors = ["OmegaGiven and contributors"]
+repository = "https://github.com/OmegaGiven/OG-paper"
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.release]
+debug = "line-tables-only"

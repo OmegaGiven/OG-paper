@@ -1,0 +1,13 @@
+[package]
+name = "ogpaper-core"
+version = "0.0.1"
+description = "OG Paper core: nested-cell coordinates, camera, scene tree and visibility"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+num-bigint = "0.4"
+num-integer = "0.1"
+num-traits = "0.2"

@@ -1,0 +1,45 @@
+[package]
+name = "og-spike"
+version = "0.0.1"
+description = "OG Paper Phase 0 spike: infinite zoom over 1M strokes"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+publish = false
+
+[lib]
+crate-type = ["lib", "cdylib"]
+
+[[bin]]
+name = "og-spike"
+path = "src/main.rs"
+
+[dependencies]
+ogpaper-core = { path = "../ogpaper-core" }
+wgpu = "30"
+winit = "0.30"
+pollster = "0.4"
+bytemuck = { version = "1", features = ["derive"] }
+log = "0.4"
+
+[target.'cfg(not(target_os = "android"))'.dependencies]
+env_logger = "0.11"
+
+[target.'cfg(target_os = "android")'.dependencies]
+android_logger = "0.15"
+winit = { version = "0.30", features = ["android-native-activity"] }
+
+[package.metadata.android]
+package = "app.ogpaper.spike"
+apk_name = "og-spike"
+build_targets = ["aarch64-linux-android"]
+
+[package.metadata.android.sdk]
+min_sdk_version = 29
+target_sdk_version = 34
+
+[package.metadata.android.application]
+label = "OG Paper spike"
+
+[package.metadata.android.application.activity]
+orientation = "unspecified"

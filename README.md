@@ -4,7 +4,7 @@
 
 Write a sentence inside the dot of an "i", then zoom out until a whole notebook is a speck. Pick up the same canvas on your Windows laptop, Android phone, iPad or a browser. And if this project ever stops, your files still open: the format is openly documented, stored in SQLite, and readable with a tiny standard-library Python script.
 
-> **Status: design phase.** No app to download yet. The design spec lives in [`docs/DESIGN.md`](docs/DESIGN.md). Phase 0 (proving unbounded zoom) is next.
+> **Status: Phase 0 (zoom spike).** A prototype flies from 10^-0.6 to 10^49 zoom over a 1M-stroke canvas at ~6,000 fps on desktop — see [`docs/PHASE0.md`](docs/PHASE0.md). Design spec: [`docs/DESIGN.md`](docs/DESIGN.md).
 
 ## Why
 
