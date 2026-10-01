@@ -1,7 +1,7 @@
 # OG Paper — Design Spec
 
 Living version (with comments): https://claude.ai/code/artifact/8f7a907a-ec10-49dd-9fb0-4375907abd52
-This file is the in-repo snapshot. Last synced 2026-09-26.
+This file is the in-repo snapshot. Last synced 2026-09-26; status, the implemented file formats and the to-do list updated 2026-10-01.
 
 ## Summary
 
@@ -17,6 +17,27 @@ Build an open-source infinite canvas that runs on every desktop, laptop, phone a
 - **Snappy on every supported device.** 2024 flagship phones are the performance bar; older devices are best-effort. Ink latency < 20 ms on native stylus hardware; 60 fps pan/zoom minimum, 120 Hz where the screen supports it.
 
 **Non-goals for v1:** real-time multi-user collaboration, AI features, handwriting OCR, a project-hosted sync service.
+
+## Where it stands (2026-10-01)
+
+Phase 0 is done ([`PHASE0.md`](PHASE0.md)); Phase 1 milestone M1 is done, plus several features planned for later phases ([`PHASE1.md`](PHASE1.md)).
+
+| Area | Working today |
+| --- | --- |
+| Platforms | Windows, macOS, Linux, Android (APK) and the web (WASM, WebGPU or WebGL2, installable PWA), built by CI on every push |
+| Ink | Pen (pressure), marker, highlighter; stroke eraser; eyedropper; color dial + custom colors; width per brush; undo/redo (Ctrl+Z / two-finger tap, Ctrl+Y / three-finger tap) |
+| Canvas | Unbounded pan and zoom (tested past 10^45 in the app, 10^48 in the spike); content of any size at any depth |
+| Files | Desktop and Android: autosave to `.ogp` (SQLite), New / Open / Save As. Web: autosave in browser storage, download / open `.ogpt` offline copies |
+| Bookmarks (web) | Save the current view; rename, delete; tap to fly there (animated zoom + pan across any depth, framed for the screen size) |
+| Timeline (web) | Every stroke appearing or disappearing is time-stamped; scrub or play back the canvas at any past moment; "Restore" makes that moment current (undoable) |
+| Try mode (web) | `/try/` opens the app on a demo canvas: 15 worlds nested 1024x each inside dots, down to 10^45, plus a guided checklist |
+
+**Controls.** All controls are round buttons drawn by the app (egui), sized for touch on touch screens:
+
+- **Tool button** (bottom right) fans out a quarter circle of tools: pen, marker, highlighter, picker, eraser, pan. Tapping the selected brush again opens its settings (size, pressure, custom color).
+- **Color button** (above it) opens the color dial.
+- **Undo / redo** (left of the tool button): ↩ and ↪.
+- **Settings button ⚙** (top right) fans out the canvas commands: New canvas, Open, Save copy, Home, and on the web Bookmarks, Timeline, Full screen and (try mode) Tour. The zoom depth is shown under it. The web page tells the app which items it offers and draws the panels (bookmark list, timeline bar, tour) as HTML.
 
 ## Endless Paper teardown
 
@@ -123,7 +144,7 @@ Design targets to verify in Phase 0, not measured numbers.
 8. **Hard memory caps** — tier-sized LRU; evict on OS low-memory warnings.
 9. **Performance tests in CI** — 1M-stroke canvas, scripted zoom path, every target.
 
-**Input by form factor:** stylus = draw, finger = pan/zoom on touch devices (palm rejection, optional finger-draw); wheel/pinch/space-drag and shortcuts on desktop. Toolbar: bottom bar on phones, floating palette on tablets, sidebar on desktop.
+**Input by form factor:** stylus = draw, finger = pan/zoom on touch devices (palm rejection, optional finger-draw); wheel/pinch/space-drag and shortcuts on desktop. Controls are the same radial fans on every form factor (see *Where it stands*), with bigger targets on touch screens.
 
 ## Data model and file format
 
@@ -155,6 +176,54 @@ A canvas is one `.ogp` file: a SQLite database with a published, openly licensed
 8. **Your storage, your sync** — files live wherever the user puts them; sync never needs a project server.
 
 **Migrating off Endless Paper:** their vector PDF export → our PDF import. Depth and layers will not survive.
+
+### Implemented today: `.ogp` format 0.1
+
+The v1 schema above is the target. What the app writes now (`crates/ogpaper-file`, `meta.format_version = "0.1"`) is a subset, and every 0.1 file stays readable as the schema grows:
+
+| Table | Columns | Notes |
+| --- | --- | --- |
+| `meta` | `key` TEXT PK, `value` TEXT | Keys: `format` = `ogp`, `format_version` = `0.1`, `README` (plain-English description of the format), `created` (Unix ms), `app` (`og-paper <version>`), `view` (last camera, see below) |
+| `objects` | `id` BLOB PK (UUIDv7, 16 bytes big-endian), `level` INTEGER, `ix` TEXT, `iy` TEXT, `kind` TEXT, `brush` INTEGER, `color` INTEGER, `width` REAL, `points` BLOB, `deleted` INTEGER, `created` INTEGER | Index `objects_cell (level, ix, iy)`. Only `kind = 'stroke'` so far |
+
+- **Cell address:** `level` plus `ix`, `iy` as decimal text (arbitrarily large integers).
+- **Stroke points:** little-endian f32 triples (x, y, pressure) in the anchor cell's local space, where [0,1]² is the cell. Strokes may overflow their cell by up to one cell side.
+- **`width`:** in the same cell-local units. **`color`:** RGBA8 packed R | G<<8 | B<<16 | A<<24. **`brush`:** 0 pen, 1 marker, 2 highlighter.
+- **`deleted`:** 1 = erased (kept as a tombstone for undo and sync). Draw live rows in rowid order.
+- **`created`:** when the row was written (Unix ms); the id's UUIDv7 prefix also holds the stroke's creation time.
+- **`meta.view`:** `level|ix|iy|off_x|off_y|scale`, the camera to reopen at.
+
+Not yet in 0.1: `cells`, `layers`, `bookmarks`, `blobs`, `ops`, deletion time stamps, and the compact 6-byte point encoding.
+
+### Time stamps and the timeline
+
+Every stroke has a creation time (its UUIDv7 id, and `objects.created` in `.ogp`). The app also keeps an **event log**: one entry each time a stroke becomes visible (drawn, or brought back by undo/redo) or hidden (erased, or removed by undo/redo), as (time in Unix ms, stroke, visible). Times never step backwards, even if the clock does.
+
+The canvas at moment *T* is every stroke whose latest event at or before *T* says visible. The timeline view applies that to the scene's deleted flags, so drawing it costs nothing extra. Restoring a moment records the difference as one erase and one redraw, so it is undoable and itself goes into the log.
+
+Where the log lives today: in web offline copies (`.ogpt`, below). For `.ogp`, files without a log get one rebuilt on open (each stroke appears at its id's time; erased ones disappear at load time). Planned: store the log in `.ogp` (an `events` table or the `ops` log) and add a timeline view to the desktop app.
+
+### Bookmarks
+
+A bookmark is a name, a camera (cell, offset, scale) and the smaller side of the viewport when it was saved (px), so flying back frames the same area on a phone or a monitor. Flying animates zoom and pan together: if the target is off screen the camera first zooms out until it is in view, then pans toward it while zooming about it, fast across many decades and gently at the end. Web bookmarks are stored in `.ogpt`; the `bookmarks` table of the v1 `.ogp` schema will hold them on desktop.
+
+### Web offline copies: `.ogpt` snapshot v1
+
+The web app has no SQLite yet, so it keeps each canvas as one compact binary snapshot: autosaved to the browser's IndexedDB every two seconds after a change, and downloadable / openable as a `.ogpt` file. It holds the whole canvas including erased strokes, the timeline and bookmarks, but not undo history. Codec: `crates/og-paper/src/snapshot.rs` (round-trip tested).
+
+All values little-endian.
+
+| Part | Layout |
+| --- | --- |
+| Header | `"OGPT"` (4 bytes), version u8 = 1 |
+| Camera | addr, `off_x` f64, `off_y` f64, `scale` f64 |
+| Strokes | count u32; each: addr, `width` f32, `color` u32, `brush` u8, `deleted` u8, `uid` u128, point count u32, points (f32 x, y, pressure, reserved) |
+| Events | count u32; each: time i64 (Unix ms), stroke index u32, visible u8 |
+| Bookmarks | count u32; each: name (u32 byte length + UTF-8), camera, `view_px` f64 |
+
+An **addr** is `level` i64, then `x` and `y` each as (byte length u32, two's-complement little-endian bytes). Stroke indexes in events refer to the order of the strokes section. Readers reject versions they do not know. A later version should only append sections, so newer readers keep reading v1.
+
+`.ogpt` is a transport and backup format, not a replacement for `.ogp`: once the web app has SQLite (WASM + OPFS), it will read and write `.ogp`, and the desktop app will import `.ogpt`.
 
 ## Multi-device sync (v1)
 
@@ -228,10 +297,23 @@ Estimates assume one part-time developer: roughly 10–14 months to 1.0 on all s
 | 3 · iPhone + iPad (4–6 wk) | UIKit pen glue, Pencil prediction, Files integration, TestFlight | < 20 ms pen-to-pixel; 120 fps pan/zoom on iPad Pro |
 | 4 · Sync + v1 features (12–16 wk) | Sync folder + relay, lasso, images, layers, bookmarks, PDF, gallery, text + shapes | 1.0 release on all stores; spec 1.0 frozen |
 
+Done ahead of plan: Android and web builds (Phase 2 scope, without adaptive layout or HTML export), bookmarks (web), and a timeline of the canvas.
+
+### Future to-do
+
+- **Save to / open from:** Save and Open fan out a second ring. Device: on Chrome/Edge the File System Access API (Save writes back to the same file, Save as picks a place, Open uses the system picker); download/upload elsewhere. Cloud: Google Drive first (Google Identity Services sign-in + Drive API with the `drive.file` scope, Google Picker for Open; needs a Google Cloud project, client ID and API key, all client-side), then Dropbox (Chooser/Saver) and OneDrive (File Picker + MSAL). No project server; tokens stay in the page. iCloud has no web API.
+- **Desktop `.ogpt` import**, and `.ogp` in the web app (SQLite WASM + OPFS) so both platforms share one format.
+- **`.ogp` 0.2:** `bookmarks` table, timeline event log (deletion times), then `cells`, `layers`, `blobs`, `ops` toward v1.
+- **Desktop bookmarks and timeline UI** (the logic is shared; only the web has panels so far).
+- The Phase 1 milestones M2–M5 ([`PHASE1.md`](PHASE1.md)).
+
 ## Open questions
 
 - [x] File extension: `.ogp` (decided 2026-09-26).
 - [x] Relay: Docker image in v1; Cloudflare Worker build in a point release.
 - [x] Web app hosting: GitHub Pages from the repo.
 
-No open questions right now; new ones go in [GitHub issues](https://github.com/OmegaGiven/OG-paper/issues).
+- [ ] Cloud providers for Save to / Open from, and whether cloud saves autosave or save on demand (see *Future to-do*).
+- [ ] Cloud file type: `.ogpt` now, `.ogp` once the web app has SQLite?
+
+New questions go in [GitHub issues](https://github.com/OmegaGiven/OG-paper/issues).
