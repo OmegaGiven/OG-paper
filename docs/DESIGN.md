@@ -35,8 +35,7 @@ Phase 0 is done ([`PHASE0.md`](PHASE0.md)); Phase 1 milestone M1 is done, plus s
 **Controls.** All controls are round buttons drawn by the app (egui), sized for touch on touch screens:
 
 - **Tool button** (bottom right) fans out a quarter circle of tools: pen, marker, highlighter, picker, eraser, pan.
-- **Tool panel** (top left, like Excalidraw's properties panel) shows the selected brush's settings and stays out while you draw: stroke preview, width, pressure (pen), color swatches and a custom color. Its chevron tucks it into a small sliders button that pops it back out; it starts open on wide screens and tucked on phones. New per-tool options (textures, presets) will be added as sections here.
-- **Color button** (above it) opens the color dial.
+- **Tool panel** (top left, like Excalidraw's properties panel) shows the selected brush's settings and stays out while you draw: stroke preview, width, pressure (pen) and the color dial: preset rings around the current color, a hue ring, an eyedropper, and saturation / brightness bars. Its chevron tucks it into a small sliders button that pops it back out; it starts open on wide screens and tucked on phones. New per-tool options (textures, presets) will be added as sections here.
 - **Undo / redo** (left of the tool button): ↩ and ↪.
 - **Settings button ⚙** (top right) fans out the canvas commands: New canvas, Open, Save copy, Home, and on the web Bookmarks, Timeline, Full screen and (try mode) Tour. The zoom depth is shown under it. The web page tells the app which items it offers and draws the panels (bookmark list, timeline bar, tour) as HTML.
 

@@ -31,7 +31,7 @@ Proprietary infinite-canvas apps such as Endless Paper keep your work in undocum
 
 - **Ink:** pen with pressure, marker, highlighter, stroke eraser, eyedropper, color dial with custom colors, per-brush width, unlimited undo/redo.
 - **Endless canvas:** pan and zoom with no limit; content at any depth stays exact.
-- **Controls:** round buttons that fan out like radial menus: tools (bottom right), color, ↩ undo / ↪ redo, a tool panel (top left, collapsible) with the selected brush's width, pressure and colors, and ⚙ settings (top right) for New canvas, Open, Save copy, Home, Bookmarks, Timeline, Full screen and the tour.
+- **Controls:** round buttons that fan out like radial menus: tools (bottom right), color, ↩ undo / ↪ redo, a tool panel (top left, collapsible) with the selected brush's width, pressure and color dial, and ⚙ settings (top right) for New canvas, Open, Save copy, Home, Bookmarks, Timeline, Full screen and the tour.
 - **Files:** desktop and Android autosave to a `.ogp` file (SQLite) with New / Open / Save As. The web app autosaves in your browser and saves / opens `.ogpt` offline copies.
 - **Bookmarks** (web): save a view, then fly back to it with one tap, across any zoom depth.
 - **Timeline** (web): every stroke is time-stamped; scrub or play back the canvas as it was at any moment, and restore it.

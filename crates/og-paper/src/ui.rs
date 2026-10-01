@@ -3,10 +3,10 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 // Copyright (c) 2026 OmegaGiven and contributors
 
-//! Screen-size-independent controls: two round buttons in the bottom-right
-//! corner (Tool and Color) that fan out into radial menus, small undo/redo
-//! buttons, and a settings button top-right whose fan holds the canvas
-//! commands. Icons are drawn, not taken from a font.
+//! Screen-size-independent controls: a tool button in the bottom-right
+//! corner that fans out into a radial menu, small undo/redo buttons, a tool
+//! panel top-left (width, pressure, color dial) and a settings button
+//! top-right whose fan holds the canvas commands. Icons are drawn, not taken from a font.
 
 use std::f32::consts::{FRAC_PI_2, PI};
 
@@ -68,7 +68,6 @@ pub struct InkSettings {
 pub enum Menu {
     None,
     Tools,
-    Colors,
     /// The settings button's fan (canvas commands).
     App,
 }
@@ -264,7 +263,6 @@ struct Geo {
     /// Radius of the two main buttons.
     r: f32,
     tool: Pos2,
-    color: Pos2,
     undo: Pos2,
     redo: Pos2,
     /// The settings button, top right.
@@ -276,7 +274,6 @@ fn geo(ctx: &egui::Context, touch: bool) -> Geo {
     let r = if touch { 30.0 } else { 24.0 };
     let m = if touch { 18.0 } else { 16.0 };
     let tool = pos2(screen.right() - m - r, screen.bottom() - m - r);
-    let color = tool - vec2(0.0, 2.0 * r + 14.0);
     let small = r * 0.72;
     // Redo sits next to the tool button, undo to its left.
     let redo = tool - vec2(r + 14.0 + small, r - small);
@@ -286,7 +283,6 @@ fn geo(ctx: &egui::Context, touch: bool) -> Geo {
         app,
         r,
         tool,
-        color,
         undo,
         redo,
     }
@@ -297,14 +293,12 @@ pub fn draw(ctx: &egui::Context, st: &mut UiState) -> Vec<Action> {
     let mut actions = Vec::new();
     let g = geo(ctx, st.touch_ui);
     let t = ctx.animate_bool_with_time(Id::new("tools_open"), st.menu == Menu::Tools, 0.12);
-    let c = ctx.animate_bool_with_time(Id::new("colors_open"), st.menu == Menu::Colors, 0.12);
 
     // The controls layer covers exactly the buttons plus any open fan, so
     // "pointer over UI" is right and the rest of the screen stays canvas.
     let sq = |c: Pos2, r: f32| Rect::from_center_size(c, Vec2::splat(2.0 * r));
     let small = g.r * 0.72;
     let mut bbox = sq(g.tool, g.r)
-        .union(sq(g.color, g.r))
         .union(sq(g.undo, small))
         .union(sq(g.redo, small));
     if t > 0.0 {
@@ -391,26 +385,6 @@ pub fn draw(ctx: &egui::Context, st: &mut UiState) -> Vec<Action> {
                 st.menu = Menu::None;
             }
 
-            // While the tool fan is open, its items use the space of the other buttons.
-            let fan_open = st.menu == Menu::Tools;
-            if st.tool.brush().is_some() && !fan_open {
-                let resp = ui.interact(
-                    Rect::from_center_size(g.color, Vec2::splat(2.0 * g.r)),
-                    Id::new("color_btn"),
-                    Sense::click(),
-                );
-                disc(&p, g.color, g.r, FACE, st.menu == Menu::Colors);
-                p.circle_filled(g.color, g.r * 0.62, cur_color);
-                p.circle_stroke(g.color, g.r * 0.62, Stroke::new(1.0, EDGE));
-                if resp.clicked() {
-                    st.menu = if st.menu == Menu::Colors {
-                        Menu::None
-                    } else {
-                        Menu::Colors
-                    };
-                }
-            }
-
             // ---- undo / redo
             let undo_row = if st.menu == Menu::None {
                 vec![(g.undo, false, st.can_undo), (g.redo, true, st.can_redo)]
@@ -440,10 +414,6 @@ pub fn draw(ctx: &egui::Context, st: &mut UiState) -> Vec<Action> {
                 }
             }
         });
-
-    if c > 0.0 {
-        color_dial(ctx, st, c);
-    }
 
     tool_panel(ctx, st);
 
@@ -526,6 +496,8 @@ fn tool_panel(ctx: &egui::Context, st: &mut UiState) {
         return;
     }
 
+    let mut dial_hue = st.dial_hue;
+    let mut pick = false;
     egui::Area::new(Id::new("tool_panel"))
         .order(Order::Foreground)
         .fixed_pos(top_left)
@@ -544,7 +516,7 @@ fn tool_panel(ctx: &egui::Context, st: &mut UiState) {
                     color: Color32::from_black_alpha(40),
                 });
             frame.show(ui, |ui| {
-                let w = if touch { 236.0 } else { 204.0 };
+                let w = if touch { 248.0 } else { 220.0 };
                 ui.set_width(w);
                 if touch {
                     ui.style_mut().spacing.interact_size.y = 34.0;
@@ -611,39 +583,15 @@ fn tool_panel(ctx: &egui::Context, st: &mut UiState) {
 
                 ui.add_space(4.0);
                 ui.label(egui::RichText::new("Color").small().weak());
-                let swatches: &[Color32] = if tool == Tool::Highlighter {
-                    &HIGHLIGHT
-                } else {
-                    &BASIC
-                };
-                let sw = if touch { 24.0 } else { 18.0 };
-                ui.horizontal_wrapped(|ui| {
-                    ui.spacing_mut().item_spacing = vec2(5.0, 5.0);
-                    for &c in swatches {
-                        let (rect, resp) = ui.allocate_exact_size(Vec2::splat(sw), Sense::click());
-                        let p = ui.painter();
-                        let on = ink.color.to_opaque() == c;
-                        p.circle_filled(rect.center(), sw * 0.5, c);
-                        p.circle_stroke(
-                            rect.center(),
-                            sw * 0.5,
-                            Stroke::new(if on { 2.5 } else { 1.0 }, if on { ACCENT } else { EDGE }),
-                        );
-                        if resp.clicked() {
-                            ink.color = c;
-                        }
-                    }
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Custom");
-                    let [r, g2, b, _] = ink.color.to_array();
-                    let mut c3 = [r, g2, b];
-                    if ui.color_edit_button_srgb(&mut c3).changed() {
-                        ink.color = Color32::from_rgb(c3[0], c3[1], c3[2]);
-                    }
-                });
+                pick = color_dial(ui, ink, tool == Tool::Highlighter, &mut dial_hue, touch);
             });
         });
+    st.dial_hue = dial_hue;
+    if pick {
+        // The dial's eyedropper: pick a color from the canvas, then come back.
+        st.last_ink = tool;
+        st.tool = Tool::Picker;
+    }
 }
 
 /// Three slider lines with knobs; the middle knob shows the ink color.
@@ -1054,243 +1002,182 @@ fn undo_icon(p: &egui::Painter, c: Pos2, r: f32, redo: bool, col: Color32) {
     ));
 }
 
-/// The color dial: current color in the middle, two rings of presets, a
-/// continuous hue ring outside, and saturation / brightness bars below.
-fn color_dial(ctx: &egui::Context, st: &mut UiState, open: f32) {
+/// The color dial, drawn inside the tool panel at its full width: current
+/// color in the middle, two rings of presets, a continuous hue ring outside,
+/// an eyedropper, and saturation / brightness bars below. Returns true when
+/// the eyedropper was tapped.
+fn color_dial(
+    ui: &mut egui::Ui,
+    ink: &mut InkSettings,
+    hl: bool,
+    dial_hue: &mut f32,
+    touch: bool,
+) -> bool {
     use egui::ecolor::HsvaGamma;
-    let screen = ctx.content_rect();
-    let bars_h = 118.0;
-    let r_out = ((screen.width().min(screen.height() - bars_h - 60.0)) * 0.46).clamp(120.0, 230.0)
-        * (0.85 + 0.15 * open);
-    let center = pos2(screen.center().x, screen.center().y - bars_h * 0.5);
-    let bar_w = (r_out * 2.0).min(screen.width() - 32.0);
-    let bars_top = center.y + r_out + 18.0;
-    let area = Rect::from_min_max(
-        center - vec2(r_out, r_out),
-        pos2(center.x + r_out, bars_top + bars_h),
-    )
-    .union(Rect::from_center_size(
-        pos2(center.x, bars_top + bars_h * 0.5),
-        vec2(bar_w, bars_h),
-    ))
-    .expand(8.0);
-    let hl = st.tool == Tool::Highlighter;
-    let mut dial_hue = st.dial_hue;
-    let mut close = false;
+    let w = ui.available_width();
+    let r_out = w * 0.5 - 2.0;
+    let (area, _) = ui.allocate_exact_size(vec2(w, w), Sense::hover());
+    let center = area.center();
+    let p = ui.painter().clone();
     let mut pick = false;
-    egui::Area::new(Id::new("color_dial"))
-        .order(Order::Foreground)
-        .fixed_pos(area.min)
-        .show(ctx, |ui| {
-            ui.set_clip_rect(screen);
-            ui.allocate_exact_size(area.size(), Sense::hover());
-            let p = ui.painter().clone();
-            let Some(ink) = ink_of(st, st.tool) else {
-                return;
-            };
-            let mut hsv = HsvaGamma::from(ink.color);
-            if hsv.s > 0.02 {
-                dial_hue = hsv.h;
-            } else {
-                hsv.h = dial_hue;
-            }
-
-            // Backdrop.
-            p.circle_filled(
-                center + vec2(0.0, 3.0),
-                r_out + 6.0,
-                Color32::from_black_alpha(40),
-            );
-            p.circle_filled(center, r_out + 4.0, FACE);
-
-            // Outer hue ring: a continuous rainbow (tap or drag).
-            let (h_in, h_out) = (r_out * 0.80, r_out);
-            let seg = 96;
-            let mut mesh = egui::Mesh::default();
-            for i in 0..=seg {
-                let t = i as f32 / seg as f32;
-                let a = t * 2.0 * PI - FRAC_PI_2;
-                let col: Color32 = HsvaGamma {
-                    h: t,
-                    s: 1.0,
-                    v: 1.0,
-                    a: 1.0,
-                }
-                .into();
-                mesh.colored_vertex(center + Vec2::angled(a) * h_in, col);
-                mesh.colored_vertex(center + Vec2::angled(a) * h_out, col);
-                if i > 0 {
-                    let k = 2 * i as u32;
-                    mesh.add_triangle(k - 2, k - 1, k);
-                    mesh.add_triangle(k - 1, k, k + 1);
-                }
-            }
-            p.add(Shape::mesh(mesh));
-            // Hue marker.
-            let ha = hsv.h * 2.0 * PI - FRAC_PI_2;
-            let hm = center + Vec2::angled(ha) * (h_in + h_out) * 0.5;
-            p.circle_stroke(hm, (h_out - h_in) * 0.55, Stroke::new(3.0, Color32::WHITE));
-            p.circle_stroke(hm, (h_out - h_in) * 0.55 + 1.5, Stroke::new(1.0, INKY));
-            let ring = ui.interact(
-                Rect::from_center_size(center, Vec2::splat(2.0 * h_out)),
-                Id::new("hue_ring"),
-                Sense::click_and_drag(),
-            );
-            if let Some(pos) = ring.interact_pointer_pos() {
-                let d = pos - center;
-                if (ring.clicked() || ring.dragged()) && d.length() >= h_in - 6.0 {
-                    let mut h = (d.y.atan2(d.x) + FRAC_PI_2) / (2.0 * PI);
-                    if h < 0.0 {
-                        h += 1.0;
-                    }
-                    dial_hue = h;
-                    let s = if hsv.s < 0.15 { 0.9 } else { hsv.s };
-                    let v = if hsv.v < 0.25 { 0.9 } else { hsv.v };
-                    ink.color = HsvaGamma { h, s, v, a: 1.0 }.into();
-                }
-            }
-
-            // Two rings of presets.
-            let presets: [&[Color32]; 2] = if hl {
-                [&HIGHLIGHT, &[]]
-            } else {
-                [&BASIC, &EXTRA]
-            };
-            for (k, cols) in presets.iter().enumerate() {
-                let radius = r_out * if k == 0 { 0.40 } else { 0.63 };
-                let rr = r_out * if k == 0 { 0.105 } else { 0.085 };
-                for (i, &col) in cols.iter().enumerate() {
-                    let a = i as f32 / cols.len() as f32 * 2.0 * PI - FRAC_PI_2;
-                    let pc = center + Vec2::angled(a) * radius;
-                    let resp = ui.interact(
-                        Rect::from_center_size(pc, Vec2::splat(2.0 * rr)),
-                        Id::new(("preset", k, i)),
-                        Sense::click(),
-                    );
-                    p.circle_filled(pc, rr, col);
-                    p.circle_stroke(pc, rr, Stroke::new(1.0, EDGE));
-                    if ink.color == col {
-                        p.circle_stroke(pc, rr + 3.5, Stroke::new(2.5, ACCENT));
-                    }
-                    if resp.clicked() {
-                        ink.color = col;
-                        close = true;
-                    }
-                }
-            }
-
-            // Centre: current color; tap to close.
-            let rc = r_out * 0.2;
-            let centre = ui.interact(
-                Rect::from_center_size(center, Vec2::splat(2.0 * rc)),
-                Id::new("dial_centre"),
-                Sense::click(),
-            );
-            p.circle_filled(center, rc, ink.color);
-            p.circle_stroke(center, rc, Stroke::new(1.5, EDGE));
-            if centre.clicked() {
-                close = true;
-            }
-
-            // Eyedropper, just outside the dial's lower-left edge.
-            let ep = center + vec2(-r_out * 0.86, r_out * 0.86);
-            let er = (r_out * 0.12).max(20.0);
-            let eresp = ui.interact(
-                Rect::from_center_size(ep, Vec2::splat(2.0 * er)),
-                Id::new("dial_picker"),
-                Sense::click(),
-            );
-            disc(&p, ep, er, FACE, false);
-            eyedropper(&p, ep, er, INKY);
-            if eresp.clicked() {
-                pick = true;
-            }
-
-            // Saturation and brightness bars.
-            let hsv = {
-                let mut h = HsvaGamma::from(ink.color);
-                if h.s <= 0.02 {
-                    h.h = dial_hue;
-                }
-                h
-            };
-            for (row, name) in ["Saturation", "Brightness"].iter().enumerate() {
-                let y = bars_top + 22.0 + row as f32 * 60.0;
-                let rect =
-                    Rect::from_center_size(pos2(center.x, y + 8.0), vec2(bar_w - 24.0, 22.0));
-                p.rect_filled(
-                    Rect::from_min_max(
-                        pos2(rect.left() - 8.0, y - 20.0),
-                        pos2(rect.right() + 8.0, rect.bottom() + 8.0),
-                    ),
-                    10.0,
-                    FACE,
-                );
-                p.text(
-                    pos2(rect.left(), y - 14.0),
-                    Align2::LEFT_BOTTOM,
-                    *name,
-                    egui::FontId::proportional(12.0),
-                    INKY,
-                );
-                let mut mesh = egui::Mesh::default();
-                let n = 24;
-                for i in 0..=n {
-                    let t = i as f32 / n as f32;
-                    let c: Color32 = if row == 0 {
-                        HsvaGamma { s: t, ..hsv }
-                    } else {
-                        HsvaGamma { v: t, ..hsv }
-                    }
-                    .into();
-                    let x = rect.left() + t * rect.width();
-                    mesh.colored_vertex(pos2(x, rect.top()), c);
-                    mesh.colored_vertex(pos2(x, rect.bottom()), c);
-                    if i > 0 {
-                        let k = 2 * i as u32;
-                        mesh.add_triangle(k - 2, k - 1, k);
-                        mesh.add_triangle(k - 1, k, k + 1);
-                    }
-                }
-                p.add(Shape::mesh(mesh));
-                p.rect_stroke(rect, 4.0, Stroke::new(1.0, EDGE), egui::StrokeKind::Outside);
-                let val = if row == 0 { hsv.s } else { hsv.v };
-                let mx = rect.left() + val * rect.width();
-                p.rect_stroke(
-                    Rect::from_center_size(pos2(mx, rect.center().y), vec2(8.0, 30.0)),
-                    3.0,
-                    Stroke::new(2.5, INKY),
-                    egui::StrokeKind::Outside,
-                );
-                let resp = ui.interact(
-                    rect.expand2(vec2(10.0, 10.0)),
-                    Id::new(("bar", row)),
-                    Sense::click_and_drag(),
-                );
-                if let Some(pos) = resp.interact_pointer_pos() {
-                    if resp.clicked() || resp.dragged() {
-                        let t = ((pos.x - rect.left()) / rect.width()).clamp(0.0, 1.0);
-                        let next = if row == 0 {
-                            HsvaGamma { s: t, ..hsv }
-                        } else {
-                            HsvaGamma { v: t, ..hsv }
-                        };
-                        ink.color = next.into();
-                    }
-                }
-            }
-        });
-    st.dial_hue = dial_hue;
-    if close {
-        st.menu = Menu::None;
+    let mut hsv = HsvaGamma::from(ink.color);
+    if hsv.s > 0.02 {
+        *dial_hue = hsv.h;
+    } else {
+        hsv.h = *dial_hue;
     }
-    if pick {
-        if st.tool.brush().is_some() {
-            st.last_ink = st.tool;
+
+    // Outer hue ring: a continuous rainbow (tap or drag).
+    let (h_in, h_out) = (r_out * 0.80, r_out);
+    let seg = 96;
+    let mut mesh = egui::Mesh::default();
+    for i in 0..=seg {
+        let t = i as f32 / seg as f32;
+        let a = t * 2.0 * PI - FRAC_PI_2;
+        let col: Color32 = HsvaGamma {
+            h: t,
+            s: 1.0,
+            v: 1.0,
+            a: 1.0,
         }
-        st.tool = Tool::Picker;
-        st.menu = Menu::None;
+        .into();
+        mesh.colored_vertex(center + Vec2::angled(a) * h_in, col);
+        mesh.colored_vertex(center + Vec2::angled(a) * h_out, col);
+        if i > 0 {
+            let k = 2 * i as u32;
+            mesh.add_triangle(k - 2, k - 1, k);
+            mesh.add_triangle(k - 1, k, k + 1);
+        }
     }
+    p.add(Shape::mesh(mesh));
+    // Hue marker.
+    let ha = hsv.h * 2.0 * PI - FRAC_PI_2;
+    let hm = center + Vec2::angled(ha) * (h_in + h_out) * 0.5;
+    p.circle_stroke(hm, (h_out - h_in) * 0.55, Stroke::new(3.0, Color32::WHITE));
+    p.circle_stroke(hm, (h_out - h_in) * 0.55 + 1.5, Stroke::new(1.0, INKY));
+    let ring = ui.interact(
+        Rect::from_center_size(center, Vec2::splat(2.0 * h_out)),
+        Id::new("hue_ring"),
+        Sense::click_and_drag(),
+    );
+    if let Some(pos) = ring.interact_pointer_pos() {
+        let d = pos - center;
+        if (ring.clicked() || ring.dragged()) && d.length() >= h_in - 6.0 {
+            let mut h = (d.y.atan2(d.x) + FRAC_PI_2) / (2.0 * PI);
+            if h < 0.0 {
+                h += 1.0;
+            }
+            *dial_hue = h;
+            let s = if hsv.s < 0.15 { 0.9 } else { hsv.s };
+            let v = if hsv.v < 0.25 { 0.9 } else { hsv.v };
+            ink.color = HsvaGamma { h, s, v, a: 1.0 }.into();
+        }
+    }
+
+    // Two rings of presets.
+    let presets: [&[Color32]; 2] = if hl {
+        [&HIGHLIGHT, &[]]
+    } else {
+        [&BASIC, &EXTRA]
+    };
+    for (k, cols) in presets.iter().enumerate() {
+        let radius = r_out * if k == 0 { 0.40 } else { 0.63 };
+        let rr = r_out * if k == 0 { 0.105 } else { 0.085 };
+        for (i, &col) in cols.iter().enumerate() {
+            let a = i as f32 / cols.len() as f32 * 2.0 * PI - FRAC_PI_2;
+            let pc = center + Vec2::angled(a) * radius;
+            let resp = ui.interact(
+                Rect::from_center_size(pc, Vec2::splat(2.0 * rr)),
+                Id::new(("preset", k, i)),
+                Sense::click(),
+            );
+            p.circle_filled(pc, rr, col);
+            p.circle_stroke(pc, rr, Stroke::new(1.0, EDGE));
+            if ink.color == col {
+                p.circle_stroke(pc, rr + 3.0, Stroke::new(2.0, ACCENT));
+            }
+            if resp.clicked() {
+                ink.color = col;
+            }
+        }
+    }
+
+    // Centre: the current color.
+    let rc = r_out * 0.2;
+    p.circle_filled(center, rc, ink.color);
+    p.circle_stroke(center, rc, Stroke::new(1.5, EDGE));
+
+    // Eyedropper, in the dial's lower-left corner.
+    let er = (r_out * 0.13).max(if touch { 18.0 } else { 14.0 });
+    let ep = area.left_bottom() + vec2(er + 1.0, -er - 1.0);
+    let eresp = ui.interact(
+        Rect::from_center_size(ep, Vec2::splat(2.0 * er)),
+        Id::new("dial_picker"),
+        Sense::click(),
+    );
+    disc(&p, ep, er, FACE, false);
+    eyedropper(&p, ep, er, INKY);
+    if eresp.clicked() {
+        pick = true;
+    }
+    eresp.on_hover_text("Pick a color from the canvas");
+
+    // Saturation and brightness bars.
+    let hsv = {
+        let mut h = HsvaGamma::from(ink.color);
+        if h.s <= 0.02 {
+            h.h = *dial_hue;
+        }
+        h
+    };
+    let bar_h = if touch { 22.0 } else { 16.0 };
+    for (row, name) in ["Saturation", "Brightness"].iter().enumerate() {
+        ui.add_space(2.0);
+        ui.label(egui::RichText::new(*name).small().weak());
+        let (rect, resp) = ui.allocate_exact_size(vec2(w, bar_h), Sense::click_and_drag());
+        let rect = rect.shrink2(vec2(5.0, 0.0));
+        let mut mesh = egui::Mesh::default();
+        let n = 24;
+        for i in 0..=n {
+            let t = i as f32 / n as f32;
+            let c: Color32 = if row == 0 {
+                HsvaGamma { s: t, ..hsv }
+            } else {
+                HsvaGamma { v: t, ..hsv }
+            }
+            .into();
+            let x = rect.left() + t * rect.width();
+            mesh.colored_vertex(pos2(x, rect.top()), c);
+            mesh.colored_vertex(pos2(x, rect.bottom()), c);
+            if i > 0 {
+                let k = 2 * i as u32;
+                mesh.add_triangle(k - 2, k - 1, k);
+                mesh.add_triangle(k - 1, k, k + 1);
+            }
+        }
+        p.add(Shape::mesh(mesh));
+        p.rect_stroke(rect, 4.0, Stroke::new(1.0, EDGE), egui::StrokeKind::Outside);
+        let val = if row == 0 { hsv.s } else { hsv.v };
+        let mx = rect.left() + val * rect.width();
+        p.rect_stroke(
+            Rect::from_center_size(pos2(mx, rect.center().y), vec2(7.0, bar_h + 6.0)),
+            3.0,
+            Stroke::new(2.0, INKY),
+            egui::StrokeKind::Outside,
+        );
+        if let Some(pos) = resp.interact_pointer_pos() {
+            if resp.clicked() || resp.dragged() {
+                let t = ((pos.x - rect.left()) / rect.width()).clamp(0.0, 1.0);
+                let next = if row == 0 {
+                    HsvaGamma { s: t, ..hsv }
+                } else {
+                    HsvaGamma { v: t, ..hsv }
+                };
+                ink.color = next.into();
+            }
+        }
+    }
+    pick
 }
 
 /// A pipette: glass tube tilted up-right with a rubber bulb.

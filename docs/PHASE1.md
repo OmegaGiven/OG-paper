@@ -14,7 +14,7 @@ benchmark.
 
 Also done, beyond the milestones:
 
-- **Radial controls:** tool fan, color dial, undo/redo, and a ⚙ settings fan for canvas commands (replaced the ☰ menu); icons drawn as recognizable objects.
+- **Radial controls:** tool fan, undo/redo, a collapsible tool panel (width, pressure and the color dial), and a ⚙ settings fan for canvas commands (replaced the ☰ menu); icons drawn as recognizable objects.
 - **Web app:** browser autosave, `.ogpt` offline copies (download / open), bookmarks with fly-to, a timeline (scrub, play back, restore), and try mode at `/try/` with a demo canvas 10^45 deep and a guided tour.
 - **Builds:** Windows, macOS, Linux, Android and web in CI; web deployed to GitHub Pages.
 
