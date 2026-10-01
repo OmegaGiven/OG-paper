@@ -5,7 +5,8 @@
 
 //! Screen-size-independent controls: two round buttons in the bottom-right
 //! corner (Tool and Color) that fan out into radial menus, small undo/redo
-//! buttons, and a ☰ menu top-left. Icons are drawn, not taken from a font.
+//! buttons, and a settings button top-right whose fan holds the canvas
+//! commands. Icons are drawn, not taken from a font.
 
 use std::f32::consts::{FRAC_PI_2, PI};
 
@@ -69,6 +70,51 @@ pub enum Menu {
     Tools,
     Colors,
     Settings,
+    /// The settings button's fan (canvas commands).
+    App,
+}
+
+/// Commands in the settings fan. The app decides which ones exist here
+/// (the web page adds bookmarks, the timeline, full screen and the tour).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub enum AppItem {
+    New,
+    Open,
+    Save,
+    Home,
+    Bookmarks,
+    Timeline,
+    FullScreen,
+    Tour,
+}
+
+impl AppItem {
+    fn name(self) -> &'static str {
+        match self {
+            AppItem::New => "New canvas",
+            AppItem::Open => "Open",
+            AppItem::Save => "Save copy",
+            AppItem::Home => "Home",
+            AppItem::Bookmarks => "Bookmarks",
+            AppItem::Timeline => "Timeline",
+            AppItem::FullScreen => "Full screen",
+            AppItem::Tour => "Tour",
+        }
+    }
+
+    fn action(self) -> Action {
+        match self {
+            AppItem::New => Action::New,
+            AppItem::Open => Action::Open,
+            AppItem::Save => Action::SaveAs,
+            AppItem::Home => Action::Home,
+            AppItem::Bookmarks => Action::Bookmarks,
+            AppItem::Timeline => Action::Timeline,
+            AppItem::FullScreen => Action::FullScreen,
+            AppItem::Tour => Action::Tour,
+        }
+    }
 }
 
 pub struct UiState {
@@ -91,6 +137,10 @@ pub struct UiState {
     pub strokes: usize,
     pub message: Option<String>,
     pub touch_ui: bool,
+    /// What the settings fan offers, in order.
+    pub app_items: Vec<AppItem>,
+    /// Timeline view open (its fan item shows as active).
+    pub timeline_on: bool,
 }
 
 impl Default for UiState {
@@ -123,6 +173,8 @@ impl Default for UiState {
             strokes: 0,
             message: None,
             touch_ui: false,
+            app_items: vec![AppItem::New, AppItem::Open, AppItem::Save, AppItem::Home],
+            timeline_on: false,
         }
     }
 }
@@ -155,6 +207,11 @@ pub enum Action {
     Open,
     SaveAs,
     Home,
+    // Web page panels.
+    Bookmarks,
+    Timeline,
+    FullScreen,
+    Tour,
 }
 
 /// Inner ring of the color dial: the basics.
@@ -207,6 +264,8 @@ struct Geo {
     color: Pos2,
     undo: Pos2,
     redo: Pos2,
+    /// The settings button, top right.
+    app: Pos2,
 }
 
 fn geo(ctx: &egui::Context, touch: bool) -> Geo {
@@ -219,7 +278,9 @@ fn geo(ctx: &egui::Context, touch: bool) -> Geo {
     // Redo sits next to the tool button, undo to its left.
     let redo = tool - vec2(r + 14.0 + small, r - small);
     let undo = redo - vec2(2.0 * small + 10.0, 0.0);
+    let app = pos2(screen.right() - m - r, screen.top() + m + r);
     Geo {
+        app,
         r,
         tool,
         color,
@@ -453,33 +514,7 @@ pub fn draw(ctx: &egui::Context, st: &mut UiState) -> Vec<Action> {
             });
     }
 
-    // ---- ☰ menu, top left
-    egui::Area::new(Id::new("file"))
-        .anchor(Align2::LEFT_TOP, vec2(10.0, 10.0))
-        .show(ctx, |ui| {
-            egui::Frame::popup(ui.style()).show(ui, |ui| {
-                ui.menu_button(if st.touch_ui { "  ☰  " } else { "☰" }, |ui| {
-                    ui.label(format!(
-                        "{} · zoom 10^{:.1} · {} strokes",
-                        st.file_name, st.zoom_log10, st.strokes
-                    ));
-                    ui.separator();
-                    if ui.button("New canvas  (Ctrl+N)").clicked() {
-                        actions.push(Action::New);
-                    }
-                    if ui.button("Open…  (Ctrl+O)").clicked() {
-                        actions.push(Action::Open);
-                    }
-                    if ui.button("Save as…  (Ctrl+S)").clicked() {
-                        actions.push(Action::SaveAs);
-                    }
-                    ui.separator();
-                    if ui.button("Back to start  (Home)").clicked() {
-                        actions.push(Action::Home);
-                    }
-                });
-            });
-        });
+    app_menu(ctx, st, &g, &mut actions);
 
     // Picker loupe: a disc above the finger showing the color under it.
     if let Some((at, col)) = st.pick_preview {
@@ -515,6 +550,201 @@ pub fn draw(ctx: &egui::Context, st: &mut UiState) -> Vec<Action> {
     actions
 }
 
+/// Radius of the settings fan: about one item and a gap apart along the arc.
+fn fan_radius(r: f32, n: usize) -> f32 {
+    (r * (5.4 + 1.5 * (n as f32 - 5.0))).max(r * 3.6)
+}
+
+/// The settings button (top right) and its fan: a quarter circle down and
+/// left of it, like the tool fan, with the zoom depth shown under it.
+fn app_menu(ctx: &egui::Context, st: &mut UiState, g: &Geo, actions: &mut Vec<Action>) {
+    let open = ctx.animate_bool_with_time(Id::new("app_open"), st.menu == Menu::App, 0.12);
+    let items = st.app_items.clone();
+    let n = items.len().max(2);
+    let mut bbox = Rect::from_center_size(g.app, Vec2::splat(2.0 * g.r)).union(
+        Rect::from_center_size(g.app + vec2(0.0, g.r + 12.0), vec2(2.0 * g.r + 24.0, 18.0)),
+    );
+    if open > 0.0 {
+        let reach = fan_radius(g.r, n) * open + g.r * 1.2;
+        bbox = bbox.union(Rect::from_min_max(
+            g.app - vec2(reach + 50.0, g.r),
+            g.app + vec2(g.r, reach + 24.0),
+        ));
+    }
+    let bbox = bbox.expand(4.0);
+    let screen = ctx.content_rect();
+    egui::Area::new(Id::new("app_menu"))
+        .order(Order::Foreground)
+        .fixed_pos(bbox.min)
+        .show(ctx, |ui| {
+            ui.set_clip_rect(screen);
+            ui.allocate_exact_size(bbox.size(), Sense::hover());
+            let p = ui.painter().clone();
+            if open > 0.0 {
+                let radius = fan_radius(g.r, n) * open;
+                for (i, &item) in items.iter().enumerate() {
+                    // From straight down (pi/2) round to straight left (pi).
+                    let a = FRAC_PI_2 + FRAC_PI_2 * (i as f32 / (n - 1) as f32);
+                    let pc = g.app + Vec2::angled(a) * radius;
+                    let rr = g.r * 0.9 * open.max(0.3);
+                    let resp = ui.interact(
+                        Rect::from_center_size(pc, Vec2::splat(2.0 * rr)),
+                        Id::new(("app_item", i)),
+                        Sense::click(),
+                    );
+                    let active = item == AppItem::Timeline && st.timeline_on;
+                    disc(
+                        &p,
+                        pc,
+                        rr,
+                        if resp.hovered() { Color32::WHITE } else { FACE },
+                        active,
+                    );
+                    app_icon(&p, pc, rr, item);
+                    if open > 0.9 {
+                        let out = Vec2::angled(a);
+                        label(&p, pc + out * (rr + 18.0) + vec2(0.0, 2.0), item.name());
+                    }
+                    if resp.clicked() {
+                        st.menu = Menu::None;
+                        actions.push(item.action());
+                    }
+                }
+            }
+            let resp = ui.interact(
+                Rect::from_center_size(g.app, Vec2::splat(2.0 * g.r)),
+                Id::new("app_btn"),
+                Sense::click(),
+            );
+            disc(&p, g.app, g.r, FACE, st.menu == Menu::App);
+            gear_icon(&p, g.app, g.r);
+            if resp.clicked() {
+                st.menu = if st.menu == Menu::App {
+                    Menu::None
+                } else {
+                    Menu::App
+                };
+            }
+            let info = if open < 0.1 {
+                format!("10^{:.1}", st.zoom_log10 + 0.0)
+            } else {
+                format!(
+                    "{} · zoom 10^{:.1} · {} strokes",
+                    st.file_name, st.zoom_log10, st.strokes
+                )
+            };
+            label_right(&p, pos2(g.app.x + g.r, g.app.y + g.r + 12.0), &info);
+        });
+}
+
+fn gear_icon(p: &egui::Painter, c: Pos2, r: f32) {
+    let st = Stroke::new(r * 0.1, INKY);
+    for i in 0..8 {
+        let d = Vec2::angled(i as f32 * PI / 4.0);
+        p.line_segment(
+            [c + d * r * 0.36, c + d * r * 0.56],
+            Stroke::new(r * 0.16, INKY),
+        );
+    }
+    p.circle_stroke(c, r * 0.36, st);
+    p.circle_filled(c, r * 0.31, FACE);
+    p.circle_stroke(c, r * 0.34, st);
+    p.circle_stroke(c, r * 0.13, st);
+}
+
+fn app_icon(p: &egui::Painter, c: Pos2, r: f32, item: AppItem) {
+    let s = r * 0.42;
+    let st = Stroke::new(r * 0.09, INKY);
+    let line = |pts: &[Vec2]| {
+        p.add(Shape::line(pts.iter().map(|v| c + *v * s).collect(), st));
+    };
+    match item {
+        AppItem::New => {
+            // A page with a folded corner and a plus.
+            line(&[
+                vec2(0.3, -1.0),
+                vec2(-0.75, -1.0),
+                vec2(-0.75, 1.0),
+                vec2(0.75, 1.0),
+                vec2(0.75, -0.55),
+                vec2(0.3, -1.0),
+                vec2(0.3, -0.55),
+                vec2(0.75, -0.55),
+            ]);
+            line(&[vec2(0.0, -0.05), vec2(0.0, 0.65)]);
+            line(&[vec2(-0.35, 0.3), vec2(0.35, 0.3)]);
+        }
+        AppItem::Open => {
+            // A folder.
+            line(&[
+                vec2(-1.0, 0.8),
+                vec2(-1.0, -0.75),
+                vec2(-0.35, -0.75),
+                vec2(-0.15, -0.5),
+                vec2(0.85, -0.5),
+                vec2(0.85, -0.2),
+            ]);
+            line(&[
+                vec2(-1.0, 0.8),
+                vec2(-0.65, -0.2),
+                vec2(1.05, -0.2),
+                vec2(0.7, 0.8),
+                vec2(-1.0, 0.8),
+            ]);
+        }
+        AppItem::Save => {
+            line(&[vec2(0.0, -1.0), vec2(0.0, 0.45)]);
+            line(&[vec2(-0.5, -0.05), vec2(0.0, 0.45), vec2(0.5, -0.05)]);
+            line(&[vec2(-0.85, 0.95), vec2(0.85, 0.95)]);
+        }
+        AppItem::Home => {
+            line(&[
+                vec2(-0.75, -0.1),
+                vec2(-0.75, 0.9),
+                vec2(0.75, 0.9),
+                vec2(0.75, -0.1),
+            ]);
+            line(&[vec2(-1.0, 0.05), vec2(0.0, -0.9), vec2(1.0, 0.05)]);
+        }
+        AppItem::Bookmarks => {
+            line(&[
+                vec2(-0.6, -1.0),
+                vec2(0.6, -1.0),
+                vec2(0.6, 1.0),
+                vec2(0.0, 0.5),
+                vec2(-0.6, 1.0),
+                vec2(-0.6, -1.0),
+            ]);
+        }
+        AppItem::Timeline => {
+            p.circle_stroke(c, s, st);
+            line(&[vec2(0.0, -0.6), vec2(0.0, 0.0), vec2(0.45, 0.3)]);
+        }
+        AppItem::FullScreen => {
+            for (sx, sy) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
+                line(&[
+                    vec2(sx * 0.9, sy * 0.35),
+                    vec2(sx * 0.9, sy * 0.9),
+                    vec2(sx * 0.35, sy * 0.9),
+                ]);
+            }
+        }
+        AppItem::Tour => {
+            line(&[vec2(-0.8, 0.0), vec2(-0.25, 0.6), vec2(0.85, -0.6)]);
+        }
+    }
+}
+
+/// A label whose right edge is at `at.x`, centred on `at.y`.
+fn label_right(p: &egui::Painter, at: Pos2, text: &str) {
+    let font = egui::FontId::proportional(11.0);
+    let galley = p.layout_no_wrap(text.to_string(), font, INKY);
+    let size = galley.size() + vec2(8.0, 2.0);
+    let rect = Rect::from_min_size(pos2(at.x - size.x, at.y - size.y * 0.5), size);
+    p.rect_filled(rect, 4.0, Color32::from_white_alpha(220));
+    p.galley(rect.min + vec2(4.0, 1.0), galley, INKY);
+}
+
 fn label(p: &egui::Painter, at: Pos2, text: &str) {
     let font = egui::FontId::proportional(11.0);
     let galley = p.layout_no_wrap(text.to_string(), font, INKY);
@@ -536,94 +766,169 @@ fn disc(p: &egui::Painter, c: Pos2, r: f32, fill: Color32, active: bool) {
     );
 }
 
-/// Simple drawn icons, sized relative to the button radius.
+/// Maps icon coordinates along a tool's barrel to the screen: `u` runs from
+/// the tip (negative) up to the back end, slanting up-right like a pen in a
+/// right hand; `v` is across the barrel. Units are `s` points.
+struct Barrel {
+    c: Pos2,
+    s: f32,
+}
+
+impl Barrel {
+    fn at(&self, u: f32, v: f32) -> Pos2 {
+        let d = vec2(1.0, -1.0) * std::f32::consts::FRAC_1_SQRT_2;
+        let n = vec2(1.0, 1.0) * std::f32::consts::FRAC_1_SQRT_2;
+        self.c + d * (u * self.s) + n * (v * self.s)
+    }
+
+    /// A filled, outlined quad from `(u0, w0)` to `(u1, w1)`: it spans
+    /// `u0..u1` with half-width `w0` at u0 and `w1` at u1.
+    fn quad(
+        &self,
+        p: &egui::Painter,
+        (u0, w0): (f32, f32),
+        (u1, w1): (f32, f32),
+        fill: Color32,
+        line: Stroke,
+    ) {
+        p.add(Shape::convex_polygon(
+            vec![
+                self.at(u0, -w0),
+                self.at(u1, -w1),
+                self.at(u1, w1),
+                self.at(u0, w0),
+            ],
+            fill,
+            line,
+        ));
+    }
+}
+
+/// Drawn icons, sized relative to the button radius: outlined barrels with
+/// the current ink color where the ink is (tip, cap or swipe).
 fn tool_icon(p: &egui::Painter, c: Pos2, r: f32, tool: Tool, ink: Color32) {
-    let s = r * 0.5;
-    let d = vec2(s, -s) * 0.9;
+    let line = Stroke::new((r * 0.075).max(1.2), INKY);
     match tool {
         Tool::Pen => {
-            p.line_segment([c - d, c + d * 0.55], Stroke::new(r * 0.12, INKY));
-            let tip = c - d;
+            // A ballpoint: slim barrel, pointed tip in the ink color, a clip.
+            let b = Barrel { c, s: r * 0.62 };
+            b.quad(p, (-0.25, 0.17), (0.95, 0.17), FACE, line);
             p.add(Shape::convex_polygon(
-                vec![
-                    tip,
-                    tip + vec2(r * 0.22, -r * 0.08),
-                    tip + vec2(r * 0.08, -r * 0.22),
-                ],
+                vec![b.at(-0.25, -0.17), b.at(-0.8, 0.0), b.at(-0.25, 0.17)],
                 ink,
-                Stroke::NONE,
+                line,
             ));
-            p.circle_filled(tip, r * 0.07, ink);
+            p.line_segment([b.at(0.4, -0.3), b.at(0.85, -0.3)], line);
+            p.line_segment([b.at(0.85, -0.3), b.at(0.85, -0.17)], line);
         }
         Tool::Marker => {
-            p.line_segment([c - d, c + d], Stroke::new(r * 0.36, ink));
+            // A fat marker: cap band and rounded nib in the ink color.
+            let b = Barrel { c, s: r * 0.6 };
+            b.quad(p, (-0.2, 0.27), (0.95, 0.27), FACE, line);
+            b.quad(p, (0.62, 0.27), (0.95, 0.27), ink, line);
+            b.quad(p, (-0.45, 0.14), (-0.2, 0.22), FACE, line);
+            p.add(Shape::convex_polygon(
+                vec![
+                    b.at(-0.45, -0.12),
+                    b.at(-0.72, -0.08),
+                    b.at(-0.78, 0.0),
+                    b.at(-0.72, 0.08),
+                    b.at(-0.45, 0.12),
+                ],
+                ink,
+                line,
+            ));
         }
         Tool::Highlighter => {
-            p.rect_filled(
-                Rect::from_center_size(c, vec2(s * 2.0, s * 0.9)),
-                3.0,
-                ink.gamma_multiply(0.75),
+            // A highlighter over the wide translucent swipe it leaves.
+            let sw = r * 0.62;
+            p.line_segment(
+                [c + vec2(-sw, sw * 0.82), c + vec2(sw * 0.75, sw * 0.82)],
+                Stroke::new(r * 0.26, ink.gamma_multiply(0.6)),
             );
+            let b = Barrel {
+                c: c + vec2(r * 0.08, -r * 0.08),
+                s: r * 0.58,
+            };
+            b.quad(p, (-0.25, 0.32), (0.95, 0.32), FACE, line);
+            b.quad(p, (0.55, 0.32), (0.95, 0.32), ink, line);
+            // Chisel nib.
+            p.add(Shape::convex_polygon(
+                vec![
+                    b.at(-0.25, -0.22),
+                    b.at(-0.62, -0.22),
+                    b.at(-0.48, 0.22),
+                    b.at(-0.25, 0.22),
+                ],
+                ink,
+                line,
+            ));
         }
         Tool::Eraser => {
-            let pts = [
-                c + vec2(-s, s * 0.2),
-                c + vec2(-s * 0.2, s),
-                c + vec2(s, -s * 0.2),
-                c + vec2(s * 0.2, -s),
-            ];
-            p.add(Shape::convex_polygon(
-                pts.to_vec(),
-                Color32::from_rgb(240, 150, 170),
-                Stroke::new(1.5, INKY),
-            ));
+            // A block eraser: pink rubber end and a paper sleeve, over the
+            // line it has just wiped.
+            let b = Barrel {
+                c: c + vec2(r * 0.05, -r * 0.08),
+                s: r * 0.6,
+            };
+            b.quad(p, (-0.75, 0.36), (0.8, 0.36), FACE, line);
+            b.quad(
+                p,
+                (-0.75, 0.36),
+                (-0.15, 0.36),
+                Color32::from_rgb(240, 140, 160),
+                line,
+            );
+            let y = c.y + r * 0.6;
             p.line_segment(
-                [
-                    pts[0] + (pts[3] - pts[0]) * 0.45,
-                    pts[1] + (pts[2] - pts[1]) * 0.45,
-                ],
-                Stroke::new(1.5, INKY),
+                [pos2(c.x - r * 0.62, y), pos2(c.x + r * 0.62, y)],
+                Stroke::new(line.width, Color32::from_gray(150)),
             );
         }
         Tool::Picker => eyedropper(p, c, r, ink),
         Tool::Hand => {
-            let st = Stroke::new(r * 0.09, INKY);
+            // Move: a cross with a solid arrowhead on each arm.
+            let s = r * 0.62;
             for dir in [
                 vec2(1.0, 0.0),
                 vec2(-1.0, 0.0),
                 vec2(0.0, 1.0),
                 vec2(0.0, -1.0),
             ] {
-                let tip = c + dir * s;
-                p.line_segment([c, tip], st);
                 let n = vec2(-dir.y, dir.x);
-                p.line_segment([tip, tip - dir * s * 0.35 + n * s * 0.3], st);
-                p.line_segment([tip, tip - dir * s * 0.35 - n * s * 0.3], st);
+                p.line_segment([c, c + dir * s * 0.62], line);
+                p.add(Shape::convex_polygon(
+                    vec![
+                        c + dir * s,
+                        c + dir * s * 0.58 + n * s * 0.3,
+                        c + dir * s * 0.58 - n * s * 0.3,
+                    ],
+                    INKY,
+                    Stroke::NONE,
+                ));
             }
         }
     }
 }
 
-/// A curved arrow: counter-clockwise for undo, mirrored for redo.
+/// Undo: an arrow pointing left whose tail hooks round to the right and
+/// down (↩); redo is its mirror image (↪).
 fn undo_icon(p: &egui::Painter, c: Pos2, r: f32, redo: bool, col: Color32) {
-    let s = r * 0.45;
-    let flip = if redo { -1.0 } else { 1.0 };
-    let pts: Vec<Pos2> = (0..=12)
-        .map(|i| {
-            let a = -PI * 0.1 + PI * 1.1 * (i as f32 / 12.0);
-            c + vec2(-a.cos() * s * flip, a.sin() * s * 0.9 + s * 0.2)
-        })
-        .collect();
-    let head = pts[0];
-    p.add(Shape::line(pts, Stroke::new(r * 0.12, col)));
-    p.line_segment(
-        [head, head + vec2(s * 0.55 * flip, -s * 0.05)],
-        Stroke::new(r * 0.12, col),
-    );
-    p.line_segment(
-        [head, head + vec2(s * 0.1 * flip, -s * 0.55)],
-        Stroke::new(r * 0.12, col),
-    );
+    let s = r * 0.55;
+    let f = if redo { -1.0 } else { 1.0 };
+    let at = |x: f32, y: f32| c + vec2(x * f * s, y * s);
+    let mut pts = vec![at(-0.5, -0.32)];
+    for i in 0..=16 {
+        let a = -FRAC_PI_2 + PI * (i as f32 / 16.0);
+        pts.push(at(0.22 + 0.48 * a.cos(), 0.16 + 0.48 * a.sin()));
+    }
+    pts.push(at(-0.25, 0.64));
+    p.add(Shape::line(pts, Stroke::new((r * 0.13).max(1.5), col)));
+    p.add(Shape::convex_polygon(
+        vec![at(-0.95, -0.32), at(-0.45, -0.72), at(-0.45, 0.08)],
+        col,
+        Stroke::NONE,
+    ));
 }
 
 /// The color dial: current color in the middle, two rings of presets, a
@@ -867,12 +1172,21 @@ fn color_dial(ctx: &egui::Context, st: &mut UiState, open: f32) {
 
 /// A pipette: glass tube tilted up-right with a rubber bulb.
 fn eyedropper(p: &egui::Painter, c: Pos2, r: f32, tip: Color32) {
-    let s = r * 0.5;
-    let a = c + vec2(-s * 0.95, s * 0.95);
-    let b = c + vec2(s * 0.35, -s * 0.35);
-    p.line_segment([a, b], Stroke::new(r * 0.16, INKY));
-    p.line_segment([a, a + (b - a) * 0.25], Stroke::new(r * 0.12, tip));
-    p.circle_filled(c + vec2(s * 0.6, -s * 0.6), r * 0.2, INKY);
-    let n = vec2(1.0, 1.0).normalized() * r * 0.22;
-    p.line_segment([b - n, b + n], Stroke::new(r * 0.1, INKY));
+    // Rubber bulb at the back, a collar, a glass tube holding a little of
+    // the ink, and a drop falling from the tip.
+    let line = Stroke::new((r * 0.075).max(1.2), INKY);
+    let b = Barrel {
+        c: c + vec2(r * 0.06, -r * 0.06),
+        s: r * 0.6,
+    };
+    b.quad(p, (-0.5, 0.13), (0.35, 0.13), FACE, line);
+    b.quad(p, (-0.5, 0.13), (-0.12, 0.13), tip, line);
+    p.add(Shape::convex_polygon(
+        vec![b.at(-0.5, -0.13), b.at(-0.82, 0.0), b.at(-0.5, 0.13)],
+        FACE,
+        line,
+    ));
+    b.quad(p, (0.35, 0.3), (0.48, 0.3), INKY, Stroke::NONE);
+    p.circle_filled(b.at(0.72, 0.0), r * 0.17, INKY);
+    p.circle_filled(b.at(-0.98, 0.2), r * 0.07, tip);
 }

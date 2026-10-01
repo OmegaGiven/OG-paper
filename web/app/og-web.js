@@ -1,20 +1,16 @@
-// OG Paper web shell: the page-side controls around the canvas — bookmarks,
+// OG Paper web shell: the page-side panels around the canvas — bookmarks,
 // the timeline, offline copies (download / load a .ogpt file), browser
-// autosave, full screen, and (try mode) a guided tour of the canvas.
+// autosave, full screen, and (try mode) a guided tour of the canvas. They are
+// opened from the app's own settings fan (the gear, top right).
 // Used by /app/ and /try/; the canvas itself is the Rust app in ./pkg/.
 
 import init, {
-  og_load, og_demo, og_blank, og_status, og_requests,
+  og_load, og_demo, og_blank, og_status, og_requests, og_set_menu,
   og_bookmark_add, og_bookmark_go, og_bookmark_remove, og_bookmark_rename,
   og_timeline, og_timeline_restore, og_snapshot_request, og_snapshot_take,
 } from './pkg/og_paper.js';
 
 const ICONS = {
-  bookmark: '<path d="M7 4h10v16l-5-4-5 4z"/>',
-  timeline: '<circle cx="12" cy="12" r="8"/><path d="M12 7v5l3 2"/>',
-  file: '<path d="M12 4v11M7 10l5 5 5-5M5 20h14"/>',
-  tour: '<path d="M5 12l4 4 10-10"/>',
-  full: '<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>',
   play: '<path d="M8 5v14l11-7z"/>',
   pause: '<path d="M8 5v14M16 5v14"/>',
   close: '<path d="M6 6l12 12M18 6L6 18"/>',
@@ -25,16 +21,12 @@ const CSS = `
 .og-ui { --face:#fcfbf8; --ink:#1c1c24; --muted:#5d5d68; --edge:#d4d1c7; --accent:#c8285a; --ok:#1e965a;
   font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; color: var(--ink); }
 .og-ui button { font: inherit; color: inherit; cursor: pointer; }
-.og-bar { position: fixed; z-index: 20; top: calc(10px + env(safe-area-inset-top)); right: calc(10px + env(safe-area-inset-right));
-  display: flex; flex-direction: column; gap: 8px; align-items: flex-end; }
 .og-icon { width: 42px; height: 42px; border-radius: 21px; border: 1px solid var(--edge); background: var(--face);
   box-shadow: 0 1px 3px rgba(0,0,0,.15); padding: 0; display: grid; place-items: center; color: #2d2d37; }
 .og-icon svg { width: 22px; height: 22px; }
 .og-icon[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
-.og-zoom { font-size: 12px; color: var(--muted); background: var(--face); border: 1px solid var(--edge); border-radius: 10px;
-  padding: 2px 7px; font-variant-numeric: tabular-nums; }
-.og-card { position: fixed; z-index: 21; top: calc(10px + env(safe-area-inset-top)); right: calc(62px + env(safe-area-inset-right));
-  width: min(330px, calc(100vw - 84px)); max-height: calc(100dvh - 120px); overflow: auto; background: var(--face);
+.og-card { position: fixed; z-index: 21; top: calc(96px + env(safe-area-inset-top)); right: calc(12px + env(safe-area-inset-right));
+  width: min(330px, calc(100vw - 24px)); max-height: calc(100dvh - 200px); overflow: auto; background: var(--face);
   border: 1px solid var(--edge); border-radius: 14px; box-shadow: 0 6px 24px rgba(0,0,0,.18); padding: 14px; }
 .og-card[hidden], .og-tl[hidden], .og-loading[hidden] { display: none; }
 .og-card h2 { font-size: 15px; margin: 0 0 8px; display: flex; justify-content: space-between; align-items: center; }
@@ -74,18 +66,18 @@ const CSS = `
   background: #1c1c24; color: #fff; padding: 8px 14px; border-radius: 10px; font: 14px system-ui, sans-serif; opacity: 0;
   transition: opacity .25s; pointer-events: none; max-width: calc(100vw - 32px); }
 .og-toast.on { opacity: .92; }
-@media (max-width: 520px) { .og-tl input[type=range] { flex-basis: 60px; } .og-tl .restore { padding: 6px 8px; } .og-tl { right: calc(62px + env(safe-area-inset-right)); bottom: auto; top: calc(10px + env(safe-area-inset-top)); } }
+@media (max-width: 520px) { .og-tl input[type=range] { flex-basis: 60px; } .og-tl .restore { padding: 6px 8px; } .og-tl { right: calc(84px + env(safe-area-inset-right)); bottom: auto; top: calc(10px + env(safe-area-inset-top)); } }
 `;
 
 const TOUR = [
   { id: 'draw', text: 'Draw something', hint: 'Pick the pen (bottom right) and drag on the canvas.', done: s => s.drawn > 0 },
   { id: 'zoom', text: 'Zoom in 100×', hint: 'Mouse wheel, trackpad pinch, or two fingers.', done: s => s.zoom >= 2 },
   { id: 'dot', text: 'Find the world inside the dot', hint: 'Zoom into the yellow dot of the big “i”.', done: s => s.zoom >= 3 },
-  { id: 'deep', text: 'Go a trillion times deeper', hint: 'Keep zooming through the dots — or use Bookmarks.', done: s => s.zoom >= 12 },
+  { id: 'deep', text: 'Go a trillion times deeper', hint: 'Keep zooming through the dots — or Gear → Bookmarks.', done: s => s.zoom >= 12 },
   { id: 'deepdraw', text: 'Write a note at 10^6 or deeper', hint: 'Ink is exact at any depth.', done: s => s.deepDraw >= 6 },
   { id: 'erase', text: 'Erase or undo something', hint: 'Eraser tool, Ctrl+Z, or a two-finger tap.', done: s => s.erased > 0 || s.undos > 0 },
-  { id: 'mark', text: 'Bookmark a view and fly back to it', hint: 'Bookmarks button (top right).', done: (s, f) => f.flewToOwn },
-  { id: 'time', text: 'Scrub the timeline', hint: 'Timeline button: watch the canvas being drawn.', done: (s, f) => f.scrubbed },
+  { id: 'mark', text: 'Bookmark a view and fly back to it', hint: 'Gear (top right) → Bookmarks: save a view, then tap it.', done: (s, f) => f.flewToOwn },
+  { id: 'time', text: 'Scrub the timeline', hint: 'Gear → Timeline: press play to watch the canvas being drawn.', done: (s, f) => f.scrubbed },
   { id: 'out', text: 'Zoom out past the home page', hint: 'There is more up there too.', done: s => s.zoom <= -1 },
   { id: 'bottom', text: 'Reach 10^45', hint: 'The bottom of the demo (it is not the bottom of the canvas).', done: s => s.zoom >= 44 },
 ];
@@ -157,9 +149,8 @@ export async function start({ mode = 'app' } = {}) {
 
   const root = el('div', { class: 'og-ui' });
   const loading = el('div', { class: 'og-loading' }, 'Starting the canvas…');
-  const bar = el('div', { class: 'og-bar' });
   const toast = el('div', { class: 'og-toast', role: 'status' });
-  root.append(loading, bar, toast);
+  root.append(loading, toast);
   document.body.append(root);
 
   let toastTimer;
@@ -170,11 +161,6 @@ export async function start({ mode = 'app' } = {}) {
     toastTimer = setTimeout(() => toast.classList.remove('on'), 2600);
   };
 
-  const icon = (name, title) => {
-    const b = el('button', { class: 'og-icon', title, 'aria-label': title, 'aria-pressed': 'false' }, svg(name));
-    bar.append(b);
-    return b;
-  };
   const card = title => {
     const c = el('section', { class: 'og-card', hidden: '' });
     c.append(el('h2', {}, `<span>${title}</span><button aria-label="Close">${svg('close')}</button>`));
@@ -185,55 +171,43 @@ export async function start({ mode = 'app' } = {}) {
 
   // ---- cards ----
   const cards = {};
-  const buttons = {};
   let open = null;
   function show(name) {
     open = open === name ? null : name;
     for (const [n, c] of Object.entries(cards)) c.hidden = n !== open;
-    for (const [n, b] of Object.entries(buttons)) if (n !== 'timeline') b.setAttribute('aria-pressed', String(n === open));
   }
 
   if (isTry) {
-    buttons.tour = icon('tour', 'Try-mode tour');
     cards.tour = card('Try the endless canvas');
     cards.tour.append(
-      el('p', {}, 'Everything here is the real app. Check these off in any order — your canvas autosaves in this browser.'),
+      el('p', {}, 'Everything here is the real app. Check these off in any order — your canvas autosaves in this browser. The gear (top right) holds bookmarks, the timeline, offline copies and this tour.'),
       el('div', { class: 'og-progress' }, '<div></div>'),
-      el('ul', { class: 'og-list og-tour' }));
-    buttons.tour.onclick = () => show('tour');
+      el('ul', { class: 'og-list og-tour' }),
+      el('button', { class: 'og-btn wide', 'data-act': 'demo' }, 'Reset the demo'),
+      el('p', { class: 'og-saved' }, ''));
+    cards.tour.querySelector('[data-act=demo]').onclick = () => {
+      if (confirm('Reset the demo? Your drawings on it are replaced.')) { openTimeline(false); og_demo(); show(null); }
+    };
   }
-  buttons.bookmarks = icon('bookmark', 'Bookmarks');
   cards.bookmarks = card('Bookmarks');
   cards.bookmarks.append(
     el('p', {}, 'Save the current view, then tap a bookmark to fly back to it — across any zoom depth.'),
     el('form', { class: 'og-row' }, '<input name="name" placeholder="Name this view" maxlength="60" autocomplete="off"><button class="og-btn primary">Save view</button>'),
     el('ul', { class: 'og-list' }));
-  buttons.bookmarks.onclick = () => show('bookmarks');
 
-  buttons.timeline = icon('timeline', 'Timeline');
-  buttons.file = icon('file', 'Offline copy');
-  cards.file = card('Offline copy');
-  cards.file.append(
-    el('p', {}, 'Your canvas autosaves in this browser. Download a copy to keep it, move it to another device or browser, or load one back.'),
-    el('button', { class: 'og-btn wide primary', 'data-act': 'save' }, 'Download offline copy (.ogpt)'),
-    el('button', { class: 'og-btn wide', 'data-act': 'open' }, 'Load an offline copy…'),
-    el('button', { class: 'og-btn wide', 'data-act': 'blank' }, 'Start a blank canvas'),
-    ...(isTry ? [el('button', { class: 'og-btn wide', 'data-act': 'demo' }, 'Reset the try-mode demo')] : []),
-    el('p', { class: 'og-saved' }, ''));
-  buttons.file.onclick = () => show('file');
-
-  const fs = icon('full', 'Full screen');
+  // ---- the settings fan's items (drawn by the app) ----
   const standalone = matchMedia('(display-mode: fullscreen), (display-mode: standalone)').matches;
   const canFs = document.documentElement.requestFullscreen && !standalone;
-  const syncFs = () => { fs.style.display = canFs && !document.fullscreenElement ? '' : 'none'; };
-  fs.onclick = async () => {
-    try { await document.documentElement.requestFullscreen({ navigationUI: 'hide' }); } catch (e) { console.warn(e); }
+  const syncMenu = () => {
+    const items = ['new', 'open', 'save', 'bookmarks', 'timeline', 'home'];
+    if (canFs && !document.fullscreenElement) items.push('fullscreen');
+    if (isTry) items.push('tour');
+    og_set_menu(items.join(','));
   };
-  document.addEventListener('fullscreenchange', syncFs);
-  syncFs();
-
-  const zoomBadge = el('div', { class: 'og-zoom', title: 'Zoom depth' }, '');
-  bar.append(zoomBadge);
+  document.addEventListener('fullscreenchange', syncMenu);
+  async function fullScreen() {
+    try { await document.documentElement.requestFullscreen({ navigationUI: 'hide' }); } catch (e) { say('Full screen is not available here'); }
+  }
 
   // ---- timeline bar ----
   const tl = el('div', { class: 'og-tl', hidden: '' });
@@ -266,11 +240,9 @@ export async function start({ mode = 'app' } = {}) {
       if (!s.timeline || s.timeline.n === 0) { say('Nothing drawn yet — the timeline fills in as you draw'); tlOpen = false; tl.hidden = true; }
       else og_timeline(s.timeline.n - 1);
     } else og_timeline(-1);
-    buttons.timeline.setAttribute('aria-pressed', String(tlOpen));
   }
-  buttons.timeline.onclick = () => openTimeline(!tlOpen);
   tl.querySelector('.close').onclick = () => openTimeline(false);
-  tl.querySelector('.restore').onclick = () => { stopPlay(); og_timeline_restore(); tlOpen = false; tl.hidden = true; buttons.timeline.setAttribute('aria-pressed', 'false'); };
+  tl.querySelector('.restore').onclick = () => { stopPlay(); og_timeline_restore(); tlOpen = false; tl.hidden = true; };
   range.oninput = () => { stopPlay(); og_timeline(+range.value); setFlag('scrubbed'); };
   playBtn.onclick = () => {
     if (playing) return stopPlay();
@@ -317,7 +289,7 @@ export async function start({ mode = 'app' } = {}) {
   // ---- files ----
   const picker = el('input', { type: 'file', accept: '.ogpt,application/octet-stream', hidden: '' });
   root.append(picker);
-  const savedNote = cards.file.querySelector('.og-saved');
+  const savedNote = cards.tour?.querySelector('.og-saved') || el('p');
   async function download() {
     const bytes = await snapshot(true);
     if (!bytes) return say('Could not take a copy — try again');
@@ -345,13 +317,12 @@ export async function start({ mode = 'app' } = {}) {
     say(`Loaded ${f.name}`);
     show(null);
   };
-  cards.file.onclick = e => {
-    const act = e.target.closest('button')?.dataset.act;
-    if (act === 'save') download();
-    else if (act === 'open') openCopy();
-    else if (act === 'blank' && confirm('Start a blank canvas? The current one is replaced (download a copy first to keep it).')) { openTimeline(false); og_blank(); show(null); }
-    else if (act === 'demo' && confirm('Reset the demo? Your drawings on it are replaced.')) { openTimeline(false); og_demo(); show(null); }
-  };
+  function newCanvas() {
+    if (status().strokes > 0 && !confirm('Start a new, blank canvas? The current one is replaced (save a copy first to keep it).')) return;
+    openTimeline(false);
+    og_blank();
+    show(null);
+  }
 
   // ---- tour ----
   const tourList = cards.tour?.querySelector('.og-tour');
@@ -371,6 +342,7 @@ export async function start({ mode = 'app' } = {}) {
     const c = document.querySelector('canvas');
     if (c && e.target === c) { c.tabIndex = 0; c.focus(); }
   });
+  syncMenu();
   const saved = await idbGet(key);
   og_load(saved, isTry);
   if (isTry && !saved) {
@@ -404,11 +376,14 @@ export async function start({ mode = 'app' } = {}) {
     if (s.ready) loading.hidden = true;
     for (const r of JSON.parse(og_requests())) {
       if (r === 'save') download();
-      if (r === 'open') openCopy();
+      else if (r === 'open') openCopy();
+      else if (r === 'new') newCanvas();
+      else if (r === 'bookmarks') show('bookmarks');
+      else if (r === 'timeline') openTimeline(!tlOpen);
+      else if (r === 'fullscreen') fullScreen();
+      else if (r === 'tour' && cards.tour) show('tour');
     }
     if (s.ready) {
-      zoomBadge.innerHTML = zoomText(s.zoom);
-
       // Bookmarks list (only rebuilt when it changes).
       const mk = JSON.stringify(s.bookmarks);
       if (mk !== marksKey) {

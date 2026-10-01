@@ -21,6 +21,8 @@ pub enum Cmd {
     Demo,
     Blank,
     Home,
+    /// What the settings fan offers.
+    Menu(Vec<crate::ui::AppItem>),
     BookmarkAdd(String),
     BookmarkGo(usize),
     BookmarkRemove(usize),
@@ -143,6 +145,30 @@ pub fn og_demo() {
 #[wasm_bindgen]
 pub fn og_blank() {
     push(Cmd::Blank);
+}
+
+/// Set the settings fan's items from a comma-separated list of: new, open,
+/// save, home, bookmarks, timeline, fullscreen, tour (unknown names skipped).
+#[wasm_bindgen]
+pub fn og_set_menu(items: &str) {
+    use crate::ui::AppItem;
+    let v = items
+        .split(',')
+        .filter_map(|s| {
+            Some(match s.trim() {
+                "new" => AppItem::New,
+                "open" => AppItem::Open,
+                "save" => AppItem::Save,
+                "home" => AppItem::Home,
+                "bookmarks" => AppItem::Bookmarks,
+                "timeline" => AppItem::Timeline,
+                "fullscreen" => AppItem::FullScreen,
+                "tour" => AppItem::Tour,
+                _ => return None,
+            })
+        })
+        .collect();
+    push(Cmd::Menu(v));
 }
 
 #[wasm_bindgen]
