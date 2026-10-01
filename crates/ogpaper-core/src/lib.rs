@@ -17,7 +17,7 @@ pub mod visible;
 pub use addr::{CellAddr, Level};
 pub use camera::Camera;
 pub use history::{Change, History};
-pub use scene::{Brush, Point, Scene, Stroke};
+pub use scene::{Brush, Dash, Point, Scene, Stroke, Style};
 pub use visible::{query, DotInst, DrawList, Params, StrokeInst, TileInst};
 
 #[cfg(test)]

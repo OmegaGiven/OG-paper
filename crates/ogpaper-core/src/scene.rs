@@ -46,6 +46,8 @@ pub enum Brush {
     Marker = 1,
     /// Wide translucent ink that darkens but never hides what is under it.
     Highlighter = 2,
+    /// A filled polygon: the points are its outline (closed implicitly).
+    Fill = 3,
 }
 
 impl Brush {
@@ -53,9 +55,41 @@ impl Brush {
         match v {
             1 => Brush::Marker,
             2 => Brush::Highlighter,
+            3 => Brush::Fill,
             _ => Brush::Pen,
         }
     }
+}
+
+/// Line pattern along a stroke.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[repr(u8)]
+pub enum Dash {
+    #[default]
+    Solid = 0,
+    Dashed = 1,
+    Dotted = 2,
+}
+
+impl Dash {
+    pub fn from_u8(v: u8) -> Self {
+        match v {
+            1 => Dash::Dashed,
+            2 => Dash::Dotted,
+            _ => Dash::Solid,
+        }
+    }
+}
+
+/// How a new stroke looks.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Style {
+    /// Width in the anchor cell's local units.
+    pub width: f32,
+    /// RGBA8, straight alpha (alpha is the stroke's opacity).
+    pub color: u32,
+    pub brush: Brush,
+    pub dash: Dash,
 }
 
 /// Points are in the anchor cell's local space: [0,1] is the cell, and a
@@ -70,14 +104,19 @@ pub struct Stroke {
     /// RGBA8, straight alpha.
     pub color: u32,
     pub brush: Brush,
+    pub dash: Dash,
+    /// Draw order: higher draws on top. New strokes go on top; "send to back"
+    /// gives strokes a z below everything else.
+    pub z: f64,
     /// Deleted strokes stay in the arrays (undo, file tombstones) but never draw.
     pub deleted: bool,
     /// Permanent id (UUIDv7 in files); 0 for synthetic content.
     pub uid: u128,
 }
 
-/// A point: x, y in the anchor cell's local space, pressure in [0, 1], and a
-/// reserved lane (tilt later).
+/// A point: x, y in the anchor cell's local space, pressure in [0, 1], and
+/// the distance along the stroke from its first point (local units; filled
+/// in by the scene, used for dashes).
 pub type Point = [f32; 4];
 
 #[derive(Default)]
@@ -88,6 +127,9 @@ pub struct Scene {
     pub roots_level: Level,
     pub strokes: Vec<Stroke>,
     pub points: Vec<Point>,
+    /// Highest and lowest z in use (new strokes go above `z_top`).
+    pub z_top: f64,
+    pub z_bottom: f64,
 }
 
 impl Scene {
@@ -231,17 +273,57 @@ impl Scene {
         brush: Brush,
         uid: u128,
     ) -> u32 {
+        let style = Style {
+            width,
+            color,
+            brush,
+            dash: Dash::Solid,
+        };
+        self.add_stroke_with(addr, pts, style, uid)
+    }
+
+    /// Add a stroke on top of everything else.
+    pub fn add_stroke_with(
+        &mut self,
+        addr: &CellAddr,
+        pts: &[Point],
+        style: Style,
+        uid: u128,
+    ) -> u32 {
+        let z = self.z_top + 1.0;
+        self.add_stroke_at(addr, pts, style, uid, z)
+    }
+
+    /// Add a stroke at draw order `z`.
+    pub fn add_stroke_at(
+        &mut self,
+        addr: &CellAddr,
+        pts: &[Point],
+        style: Style,
+        uid: u128,
+        z: f64,
+    ) -> u32 {
         let node = self.ensure(addr);
         let id = self.strokes.len() as u32;
         let start = self.points.len() as u32;
-        self.points.extend_from_slice(pts);
+        let mut along = 0.0f32;
+        for (i, p) in pts.iter().enumerate() {
+            if i > 0 {
+                let q = pts[i - 1];
+                along += (p[0] - q[0]).hypot(p[1] - q[1]);
+            }
+            self.points.push([p[0], p[1], p[2], along]);
+        }
+        self.note_z(z);
         self.strokes.push(Stroke {
             node,
             start,
             len: pts.len() as u32,
-            width,
-            color,
-            brush,
+            width: style.width,
+            color: style.color,
+            brush: style.brush,
+            dash: style.dash,
+            z,
             deleted: false,
             uid,
         });
@@ -253,6 +335,27 @@ impl Scene {
         }
         self.mark(node);
         id
+    }
+
+    fn note_z(&mut self, z: f64) {
+        if self.strokes.is_empty() {
+            self.z_top = z;
+            self.z_bottom = z;
+        } else {
+            self.z_top = self.z_top.max(z);
+            self.z_bottom = self.z_bottom.min(z);
+        }
+    }
+
+    /// The style a stroke was drawn with.
+    pub fn stroke_style(&self, id: u32) -> Style {
+        let s = &self.strokes[id as usize];
+        Style {
+            width: s.width,
+            color: s.color,
+            brush: s.brush,
+            dash: s.dash,
+        }
     }
 
     /// Hide a stroke (undoable). Returns false if it was already deleted.

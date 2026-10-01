@@ -11,7 +11,14 @@
 use std::f32::consts::{FRAC_PI_2, PI};
 
 use egui::{pos2, vec2, Align2, Color32, Id, Order, Pos2, Rect, Sense, Shape, Stroke, Vec2};
-use ogpaper_core::Brush;
+use ogpaper_core::{Brush, Dash};
+
+use crate::font::{Align, Font, ALIGNS, FONTS};
+use crate::objects::TextStyle;
+use crate::shapes::{
+    self, ArrowType, FillStyle, Head, ShapeKind, ShapeStyle, Sloppiness, ARROW_TYPES, FILLS, HEADS,
+    SHAPES, SLOPPINESS,
+};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Tool {
@@ -22,14 +29,23 @@ pub enum Tool {
     Hand,
     /// Eyedropper: take the color of the ink under the finger.
     Picker,
+    /// Rectangles, ellipses, ... lines and arrows (the kind is picked in the panel).
+    Shapes,
+    Text,
+    /// Select, move, resize, rotate, restyle and reorder what is drawn.
+    Select,
 }
 
-const TOOLS: [Tool; 6] = [
+/// The tool fan, inner ring first.
+const TOOLS: [Tool; 9] = [
     Tool::Pen,
     Tool::Marker,
     Tool::Highlighter,
-    Tool::Picker,
     Tool::Eraser,
+    Tool::Select,
+    Tool::Shapes,
+    Tool::Text,
+    Tool::Picker,
     Tool::Hand,
 ];
 
@@ -51,7 +67,15 @@ impl Tool {
             Tool::Eraser => "Eraser",
             Tool::Hand => "Pan",
             Tool::Picker => "Picker",
+            Tool::Shapes => "Shapes",
+            Tool::Text => "Text",
+            Tool::Select => "Select",
         }
+    }
+
+    /// Tools with settings in the tool panel.
+    fn has_panel(self) -> bool {
+        self.brush().is_some() || matches!(self, Tool::Shapes | Tool::Text | Tool::Select)
     }
 }
 
@@ -62,6 +86,75 @@ pub struct InkSettings {
     pub width: f32,
     /// Pen only: width follows pressure.
     pub pressure: bool,
+    pub dash: Dash,
+    /// 0..=255.
+    pub opacity: u8,
+}
+
+impl InkSettings {
+    /// The color with the opacity applied.
+    pub fn rgba(&self) -> [u8; 4] {
+        let [r, g, b, a] = self.color.to_array();
+        [r, g, b, ((a as u32 * self.opacity as u32) / 255) as u8]
+    }
+}
+
+/// What is selected, for the panel (filled in by the app).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum SelKind {
+    #[default]
+    None,
+    Ink,
+    Shapes,
+    Text,
+    Mixed,
+}
+
+/// Style edits made in the panel for the current selection. The app fills
+/// these from the selection; when the panel changes them, the app restyles.
+#[derive(Clone, Copy, PartialEq, Debug, Default)]
+pub struct SelStyle {
+    pub kind: SelKind,
+    pub count: usize,
+    pub ink: Option<InkSettings>,
+    pub shape: ShapeStyle,
+    pub text: TextStyle,
+}
+
+/// Which color the shape panel's dial edits.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum ColorTarget {
+    #[default]
+    Stroke,
+    Fill,
+}
+
+/// Screen-space drawing the app asks the UI to show over the canvas.
+#[derive(Default, Clone)]
+pub struct Overlay {
+    /// Polylines: points (points units), width, color, closed-and-filled.
+    pub lines: Vec<(Vec<Pos2>, f32, Color32, bool)>,
+    /// Selection box corners (clockwise from top-left) and whether to show
+    /// handles (resize corners + rotate knob above the top edge).
+    pub sel_box: Option<([Pos2; 4], bool)>,
+    /// Marquee rectangle.
+    pub marquee: Option<Rect>,
+}
+
+impl PartialEq for InkSettings {
+    fn eq(&self, o: &Self) -> bool {
+        self.color == o.color
+            && self.width == o.width
+            && self.pressure == o.pressure
+            && self.dash == o.dash
+            && self.opacity == o.opacity
+    }
+}
+
+impl std::fmt::Debug for InkSettings {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Ink({:?}, {})", self.color, self.width)
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -142,6 +235,18 @@ pub struct UiState {
     /// The tool panel (top left) is expanded; collapsed it is one small button.
     /// `None` until the first frame, which picks by screen width.
     pub panel_open: Option<bool>,
+    pub shape: ShapeStyle,
+    /// Shape outline width, screen pixels at the zoom drawn at.
+    pub shape_width: f32,
+    pub color_target: ColorTarget,
+    pub text: TextStyle,
+    /// Text cap height, screen pixels at the zoom typed at.
+    pub text_size: f32,
+    /// The selection, for the panel (app fills it; panel edits it).
+    pub sel: SelStyle,
+    /// Text being typed (native editor): the screen point and the text.
+    pub text_edit: Option<(Pos2, String)>,
+    pub overlay: Overlay,
 }
 
 impl Default for UiState {
@@ -155,16 +260,22 @@ impl Default for UiState {
                 color: Color32::from_rgb(28, 28, 36),
                 width: 3.0,
                 pressure: true,
+                dash: Dash::Solid,
+                opacity: 255,
             },
             marker: InkSettings {
                 color: Color32::from_rgb(30, 90, 200),
                 width: 8.0,
                 pressure: false,
+                dash: Dash::Solid,
+                opacity: 255,
             },
             highlighter: InkSettings {
                 color: Color32::from_rgb(255, 214, 0),
                 width: 22.0,
                 pressure: false,
+                dash: Dash::Solid,
+                opacity: 255,
             },
             menu: Menu::None,
             file_name: "Untitled".into(),
@@ -177,6 +288,14 @@ impl Default for UiState {
             app_items: vec![AppItem::New, AppItem::Open, AppItem::Save, AppItem::Home],
             timeline_on: false,
             panel_open: None,
+            shape: ShapeStyle::default(),
+            shape_width: 3.0,
+            color_target: ColorTarget::Stroke,
+            text: TextStyle::default(),
+            text_size: 24.0,
+            sel: SelStyle::default(),
+            text_edit: None,
+            overlay: Overlay::default(),
         }
     }
 }
@@ -209,6 +328,16 @@ pub enum Action {
     Open,
     SaveAs,
     Home,
+    // Selection.
+    Duplicate,
+    Delete,
+    ToFront,
+    ToBack,
+    FlipH,
+    FlipV,
+    EditText,
+    TextDone,
+    TextCancel,
     // Web page panels.
     Bookmarks,
     Timeline,
@@ -301,10 +430,11 @@ pub fn draw(ctx: &egui::Context, st: &mut UiState) -> Vec<Action> {
     let mut bbox = sq(g.tool, g.r)
         .union(sq(g.undo, small))
         .union(sq(g.redo, small));
+    let tool_slots = ring_slots(TOOLS.len(), g.r);
     if t > 0.0 {
-        let reach = g.r * (5.4 + 0.9 * (TOOLS.len() as f32 - 5.0)) * t + g.r * 1.2;
+        let reach = fan_reach(&tool_slots, g.r) * t + g.r * 1.2;
         bbox = bbox.union(Rect::from_min_max(
-            g.tool - vec2(reach, reach + 16.0),
+            g.tool - vec2(reach + 30.0, reach + 16.0),
             g.tool + vec2(g.r, g.r),
         ));
     }
@@ -318,13 +448,12 @@ pub fn draw(ctx: &egui::Context, st: &mut UiState) -> Vec<Action> {
             ui.allocate_exact_size(bbox.size(), Sense::hover());
             let p = ui.painter().clone();
 
-            // ---- tool fan: a quarter circle up and left of the tool button
+            // ---- tool fan: quarter-circle rings up and left of the tool button
             if t > 0.0 {
-                let n = TOOLS.len();
-                let radius = g.r * (5.4 + 0.9 * (n as f32 - 5.0)) * t;
                 for (i, &tool) in TOOLS.iter().enumerate() {
-                    let a = PI + FRAC_PI_2 * (i as f32 / (n - 1) as f32);
-                    let pc = g.tool + Vec2::angled(a) * radius;
+                    let (radius, frac) = tool_slots[i];
+                    let a = PI + FRAC_PI_2 * frac;
+                    let pc = g.tool + Vec2::angled(a) * radius * t;
                     let rr = g.r * 0.9 * t.max(0.3);
                     let resp = ui.interact(
                         Rect::from_center_size(pc, Vec2::splat(2.0 * rr)),
@@ -339,7 +468,7 @@ pub fn draw(ctx: &egui::Context, st: &mut UiState) -> Vec<Action> {
                         if resp.hovered() { Color32::WHITE } else { FACE },
                         selected,
                     );
-                    let ic = ink_of(st, tool).map(|i| i.color).unwrap_or(INKY);
+                    let ic = tool_color(st, tool);
                     tool_icon(&p, pc, rr, tool, ic);
                     if t > 0.9 {
                         // Label on the outer side of the circle, away from its neighbours.
@@ -347,7 +476,7 @@ pub fn draw(ctx: &egui::Context, st: &mut UiState) -> Vec<Action> {
                         label(&p, pc + out * (rr + 16.0) + vec2(0.0, 2.0), tool.name());
                     }
                     if resp.clicked() {
-                        if selected && tool.brush().is_some() {
+                        if selected && tool.has_panel() {
                             // Picking the current brush again brings its panel back.
                             st.panel_open = Some(true);
                             st.menu = Menu::None;
@@ -369,7 +498,7 @@ pub fn draw(ctx: &egui::Context, st: &mut UiState) -> Vec<Action> {
                 Sense::click(),
             );
             disc(&p, g.tool, g.r, FACE, st.menu == Menu::Tools);
-            let cur_color = st.ink().map(|i| i.color).unwrap_or(INKY);
+            let cur_color = tool_color(st, st.tool);
             tool_icon(&p, g.tool, g.r, st.tool, cur_color);
             if tool_resp.clicked() {
                 st.menu = if st.menu == Menu::Tools {
@@ -378,9 +507,7 @@ pub fn draw(ctx: &egui::Context, st: &mut UiState) -> Vec<Action> {
                     Menu::Tools
                 };
             }
-            if (tool_resp.long_touched() || tool_resp.secondary_clicked())
-                && st.tool.brush().is_some()
-            {
+            if (tool_resp.long_touched() || tool_resp.secondary_clicked()) && st.tool.has_panel() {
                 st.panel_open = Some(true);
                 st.menu = Menu::None;
             }
@@ -415,7 +542,9 @@ pub fn draw(ctx: &egui::Context, st: &mut UiState) -> Vec<Action> {
             }
         });
 
-    tool_panel(ctx, st);
+    paint_overlay(ctx, &st.overlay, st.touch_ui);
+    tool_panel(ctx, st, &mut actions);
+    text_editor(ctx, st, &mut actions);
 
     app_menu(ctx, st, &g, &mut actions);
 
@@ -453,12 +582,13 @@ pub fn draw(ctx: &egui::Context, st: &mut UiState) -> Vec<Action> {
     actions
 }
 
-/// The tool panel, top left: the selected brush's settings, open until it
-/// is collapsed to a small button (which pops it back out). New per-tool
-/// options (textures, presets, ...) go here as sections.
-fn tool_panel(ctx: &egui::Context, st: &mut UiState) {
+/// The tool panel, top left: the current tool's settings (or the
+/// selection's), open until it is collapsed to a small button (which pops it
+/// back out). New per-tool options (textures, presets, ...) go here as
+/// sections.
+fn tool_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) {
     let tool = st.tool;
-    if tool.brush().is_none() {
+    if !tool.has_panel() || (tool == Tool::Select && st.sel.count == 0) {
         return;
     }
     let touch = st.touch_ui;
@@ -471,6 +601,7 @@ fn tool_panel(ctx: &egui::Context, st: &mut UiState) {
     if !open {
         // Collapsed: a small round button showing the tool and its color.
         let r = if touch { 24.0 } else { 19.0 };
+        let col = tool_color(st, tool);
         egui::Area::new(Id::new("tool_panel_btn"))
             .order(Order::Foreground)
             .fixed_pos(top_left)
@@ -479,7 +610,6 @@ fn tool_panel(ctx: &egui::Context, st: &mut UiState) {
                     ui.allocate_exact_size(Vec2::splat(2.0 * r + 4.0), Sense::click());
                 let c = rect.center();
                 let p = ui.painter();
-                let col = ink_of(st, tool).map(|i| i.color).unwrap_or(INKY);
                 disc(
                     p,
                     c,
@@ -524,8 +654,13 @@ fn tool_panel(ctx: &egui::Context, st: &mut UiState) {
                 } else {
                     ui.style_mut().spacing.slider_width = w - 64.0;
                 }
+                let title = if tool == Tool::Select {
+                    format!("Selection ({})", st.sel.count)
+                } else {
+                    tool.name().to_string()
+                };
                 ui.horizontal(|ui| {
-                    ui.strong(tool.name());
+                    ui.strong(title);
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let (rect, resp) = ui.allocate_exact_size(
                             Vec2::splat(if touch { 30.0 } else { 22.0 }),
@@ -546,44 +681,66 @@ fn tool_panel(ctx: &egui::Context, st: &mut UiState) {
                         resp.on_hover_text("Hide (tap the button to bring it back)");
                     });
                 });
-                let Some(ink) = ink_of(st, tool) else { return };
-
-                // Live preview of the stroke.
-                let (rect, _) =
-                    ui.allocate_exact_size(vec2(ui.available_width(), 48.0), Sense::hover());
-                let pw = ink.width.min(40.0);
-                let a = if tool == Tool::Highlighter { 140 } else { 255 };
-                let col =
-                    Color32::from_rgba_unmultiplied(ink.color.r(), ink.color.g(), ink.color.b(), a);
-                let pts: Vec<Pos2> = (0..24)
-                    .map(|i| {
-                        let x = i as f32 / 23.0;
-                        pos2(
-                            rect.left() + 14.0 + x * (rect.width() - 28.0),
-                            rect.center().y + (x * 6.0).sin() * 8.0,
-                        )
-                    })
-                    .collect();
-                ui.painter().add(Shape::line(pts, Stroke::new(pw, col)));
-
-                ui.label(egui::RichText::new("Stroke width").small().weak());
-                let max = if tool == Tool::Highlighter {
-                    80.0
-                } else {
-                    48.0
-                };
-                ui.add(
-                    egui::Slider::new(&mut ink.width, 0.5..=max)
-                        .logarithmic(true)
-                        .suffix(" px"),
-                );
-                if tool == Tool::Pen {
-                    ui.checkbox(&mut ink.pressure, "Width follows pressure");
-                }
-
-                ui.add_space(4.0);
-                ui.label(egui::RichText::new("Color").small().weak());
-                pick = color_dial(ui, ink, tool == Tool::Highlighter, &mut dial_hue, touch);
+                let max_h = (screen.height() - 2.0 * m - 60.0).max(160.0);
+                egui::ScrollArea::vertical()
+                    .max_height(max_h)
+                    .min_scrolled_height(max_h)
+                    .show(ui, |ui| {
+                        pick = match tool {
+                            Tool::Pen | Tool::Marker | Tool::Highlighter => {
+                                let ink = ink_of(st, tool).expect("brush");
+                                ink_section(ui, ink, tool, touch, &mut dial_hue, true)
+                            }
+                            Tool::Shapes => shape_section(
+                                ui,
+                                &mut st.shape,
+                                Some(&mut st.shape_width),
+                                &mut st.color_target,
+                                touch,
+                                &mut dial_hue,
+                            ),
+                            Tool::Text => text_section(
+                                ui,
+                                &mut st.text,
+                                Some(&mut st.text_size),
+                                touch,
+                                &mut dial_hue,
+                            ),
+                            Tool::Select => {
+                                select_actions(ui, st.sel.kind, actions);
+                                match st.sel.kind {
+                                    SelKind::Ink => match st.sel.ink.as_mut() {
+                                        Some(ink) => ink_section(
+                                            ui,
+                                            ink,
+                                            Tool::Marker,
+                                            touch,
+                                            &mut dial_hue,
+                                            false,
+                                        ),
+                                        None => false,
+                                    },
+                                    SelKind::Shapes => shape_section(
+                                        ui,
+                                        &mut st.sel.shape,
+                                        None,
+                                        &mut st.color_target,
+                                        touch,
+                                        &mut dial_hue,
+                                    ),
+                                    SelKind::Text => text_section(
+                                        ui,
+                                        &mut st.sel.text,
+                                        None,
+                                        touch,
+                                        &mut dial_hue,
+                                    ),
+                                    _ => false,
+                                }
+                            }
+                            _ => false,
+                        };
+                    });
             });
         });
     st.dial_hue = dial_hue;
@@ -592,6 +749,476 @@ fn tool_panel(ctx: &egui::Context, st: &mut UiState) {
         st.last_ink = tool;
         st.tool = Tool::Picker;
     }
+}
+
+fn heading(ui: &mut egui::Ui, text: &str) {
+    ui.add_space(4.0);
+    ui.label(egui::RichText::new(text).small().weak());
+}
+
+/// A row of option chips; returns true if the choice changed.
+fn chips<T: Copy + PartialEq>(
+    ui: &mut egui::Ui,
+    items: &[T],
+    cur: &mut T,
+    size: f32,
+    tip: impl Fn(T) -> String,
+    draw: impl Fn(&egui::Painter, Pos2, f32, T),
+) -> bool {
+    let mut changed = false;
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = vec2(4.0, 4.0);
+        for &it in items {
+            let (rect, resp) = ui.allocate_exact_size(Vec2::splat(size), Sense::click());
+            let on = *cur == it;
+            let p = ui.painter();
+            let bg = if on {
+                Color32::from_rgb(252, 228, 236)
+            } else if resp.hovered() {
+                Color32::from_gray(232)
+            } else {
+                Color32::from_gray(242)
+            };
+            p.rect_filled(rect, 6.0, bg);
+            if on {
+                p.rect_stroke(
+                    rect,
+                    6.0,
+                    Stroke::new(1.5, ACCENT),
+                    egui::StrokeKind::Inside,
+                );
+            }
+            draw(p, rect.center(), size * 0.36, it);
+            if resp.clicked() && !on {
+                *cur = it;
+                changed = true;
+            }
+            resp.on_hover_text(tip(it));
+        }
+    });
+    changed
+}
+
+fn text_chip(p: &egui::Painter, c: Pos2, text: &str) {
+    p.text(
+        c,
+        Align2::CENTER_CENTER,
+        text,
+        egui::FontId::proportional(12.0),
+        INKY,
+    );
+}
+
+fn opacity_slider(ui: &mut egui::Ui, o: &mut u8) {
+    heading(ui, "Opacity");
+    let mut v = *o as f32 / 255.0 * 100.0;
+    if ui
+        .add(
+            egui::Slider::new(&mut v, 5.0..=100.0)
+                .suffix(" %")
+                .fixed_decimals(0),
+        )
+        .changed()
+    {
+        *o = (v / 100.0 * 255.0).round() as u8;
+    }
+}
+
+fn dash_chips(ui: &mut egui::Ui, dash: &mut Dash, sz: f32) -> bool {
+    heading(ui, "Stroke style");
+    chips(
+        ui,
+        &[Dash::Solid, Dash::Dashed, Dash::Dotted],
+        dash,
+        sz,
+        |d| format!("{d:?}"),
+        |p, c, r, d| line_icon(p, c, r, d, Sloppiness::Architect, ArrowType::Straight),
+    )
+}
+
+/// Pen, marker and highlighter settings (also used for selected ink).
+fn ink_section(
+    ui: &mut egui::Ui,
+    ink: &mut InkSettings,
+    tool: Tool,
+    touch: bool,
+    dial_hue: &mut f32,
+    preview: bool,
+) -> bool {
+    let sz = if touch { 34.0 } else { 28.0 };
+    if preview {
+        let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 44.0), Sense::hover());
+        let pw = ink.width.min(40.0);
+        let [r, g, b, a] = ink.rgba();
+        let a = if tool == Tool::Highlighter { 140 } else { a };
+        let col = Color32::from_rgba_unmultiplied(r, g, b, a);
+        let pts: Vec<Pos2> = (0..24)
+            .map(|i| {
+                let x = i as f32 / 23.0;
+                pos2(
+                    rect.left() + 14.0 + x * (rect.width() - 28.0),
+                    rect.center().y + (x * 6.0).sin() * 8.0,
+                )
+            })
+            .collect();
+        ui.painter().add(Shape::line(pts, Stroke::new(pw, col)));
+    }
+    heading(ui, "Stroke width");
+    let max = if tool == Tool::Highlighter {
+        80.0
+    } else {
+        48.0
+    };
+    ui.add(
+        egui::Slider::new(&mut ink.width, 0.5..=max)
+            .logarithmic(true)
+            .suffix(" px"),
+    );
+    if tool == Tool::Pen {
+        ui.checkbox(&mut ink.pressure, "Width follows pressure");
+    }
+    if tool != Tool::Highlighter {
+        dash_chips(ui, &mut ink.dash, sz);
+        opacity_slider(ui, &mut ink.opacity);
+    }
+    heading(ui, "Color");
+    color_dial(
+        ui,
+        &mut ink.color,
+        tool == Tool::Highlighter,
+        dial_hue,
+        touch,
+    )
+}
+
+/// Shape settings (also used for selected shapes, without the width).
+fn shape_section(
+    ui: &mut egui::Ui,
+    sh: &mut ShapeStyle,
+    width: Option<&mut f32>,
+    target: &mut ColorTarget,
+    touch: bool,
+    dial_hue: &mut f32,
+) -> bool {
+    let sz = if touch { 34.0 } else { 28.0 };
+    heading(ui, "Shape");
+    chips(
+        ui,
+        &SHAPES,
+        &mut sh.kind,
+        sz,
+        |k| k.name().into(),
+        |p, c, r, k| shape_icon(p, c, r, k, INKY),
+    );
+    if matches!(sh.kind, ShapeKind::Star | ShapeKind::Polygon) {
+        heading(
+            ui,
+            if sh.kind == ShapeKind::Star {
+                "Points"
+            } else {
+                "Sides"
+            },
+        );
+        let mut n = sh.sides as u32;
+        if ui.add(egui::Slider::new(&mut n, 3..=12)).changed() {
+            sh.sides = n as u8;
+        }
+    }
+    if let Some(w) = width {
+        heading(ui, "Stroke width");
+        ui.add(
+            egui::Slider::new(w, 0.5..=24.0)
+                .logarithmic(true)
+                .suffix(" px"),
+        );
+    }
+    dash_chips(ui, &mut sh.dash, sz);
+    heading(ui, "Sloppiness");
+    chips(
+        ui,
+        &SLOPPINESS,
+        &mut sh.sloppiness,
+        sz,
+        |s| s.name().into(),
+        |p, c, r, s| line_icon(p, c, r, Dash::Solid, s, ArrowType::Curved),
+    );
+    if !sh.kind.is_linear() {
+        if sh.kind != ShapeKind::Ellipse {
+            heading(ui, "Edges");
+            chips(
+                ui,
+                &[false, true],
+                &mut sh.round,
+                sz,
+                |r| if r { "Round" } else { "Sharp" }.into(),
+                |p, c, r, round| {
+                    let st = Stroke::new(1.8, INKY);
+                    let (bl, tr) = (c + vec2(-r, r), c + vec2(r, -r));
+                    if round {
+                        let rad = r * 1.1;
+                        let mut pts = vec![bl];
+                        for i in (0..=8).rev() {
+                            let t = i as f32 / 8.0 * FRAC_PI_2;
+                            pts.push(pos2(
+                                c.x - r + rad * (1.0 - t.sin()),
+                                c.y - r + rad * (1.0 - t.cos()),
+                            ));
+                        }
+                        pts.push(tr);
+                        p.add(Shape::line(pts, st));
+                    } else {
+                        p.add(Shape::line(vec![bl, pos2(bl.x, tr.y), tr], st));
+                    }
+                },
+            );
+        }
+        heading(ui, "Fill");
+        chips(
+            ui,
+            &FILLS,
+            &mut sh.fill_style,
+            sz,
+            |f| f.name().into(),
+            fill_icon,
+        );
+    }
+    if sh.kind.is_linear() {
+        heading(ui, "Line type");
+        chips(
+            ui,
+            &ARROW_TYPES,
+            &mut sh.arrow,
+            sz,
+            |a| a.name().into(),
+            |p, c, r, a| line_icon(p, c, r, Dash::Solid, Sloppiness::Architect, a),
+        );
+    }
+    if sh.kind == ShapeKind::Arrow {
+        heading(ui, "Start");
+        chips(
+            ui,
+            &HEADS,
+            &mut sh.start,
+            sz,
+            |h| h.name().into(),
+            |p, c, r, h| head_icon(p, c, r, h, true),
+        );
+        heading(ui, "End");
+        chips(
+            ui,
+            &HEADS,
+            &mut sh.end,
+            sz,
+            |h| h.name().into(),
+            |p, c, r, h| head_icon(p, c, r, h, false),
+        );
+    }
+    opacity_slider(ui, &mut sh.opacity);
+    let fillable = !sh.kind.is_linear() && sh.fill_style != FillStyle::None;
+    if !fillable {
+        *target = ColorTarget::Stroke;
+    }
+    if fillable {
+        heading(ui, "Color");
+        ui.horizontal(|ui| {
+            ui.selectable_value(target, ColorTarget::Stroke, "Stroke");
+            ui.selectable_value(target, ColorTarget::Fill, "Fill");
+        });
+    } else {
+        heading(ui, "Stroke color");
+    }
+    let slot = if *target == ColorTarget::Fill {
+        &mut sh.fill
+    } else {
+        &mut sh.stroke
+    };
+    let mut c = c32(*slot);
+    let pick = color_dial(ui, &mut c, false, dial_hue, touch);
+    *slot = u32c(c);
+    pick
+}
+
+/// Text settings (also used for selected text, without the size).
+fn text_section(
+    ui: &mut egui::Ui,
+    tx: &mut TextStyle,
+    size: Option<&mut f32>,
+    touch: bool,
+    dial_hue: &mut f32,
+) -> bool {
+    let sz = if touch { 34.0 } else { 28.0 };
+    heading(ui, "Font");
+    chips(
+        ui,
+        &FONTS,
+        &mut tx.font,
+        sz * 1.9,
+        |f| f.name().into(),
+        |p, c, _, f| {
+            text_chip(
+                p,
+                c,
+                match f {
+                    Font::Normal => "Normal",
+                    Font::Hand => "Hand",
+                    Font::Code => "Code",
+                },
+            )
+        },
+    );
+    if let Some(size) = size {
+        heading(ui, "Size");
+        let mut pick = [16.0f32, 24.0, 36.0, 56.0]
+            .iter()
+            .position(|&v| (v - *size).abs() < 0.5)
+            .unwrap_or(9);
+        let before = pick;
+        chips(
+            ui,
+            &[0usize, 1, 2, 3],
+            &mut pick,
+            sz,
+            |i| ["Small", "Medium", "Large", "Very large"][i].into(),
+            |p, c, _, i| text_chip(p, c, ["S", "M", "L", "XL"][i]),
+        );
+        if pick != before && pick < 4 {
+            *size = [16.0, 24.0, 36.0, 56.0][pick];
+        }
+        ui.add(
+            egui::Slider::new(size, 6.0..=160.0)
+                .logarithmic(true)
+                .suffix(" px"),
+        );
+    }
+    heading(ui, "Align");
+    chips(
+        ui,
+        &ALIGNS,
+        &mut tx.align,
+        sz,
+        |a| format!("{a:?}"),
+        |p, c, r, a| {
+            for (i, w) in [1.0f32, 0.6, 0.85].iter().enumerate() {
+                let y = c.y - r * 0.6 + i as f32 * r * 0.6;
+                let len = 2.0 * r * w;
+                let x0 = match a {
+                    Align::Left => c.x - r,
+                    Align::Center => c.x - len * 0.5,
+                    Align::Right => c.x + r - len,
+                };
+                p.line_segment([pos2(x0, y), pos2(x0 + len, y)], Stroke::new(1.6, INKY));
+            }
+        },
+    );
+    opacity_slider(ui, &mut tx.opacity);
+    heading(ui, "Color");
+    let mut c = c32(tx.color);
+    let pick = color_dial(ui, &mut c, false, dial_hue, touch);
+    tx.color = u32c(c);
+    pick
+}
+
+/// Buttons for what can be done with a selection.
+fn select_actions(ui: &mut egui::Ui, kind: SelKind, actions: &mut Vec<Action>) {
+    ui.horizontal_wrapped(|ui| {
+        let items = [
+            (Action::Duplicate, "Duplicate", "Ctrl+D"),
+            (Action::Delete, "Delete", "Delete"),
+            (Action::ToFront, "To front", "Bring to front"),
+            (Action::ToBack, "To back", "Send to back"),
+            (Action::FlipH, "Flip ↔", "Flip horizontally"),
+            (Action::FlipV, "Flip ↕", "Flip vertically"),
+        ];
+        for (a, label, tip) in items {
+            if ui.button(label).on_hover_text(tip).clicked() {
+                actions.push(a);
+            }
+        }
+        if kind == SelKind::Text && ui.button("Edit text").clicked() {
+            actions.push(Action::EditText);
+        }
+    });
+}
+
+/// Selection box, marquee and shape previews, drawn over the canvas.
+fn paint_overlay(ctx: &egui::Context, ov: &Overlay, touch: bool) {
+    let p = ctx.layer_painter(egui::LayerId::new(Order::Background, Id::new("overlay")));
+    for (pts, w, col, filled) in &ov.lines {
+        if *filled {
+            p.add(Shape::convex_polygon(pts.clone(), *col, Stroke::NONE));
+        } else {
+            p.add(Shape::line(pts.clone(), Stroke::new(*w, *col)));
+        }
+    }
+    let blue = Color32::from_rgb(70, 110, 230);
+    if let Some(r) = ov.marquee {
+        p.rect_filled(r, 0.0, Color32::from_rgba_unmultiplied(70, 110, 230, 24));
+        p.rect_stroke(r, 0.0, Stroke::new(1.0, blue), egui::StrokeKind::Middle);
+    }
+    if let Some((c, handles)) = ov.sel_box {
+        p.add(Shape::closed_line(c.to_vec(), Stroke::new(1.2, blue)));
+        if handles {
+            let hs = if touch { 7.0 } else { 5.0 };
+            for q in c {
+                p.rect_filled(
+                    Rect::from_center_size(q, Vec2::splat(hs * 2.0)),
+                    2.0,
+                    Color32::WHITE,
+                );
+                p.rect_stroke(
+                    Rect::from_center_size(q, Vec2::splat(hs * 2.0)),
+                    2.0,
+                    Stroke::new(1.2, blue),
+                    egui::StrokeKind::Middle,
+                );
+            }
+            let (top, knob) = rotate_knob(&c, touch);
+            p.line_segment([top, knob], Stroke::new(1.0, blue));
+            p.circle_filled(knob, hs + 1.0, Color32::WHITE);
+            p.circle_stroke(knob, hs + 1.0, Stroke::new(1.2, blue));
+        }
+    }
+}
+
+/// Middle of a selection box's top edge and its rotate knob above it.
+pub fn rotate_knob(c: &[Pos2; 4], touch: bool) -> (Pos2, Pos2) {
+    let top = c[0] + (c[1] - c[0]) * 0.5;
+    let up = (c[0] - c[3]).normalized();
+    let up = if up.is_finite() { up } else { vec2(0.0, -1.0) };
+    (top, top + up * if touch { 34.0 } else { 26.0 })
+}
+
+/// The native text editor (the web page shows its own, with the phone's
+/// keyboard).
+fn text_editor(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) {
+    let Some((at, text)) = st.text_edit.as_mut() else {
+        return;
+    };
+    egui::Area::new(Id::new("text_editor"))
+        .order(Order::Foreground)
+        .fixed_pos(*at)
+        .show(ctx, |ui| {
+            ui.style_mut().visuals = egui::Visuals::light();
+            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                let resp = ui.add(
+                    egui::TextEdit::multiline(text)
+                        .desired_rows(2)
+                        .desired_width(240.0)
+                        .hint_text("Type, then Done (Ctrl+Enter)"),
+                );
+                resp.request_focus();
+                let done_key = ui.input(|i| i.key_pressed(egui::Key::Enter) && i.modifiers.command);
+                let esc = ui.input(|i| i.key_pressed(egui::Key::Escape));
+                ui.horizontal(|ui| {
+                    if ui.button("Done").clicked() || done_key {
+                        actions.push(Action::TextDone);
+                    }
+                    if ui.button("Cancel").clicked() || esc {
+                        actions.push(Action::TextCancel);
+                    }
+                });
+            });
+        });
 }
 
 /// Three slider lines with knobs; the middle knob shows the ink color.
@@ -621,9 +1248,56 @@ fn collapse_icon(p: &egui::Painter, c: Pos2, r: f32) {
     ));
 }
 
-/// Radius of the settings fan: about one item and a gap apart along the arc.
-fn fan_radius(r: f32, n: usize) -> f32 {
-    (r * (5.4 + 1.5 * (n as f32 - 5.0))).max(r * 3.6)
+/// Where each of `n` fan items goes around a button of radius `r`: (ring
+/// radius, position along the quarter circle 0..1). Rings fill from the
+/// inside out, each holding as many items as fit along its arc, so a long
+/// menu grows outward in layers instead of one huge curve.
+fn ring_slots(n: usize, r: f32) -> Vec<(f32, f32)> {
+    let rr = r * 0.9;
+    let along = 2.0 * rr + 8.0;
+    // Room between rings for the labels.
+    let step = 2.0 * rr + 56.0;
+    let mut radius = r * 4.4;
+    let mut out = Vec::with_capacity(n);
+    let mut left = n;
+    while left > 0 {
+        let cap = ((FRAC_PI_2 * radius / along).floor() as usize + 1).max(1);
+        let m = cap.min(left);
+        for i in 0..m {
+            let frac = if m == 1 {
+                0.5
+            } else {
+                i as f32 / (m - 1) as f32
+            };
+            out.push((radius, frac));
+        }
+        left -= m;
+        radius += step;
+    }
+    out
+}
+
+fn fan_reach(slots: &[(f32, f32)], r: f32) -> f32 {
+    slots.iter().map(|s| s.0).fold(0.0, f32::max) + r
+}
+
+/// The color a tool's icon shows.
+fn tool_color(st: &mut UiState, tool: Tool) -> Color32 {
+    match tool {
+        Tool::Shapes => c32(st.shape.stroke),
+        Tool::Text => c32(st.text.color),
+        _ => ink_of(st, tool).map(|i| i.color).unwrap_or(INKY),
+    }
+}
+
+fn c32(c: u32) -> Color32 {
+    let [r, g, b, _] = c.to_le_bytes();
+    Color32::from_rgb(r, g, b)
+}
+
+fn u32c(c: Color32) -> u32 {
+    let [r, g, b, _] = c.to_array();
+    u32::from_le_bytes([r, g, b, 255])
 }
 
 /// The settings button (top right) and its fan: a quarter circle down and
@@ -631,12 +1305,12 @@ fn fan_radius(r: f32, n: usize) -> f32 {
 fn app_menu(ctx: &egui::Context, st: &mut UiState, g: &Geo, actions: &mut Vec<Action>) {
     let open = ctx.animate_bool_with_time(Id::new("app_open"), st.menu == Menu::App, 0.12);
     let items = st.app_items.clone();
-    let n = items.len().max(2);
+    let slots = ring_slots(items.len(), g.r);
     let mut bbox = Rect::from_center_size(g.app, Vec2::splat(2.0 * g.r)).union(
         Rect::from_center_size(g.app + vec2(0.0, g.r + 12.0), vec2(2.0 * g.r + 24.0, 18.0)),
     );
     if open > 0.0 {
-        let reach = fan_radius(g.r, n) * open + g.r * 1.2;
+        let reach = fan_reach(&slots, g.r) * open + g.r * 1.2;
         bbox = bbox.union(Rect::from_min_max(
             g.app - vec2(reach + 50.0, g.r),
             g.app + vec2(g.r, reach + 24.0),
@@ -652,11 +1326,11 @@ fn app_menu(ctx: &egui::Context, st: &mut UiState, g: &Geo, actions: &mut Vec<Ac
             ui.allocate_exact_size(bbox.size(), Sense::hover());
             let p = ui.painter().clone();
             if open > 0.0 {
-                let radius = fan_radius(g.r, n) * open;
                 for (i, &item) in items.iter().enumerate() {
                     // From straight down (pi/2) round to straight left (pi).
-                    let a = FRAC_PI_2 + FRAC_PI_2 * (i as f32 / (n - 1) as f32);
-                    let pc = g.app + Vec2::angled(a) * radius;
+                    let (radius, frac) = slots[i];
+                    let a = FRAC_PI_2 + FRAC_PI_2 * frac;
+                    let pc = g.app + Vec2::angled(a) * radius * open;
                     let rr = g.r * 0.9 * open.max(0.3);
                     let resp = ui.interact(
                         Rect::from_center_size(pc, Vec2::splat(2.0 * rr)),
@@ -696,15 +1370,11 @@ fn app_menu(ctx: &egui::Context, st: &mut UiState, g: &Geo, actions: &mut Vec<Ac
                     Menu::App
                 };
             }
-            let info = if open < 0.1 {
-                format!("10^{:.1}", st.zoom_log10 + 0.0)
-            } else {
-                format!(
-                    "{} · zoom 10^{:.1} · {} strokes",
-                    st.file_name, st.zoom_log10, st.strokes
-                )
-            };
-            label_right(&p, pos2(g.app.x + g.r, g.app.y + g.r + 12.0), &info);
+            // Zoom depth under the button (hidden while the fan is out).
+            if open < 0.1 {
+                let info = format!("10^{:.1}", st.zoom_log10 + 0.0);
+                label_right(&p, pos2(g.app.x + g.r, g.app.y + g.r + 12.0), &info);
+            }
         });
 }
 
@@ -957,6 +1627,74 @@ fn tool_icon(p: &egui::Painter, c: Pos2, r: f32, tool: Tool, ink: Color32) {
             );
         }
         Tool::Picker => eyedropper(p, c, r, ink),
+        Tool::Shapes => {
+            // A square overlapped by a circle and a triangle.
+            let s = r * 0.32;
+            p.rect_stroke(
+                Rect::from_center_size(c + vec2(-s * 0.55, -s * 0.5), Vec2::splat(s * 1.5)),
+                2.0,
+                line,
+                egui::StrokeKind::Middle,
+            );
+            p.circle_stroke(
+                c + vec2(s * 0.55, s * 0.45),
+                s * 0.8,
+                Stroke::new(line.width, ink),
+            );
+            p.add(Shape::closed_line(
+                vec![
+                    c + vec2(-s * 0.35, s * 1.25),
+                    c + vec2(-s * 1.25, s * 1.25),
+                    c + vec2(-s * 0.8, s * 0.35),
+                ],
+                line,
+            ));
+        }
+        Tool::Text => {
+            // A serif "T".
+            let s = r * 0.5;
+            let st = Stroke::new((r * 0.11).max(1.5), ink);
+            p.line_segment(
+                [c + vec2(-s * 0.8, -s * 0.8), c + vec2(s * 0.8, -s * 0.8)],
+                st,
+            );
+            p.line_segment(
+                [c + vec2(-s * 0.8, -s * 0.8), c + vec2(-s * 0.8, -s * 0.55)],
+                st,
+            );
+            p.line_segment(
+                [c + vec2(s * 0.8, -s * 0.8), c + vec2(s * 0.8, -s * 0.55)],
+                st,
+            );
+            p.line_segment([c + vec2(0.0, -s * 0.8), c + vec2(0.0, s * 0.85)], st);
+            p.line_segment(
+                [c + vec2(-s * 0.35, s * 0.85), c + vec2(s * 0.35, s * 0.85)],
+                st,
+            );
+        }
+        Tool::Select => {
+            // A pointer arrow.
+            let s = r * 0.62;
+            let o = c + vec2(-s * 0.35, -s * 0.75);
+            let pts = [
+                (0.0, 0.0),
+                (0.0, 1.25),
+                (0.32, 0.95),
+                (0.55, 1.42),
+                (0.75, 1.33),
+                (0.52, 0.86),
+                (0.95, 0.86),
+            ];
+            p.add(Shape::convex_polygon(
+                pts.iter().map(|q| o + vec2(q.0 * s, q.1 * s)).collect(),
+                FACE,
+                Stroke::NONE,
+            ));
+            p.add(Shape::closed_line(
+                pts.iter().map(|q| o + vec2(q.0 * s, q.1 * s)).collect(),
+                line,
+            ));
+        }
         Tool::Hand => {
             // Move: a cross with a solid arrowhead on each arm.
             let s = r * 0.62;
@@ -980,6 +1718,138 @@ fn tool_icon(p: &egui::Painter, c: Pos2, r: f32, tool: Tool, ink: Color32) {
             }
         }
     }
+}
+
+/// Outline of a shape kind, fitted in a circle of radius `r` around `c`.
+fn shape_icon(p: &egui::Painter, c: Pos2, r: f32, kind: ShapeKind, col: Color32) {
+    let st = ShapeStyle {
+        kind,
+        round: false,
+        sides: 6,
+        sloppiness: Sloppiness::Architect,
+        start: Head::None,
+        end: Head::Arrow,
+        stroke: u32c(col),
+        ..Default::default()
+    };
+    let geom = shapes::Geom {
+        center: [c.x as f64, c.y as f64],
+        half: [
+            r as f64 * 0.8,
+            r as f64 * if kind == ShapeKind::Rect { 0.6 } else { 0.8 },
+        ],
+        rot: 0.0,
+        pts: vec![
+            [(c.x - r * 0.75) as f64, (c.y + r * 0.6) as f64],
+            [(c.x + r * 0.75) as f64, (c.y - r * 0.6) as f64],
+        ],
+    };
+    pieces_icon(
+        p,
+        &shapes::pieces(&st, &geom, (r * 0.12).max(1.4) as f64, 1),
+    );
+}
+
+/// Draw shape pieces given in points.
+fn pieces_icon(p: &egui::Painter, pieces: &[shapes::Piece]) {
+    for pc in pieces {
+        let pts: Vec<Pos2> = pc
+            .pts
+            .iter()
+            .map(|q| pos2(q[0] as f32, q[1] as f32))
+            .collect();
+        let col = {
+            let [r, g, b, a] = pc.color.to_le_bytes();
+            Color32::from_rgba_unmultiplied(r, g, b, a)
+        };
+        if pc.brush == Brush::Fill {
+            p.add(Shape::convex_polygon(pts, col, Stroke::NONE));
+        } else {
+            p.add(Shape::line(pts, Stroke::new(pc.width as f32, col)));
+        }
+    }
+}
+
+/// A small square showing a fill style.
+fn fill_icon(p: &egui::Painter, c: Pos2, r: f32, f: FillStyle) {
+    let st = ShapeStyle {
+        kind: ShapeKind::Rect,
+        fill_style: f,
+        round: false,
+        sloppiness: Sloppiness::Architect,
+        stroke: u32c(INKY),
+        fill: u32c(INKY),
+        ..Default::default()
+    };
+    let geom = shapes::Geom {
+        center: [c.x as f64, c.y as f64],
+        half: [r as f64 * 0.7, r as f64 * 0.7],
+        ..Default::default()
+    };
+    pieces_icon(p, &shapes::pieces(&st, &geom, 1.4, 1));
+}
+
+/// A short line in a dash style, a sloppiness or an arrow type.
+fn line_icon(p: &egui::Painter, c: Pos2, r: f32, dash: Dash, slop: Sloppiness, arrow: ArrowType) {
+    let st = ShapeStyle {
+        kind: ShapeKind::Line,
+        dash,
+        sloppiness: slop,
+        arrow,
+        stroke: u32c(INKY),
+        ..Default::default()
+    };
+    let (a, b) = if arrow == ArrowType::Straight {
+        ([c.x - r * 0.8, c.y], [c.x + r * 0.8, c.y])
+    } else {
+        (
+            [c.x - r * 0.8, c.y + r * 0.5],
+            [c.x + r * 0.8, c.y - r * 0.5],
+        )
+    };
+    let geom = shapes::Geom {
+        pts: vec![[a[0] as f64, a[1] as f64], [b[0] as f64, b[1] as f64]],
+        ..Default::default()
+    };
+    let mut pcs = shapes::pieces(&st, &geom, 1.8, 3);
+    if dash != Dash::Solid {
+        // egui has no dashes: draw the pattern as pieces.
+        let n = if dash == Dash::Dashed { 3 } else { 5 };
+        pcs.clear();
+        for i in 0..n {
+            let t0 = i as f32 / n as f32;
+            let t1 = t0 + if dash == Dash::Dashed { 0.6 } else { 0.08 } / n as f32;
+            let x0 = c.x - r * 0.8 + t0 * r * 1.6;
+            let x1 = c.x - r * 0.8 + t1 * r * 1.6;
+            p.line_segment(
+                [pos2(x0, c.y), pos2(x1.max(x0 + 1.5), c.y)],
+                Stroke::new(1.8, INKY),
+            );
+        }
+    }
+    pieces_icon(p, &pcs);
+}
+
+/// An arrowhead on a short line (`start`: pointing left).
+fn head_icon(p: &egui::Painter, c: Pos2, r: f32, h: Head, start: bool) {
+    let st = ShapeStyle {
+        kind: ShapeKind::Arrow,
+        sloppiness: Sloppiness::Architect,
+        start: Head::None,
+        end: h,
+        stroke: u32c(INKY),
+        ..Default::default()
+    };
+    let (a, b) = if start {
+        ([c.x + r * 0.8, c.y], [c.x - r * 0.8, c.y])
+    } else {
+        ([c.x - r * 0.8, c.y], [c.x + r * 0.8, c.y])
+    };
+    let geom = shapes::Geom {
+        pts: vec![[a[0] as f64, a[1] as f64], [b[0] as f64, b[1] as f64]],
+        ..Default::default()
+    };
+    pieces_icon(p, &shapes::pieces(&st, &geom, 1.6, 1));
 }
 
 /// Undo: an arrow pointing left whose tail hooks round to the right and
@@ -1008,7 +1878,7 @@ fn undo_icon(p: &egui::Painter, c: Pos2, r: f32, redo: bool, col: Color32) {
 /// the eyedropper was tapped.
 fn color_dial(
     ui: &mut egui::Ui,
-    ink: &mut InkSettings,
+    color: &mut Color32,
     hl: bool,
     dial_hue: &mut f32,
     touch: bool,
@@ -1020,7 +1890,7 @@ fn color_dial(
     let center = area.center();
     let p = ui.painter().clone();
     let mut pick = false;
-    let mut hsv = HsvaGamma::from(ink.color);
+    let mut hsv = HsvaGamma::from(*color);
     if hsv.s > 0.02 {
         *dial_hue = hsv.h;
     } else {
@@ -1070,7 +1940,7 @@ fn color_dial(
             *dial_hue = h;
             let s = if hsv.s < 0.15 { 0.9 } else { hsv.s };
             let v = if hsv.v < 0.25 { 0.9 } else { hsv.v };
-            ink.color = HsvaGamma { h, s, v, a: 1.0 }.into();
+            *color = HsvaGamma { h, s, v, a: 1.0 }.into();
         }
     }
 
@@ -1093,18 +1963,18 @@ fn color_dial(
             );
             p.circle_filled(pc, rr, col);
             p.circle_stroke(pc, rr, Stroke::new(1.0, EDGE));
-            if ink.color == col {
+            if *color == col {
                 p.circle_stroke(pc, rr + 3.0, Stroke::new(2.0, ACCENT));
             }
             if resp.clicked() {
-                ink.color = col;
+                *color = col;
             }
         }
     }
 
     // Centre: the current color.
     let rc = r_out * 0.2;
-    p.circle_filled(center, rc, ink.color);
+    p.circle_filled(center, rc, *color);
     p.circle_stroke(center, rc, Stroke::new(1.5, EDGE));
 
     // Eyedropper, in the dial's lower-left corner.
@@ -1124,7 +1994,7 @@ fn color_dial(
 
     // Saturation and brightness bars.
     let hsv = {
-        let mut h = HsvaGamma::from(ink.color);
+        let mut h = HsvaGamma::from(*color);
         if h.s <= 0.02 {
             h.h = *dial_hue;
         }
@@ -1173,7 +2043,7 @@ fn color_dial(
                 } else {
                     HsvaGamma { v: t, ..hsv }
                 };
-                ink.color = next.into();
+                *color = next.into();
             }
         }
     }

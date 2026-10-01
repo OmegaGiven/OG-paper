@@ -4,35 +4,131 @@
 // Copyright (c) 2026 OmegaGiven and contributors
 
 //! A compact binary snapshot of a canvas: strokes (erased ones too), their
-//! timeline, bookmarks and the view. The web app keeps it in browser storage
-//! and downloads it as an offline copy (`.ogpt`). It is not the `.ogp` format
-//! and holds no undo history.
+//! timeline, bookmarks, shapes and texts, and the view. The web app keeps it
+//! in browser storage and downloads it as an offline copy (`.ogpt`). It is
+//! not the `.ogp` format and holds no undo history.
 //!
-//! Layout (little endian): b"OGPT", version u8, camera, then
+//! Layout (little endian): b"OGPT", version u8 (2; 1 is still read), camera,
+//! then
 //! - strokes: count u32; each: addr, width f32, color u32, brush u8,
-//!   deleted u8, uid u128, point count u32, points (f32 x4 each)
+//!   deleted u8, uid u128, point count u32, points (f32 x4 each),
+//!   and in v2: dash u8, z f64
 //! - events: count u32; each: time i64 (ms), stroke u32, alive u8
 //! - bookmarks: count u32; each: name (u32 length + UTF-8), camera, view_px f64
+//! - v2 groups (shapes and texts): count u32; each: addr, stroke count u32,
+//!   stroke indexes (u32 each), data (see [`put_data`])
 //!
 //! A camera is addr, off f64 x2, scale f64. An addr is level i64 then x and y
 //! as (byte count u32, signed LE bytes).
 
 use num_bigint::BigInt;
-use ogpaper_core::{Brush, Camera, CellAddr, Scene};
+use ogpaper_core::{Brush, Camera, CellAddr, Dash, Scene, Style};
 
+use crate::font::{Align, Font};
+use crate::objects::{Group, ObjData, Objects, TextStyle};
+use crate::shapes::{ArrowType, FillStyle, Geom, Head, ShapeKind, ShapeStyle, Sloppiness};
 use crate::timeline::{Bookmark, Event, Timeline};
 
 const MAGIC: &[u8; 4] = b"OGPT";
-const VERSION: u8 = 1;
+const VERSION: u8 = 2;
 
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 pub struct Snapshot {
     pub scene: Scene,
     pub cam: Camera,
     pub timeline: Timeline,
     pub bookmarks: Vec<Bookmark>,
+    pub objs: Objects,
 }
 
-pub fn encode(scene: &Scene, cam: &Camera, timeline: &Timeline, bookmarks: &[Bookmark]) -> Vec<u8> {
+/// A shape's or text's settings: kind u8 (0 shape, 1 text), then
+/// - shape: kind, stroke u32, fill u32, fill style, dash, sloppiness, round,
+///   sides, start head, end head, arrow type, opacity (u8 unless noted),
+///   geometry, width f64, seed u32
+/// - text: text (u32 length + UTF-8), font u8, align u8, color u32,
+///   opacity u8, geometry, size f64, seed u32
+///
+/// Geometry: centre f64 x2, half size f64 x2, rotation f64, point count u32,
+/// points f64 x2. All lengths in the group cell's units.
+pub fn put_data(b: &mut Vec<u8>, d: &ObjData) {
+    let geom = |b: &mut Vec<u8>, g: &Geom| {
+        for v in [g.center[0], g.center[1], g.half[0], g.half[1], g.rot] {
+            b.extend_from_slice(&v.to_le_bytes());
+        }
+        b.extend_from_slice(&(g.pts.len() as u32).to_le_bytes());
+        for p in &g.pts {
+            b.extend_from_slice(&p[0].to_le_bytes());
+            b.extend_from_slice(&p[1].to_le_bytes());
+        }
+    };
+    match d {
+        ObjData::Shape {
+            style,
+            geom: g,
+            width,
+            seed,
+        } => {
+            b.push(0);
+            b.push(style.kind as u8);
+            b.extend_from_slice(&style.stroke.to_le_bytes());
+            b.extend_from_slice(&style.fill.to_le_bytes());
+            b.extend_from_slice(&[
+                style.fill_style as u8,
+                style.dash as u8,
+                style.sloppiness as u8,
+                style.round as u8,
+                style.sides,
+                style.start as u8,
+                style.end as u8,
+                style.arrow as u8,
+                style.opacity,
+            ]);
+            geom(b, g);
+            b.extend_from_slice(&width.to_le_bytes());
+            b.extend_from_slice(&seed.to_le_bytes());
+        }
+        ObjData::Text {
+            text,
+            style,
+            geom: g,
+            size,
+            seed,
+        } => {
+            b.push(1);
+            b.extend_from_slice(&(text.len() as u32).to_le_bytes());
+            b.extend_from_slice(text.as_bytes());
+            b.push(style.font as u8);
+            b.push(style.align as u8);
+            b.extend_from_slice(&style.color.to_le_bytes());
+            b.push(style.opacity);
+            geom(b, g);
+            b.extend_from_slice(&size.to_le_bytes());
+            b.extend_from_slice(&seed.to_le_bytes());
+        }
+    }
+}
+
+/// Read what [`put_data`] wrote.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+pub fn get_data(bytes: &[u8]) -> Result<ObjData, String> {
+    Reader { b: bytes, at: 0 }.data()
+}
+
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+pub fn data_bytes(d: &ObjData) -> Vec<u8> {
+    let mut b = Vec::new();
+    put_data(&mut b, d);
+    b
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub fn encode(
+    scene: &Scene,
+    cam: &Camera,
+    timeline: &Timeline,
+    bookmarks: &[Bookmark],
+    objs: &Objects,
+) -> Vec<u8> {
     let mut b = Vec::with_capacity(64 + scene.points.len() * 16 + timeline.events.len() * 13);
     b.extend_from_slice(MAGIC);
     b.push(VERSION);
@@ -53,6 +149,8 @@ pub fn encode(scene: &Scene, cam: &Camera, timeline: &Timeline, bookmarks: &[Boo
                 b.extend_from_slice(&v.to_le_bytes());
             }
         }
+        b.push(s.dash as u8);
+        b.extend_from_slice(&s.z.to_le_bytes());
     }
     b.extend_from_slice(&(timeline.events.len() as u32).to_le_bytes());
     for e in &timeline.events {
@@ -67,16 +165,26 @@ pub fn encode(scene: &Scene, cam: &Camera, timeline: &Timeline, bookmarks: &[Boo
         put_cam(&mut b, &m.cam);
         b.extend_from_slice(&m.view_px.to_le_bytes());
     }
+    b.extend_from_slice(&(objs.groups.len() as u32).to_le_bytes());
+    for g in &objs.groups {
+        put_addr(&mut b, &g.cell);
+        b.extend_from_slice(&(g.strokes.len() as u32).to_le_bytes());
+        for s in &g.strokes {
+            b.extend_from_slice(&s.to_le_bytes());
+        }
+        put_data(&mut b, &g.data);
+    }
     b
 }
 
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 pub fn decode(bytes: &[u8], base_px: f64) -> Result<Snapshot, String> {
     let mut r = Reader { b: bytes, at: 0 };
     if r.take(4)? != MAGIC {
         return Err("not an OG Paper snapshot".into());
     }
     let v = r.u8()?;
-    if v != VERSION {
+    if v != 1 && v != VERSION {
         return Err(format!("unsupported snapshot version {v}"));
     }
     let cam = r.cam(base_px)?;
@@ -97,7 +205,18 @@ pub fn decode(bytes: &[u8], base_px: f64) -> Result<Snapshot, String> {
         for _ in 0..len {
             pts.push([r.f32()?, r.f32()?, r.f32()?, r.f32()?]);
         }
-        let id = scene.add_stroke_styled(&cell, &pts, width, color, brush, uid);
+        let (dash, z) = if v >= 2 {
+            (Dash::from_u8(r.u8()?), r.f64()?)
+        } else {
+            (Dash::Solid, scene.z_top + 1.0)
+        };
+        let style = Style {
+            width,
+            color,
+            brush,
+            dash,
+        };
+        let id = scene.add_stroke_at(&cell, &pts, style, uid, z);
         if deleted {
             scene.delete(id);
         }
@@ -121,11 +240,36 @@ pub fn decode(bytes: &[u8], base_px: f64) -> Result<Snapshot, String> {
         let view_px = r.f64()?;
         bookmarks.push(Bookmark { name, cam, view_px });
     }
+    let mut objs = Objects::default();
+    if v >= 2 {
+        let n = r.u32()?;
+        for _ in 0..n {
+            let cell = r.addr()?;
+            let k = r.u32()? as usize;
+            if k > (bytes.len() - r.at) / 4 {
+                return Err("truncated snapshot".into());
+            }
+            let mut strokes = Vec::with_capacity(k);
+            for _ in 0..k {
+                let s = r.u32()?;
+                if (s as usize) < scene.strokes.len() {
+                    strokes.push(s);
+                }
+            }
+            let data = r.data()?;
+            objs.add(Group {
+                cell,
+                data,
+                strokes,
+            });
+        }
+    }
     Ok(Snapshot {
         scene,
         cam,
         timeline: Timeline::from_events(events),
         bookmarks,
+        objs,
     })
 }
 
@@ -187,6 +331,84 @@ impl<'a> Reader<'a> {
         }
         Ok(cam)
     }
+    fn data(&mut self) -> Result<ObjData, String> {
+        let kind = self.u8()?;
+        let geom = |r: &mut Reader| -> Result<Geom, String> {
+            let center = [r.f64()?, r.f64()?];
+            let half = [r.f64()?, r.f64()?];
+            let rot = r.f64()?;
+            let n = r.u32()? as usize;
+            if n > (r.b.len() - r.at) / 16 {
+                return Err("truncated snapshot".into());
+            }
+            let mut pts = Vec::with_capacity(n);
+            for _ in 0..n {
+                pts.push([r.f64()?, r.f64()?]);
+            }
+            Ok(Geom {
+                center,
+                half,
+                rot,
+                pts,
+            })
+        };
+        match kind {
+            0 => {
+                let k = ShapeKind::from_u8(self.u8()?);
+                let stroke = self.u32()?;
+                let fill = self.u32()?;
+                let f = self.take(9)?;
+                let style = ShapeStyle {
+                    kind: k,
+                    stroke,
+                    fill,
+                    fill_style: FillStyle::from_u8(f[0]),
+                    dash: Dash::from_u8(f[1]),
+                    sloppiness: Sloppiness::from_u8(f[2]),
+                    round: f[3] != 0,
+                    sides: f[4],
+                    start: Head::from_u8(f[5]),
+                    end: Head::from_u8(f[6]),
+                    arrow: ArrowType::from_u8(f[7]),
+                    opacity: f[8],
+                };
+                let geom = geom(self)?;
+                let width = self.f64()?;
+                let seed = self.u32()?;
+                Ok(ObjData::Shape {
+                    style,
+                    geom,
+                    width,
+                    seed,
+                })
+            }
+            1 => {
+                let n = self.u32()? as usize;
+                let text = String::from_utf8_lossy(self.take(n)?).into_owned();
+                let font = Font::from_u8(self.u8()?);
+                let align = Align::from_u8(self.u8()?);
+                let color = self.u32()?;
+                let opacity = self.u8()?;
+                let geom = geom(self)?;
+                let size = self.f64()?;
+                let seed = self.u32()?;
+                Ok(ObjData::Text {
+                    text,
+                    style: TextStyle {
+                        font,
+                        align,
+                        color,
+                        opacity,
+                    },
+                    geom,
+                    size,
+                    seed,
+                })
+            }
+            k => Err(format!("unknown object kind {k}")),
+        }
+    }
+
     fn addr(&mut self) -> Result<CellAddr, String> {
         let level = i64::from_le_bytes(self.take(8)?.try_into().expect("8 bytes"));
         let mut big = || -> Result<BigInt, String> {
@@ -234,7 +456,24 @@ mod tests {
             cam: cam.clone(),
             view_px: 640.0,
         }];
-        let bytes = encode(&s, &cam, &tl, &marks);
+        let mut objs = Objects::default();
+        objs.add(Group {
+            cell: deep.clone(),
+            data: ObjData::Text {
+                text: "Hi ✨".into(),
+                style: TextStyle::default(),
+                geom: Geom {
+                    center: [0.5, 0.5],
+                    half: [0.2, 0.1],
+                    rot: 0.3,
+                    pts: vec![],
+                },
+                size: 0.1,
+                seed: 9,
+            },
+            strokes: vec![a],
+        });
+        let bytes = encode(&s, &cam, &tl, &marks, &objs);
         let snap = decode(&bytes, 800.0).unwrap();
         let s2 = &snap.scene;
         assert_eq!(s2.strokes.len(), 2);
@@ -246,6 +485,10 @@ mod tests {
         assert_eq!(s2.strokes[0].color, 0x11223344);
         assert_eq!(snap.timeline.events, tl.events);
         assert_eq!(snap.bookmarks[0].name, "deep ✨");
+        assert_eq!(snap.objs.groups.len(), 1);
+        assert_eq!(snap.objs.groups[0].data, objs.groups[0].data);
+        assert_eq!(snap.objs.obj_of(0), crate::objects::ObjRef::Group(0));
+        assert_eq!(snap.scene.strokes[0].z, s.strokes[0].z);
         assert_eq!(snap.bookmarks[0].cam.cell, cam.cell);
         assert_eq!(snap.bookmarks[0].view_px, 640.0);
         assert_eq!(snap.cam.cell, cam.cell);

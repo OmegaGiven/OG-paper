@@ -27,9 +27,14 @@ struct StrokeRec {
     start: u32,
     len: u32,
     brush: u32,
+    dash: u32,
     width: f32,
     color: u32,
 };
+
+const BRUSH_FILL: u32 = 3u;
+// Fill polygons are tested point by point; outlines longer than this are cut.
+const FILL_MAX_PTS: u32 = 512u;
 
 fn texel(i: u32) -> vec2<i32> {
     return vec2<i32>(i32(i % g.tex_w), i32(i / g.tex_w));
@@ -37,12 +42,13 @@ fn texel(i: u32) -> vec2<i32> {
 
 fn stroke_at(i: u32) -> StrokeRec {
     let v = textureLoad(strokes_tex, texel(i), 0);
-    return StrokeRec(v.x, v.y & 0xFFFFFFu, v.y >> 24u, bitcast<f32>(v.z), v.w);
+    let kind = v.y >> 24u;
+    return StrokeRec(v.x, v.y & 0xFFFFFFu, kind & 15u, (kind >> 4u) & 3u, bitcast<f32>(v.z), v.w);
 }
 
-// x, y (cell-local), pressure.
-fn point_at(i: u32) -> vec3<f32> {
-    return textureLoad(points_tex, texel(i), 0).xyz;
+// x, y (cell-local), pressure, distance along the stroke (cell-local).
+fn point_at(i: u32) -> vec4<f32> {
+    return textureLoad(points_tex, texel(i), 0);
 }
 
 // Width factor by brush: pen follows pressure, marker/highlighter do not.
@@ -64,6 +70,13 @@ struct VsOut {
     @location(2) @interpolate(flat) b: vec2<f32>,
     @location(3) @interpolate(flat) r: vec2<f32>,
     @location(4) @interpolate(flat) color: vec4<f32>,
+    // Previous segment's start (px) and radius there, and whether it exists.
+    @location(5) @interpolate(flat) prev: vec4<f32>,
+    // Distance along the stroke at a and b (px), unit width (px), dash.
+    @location(6) @interpolate(flat) along: vec4<f32>,
+    // Fill: stroke id, kind (0 line, 1 fill); origin and scale.
+    @location(7) @interpolate(flat) ids: vec2<u32>,
+    @location(8) @interpolate(flat) xform: vec4<f32>,
 };
 
 fn collapsed() -> VsOut {
@@ -74,6 +87,40 @@ fn collapsed() -> VsOut {
     out.b = vec2<f32>(0.0);
     out.r = vec2<f32>(0.0);
     out.color = vec4<f32>(0.0);
+    out.prev = vec4<f32>(0.0);
+    out.along = vec4<f32>(0.0);
+    out.ids = vec2<u32>(0u);
+    out.xform = vec4<f32>(0.0);
+    return out;
+}
+
+// One instance covers a whole fill polygon: a quad over its bounding box.
+fn vs_fill(vi: u32, sid: u32, s: StrokeRec, o: vec2<f32>, scale: f32) -> VsOut {
+    if (vi >= 6u || s.len < 3u) {
+        return collapsed();
+    }
+    var lo = vec2<f32>(1e30);
+    var hi = vec2<f32>(-1e30);
+    let n = min(s.len, FILL_MAX_PTS);
+    for (var i = 0u; i < n; i = i + 1u) {
+        let p = o + point_at(s.start + i).xy * scale;
+        lo = min(lo, p);
+        hi = max(hi, p);
+    }
+    lo = max(lo - vec2<f32>(1.0), vec2<f32>(-1.0));
+    hi = min(hi + vec2<f32>(1.0), g.viewport + vec2<f32>(1.0));
+    if (hi.x <= lo.x || hi.y <= lo.y) {
+        return collapsed();
+    }
+    var cx = array<f32, 6>(0.0, 1.0, 1.0, 0.0, 1.0, 0.0);
+    var cy = array<f32, 6>(0.0, 0.0, 1.0, 0.0, 1.0, 1.0);
+    let p = vec2<f32>(mix(lo.x, hi.x, cx[vi]), mix(lo.y, hi.y, cy[vi]));
+    var out = collapsed();
+    out.pos = to_clip(p);
+    out.px = p;
+    out.color = unpack4x8unorm(s.color);
+    out.ids = vec2<u32>(sid, 1u);
+    out.xform = vec4<f32>(o, scale, 0.0);
     return out;
 }
 
@@ -86,6 +133,9 @@ fn vs_stroke(
     @location(3) scale: f32,
 ) -> VsOut {
     let s = stroke_at(sid);
+    if (s.brush == BRUSH_FILL) {
+        return vs_fill(vi, sid, s, o, scale);
+    }
     let seg = first + vi / 6u;
     let corner = vi % 6u;
     if (seg + 1u >= s.len && !(s.len == 1u && seg == 0u)) {
@@ -123,7 +173,7 @@ fn vs_stroke(
     }
     let p = base + dir * along[corner] * r + nrm * side[corner] * r;
 
-    var out: VsOut;
+    var out = collapsed();
     out.pos = to_clip(p);
     out.px = p;
     out.a = a;
@@ -133,22 +183,100 @@ fn vs_stroke(
     // Hairlines fade rather than vanish.
     c.a = c.a * clamp(max(ra_true, rb_true) * 2.0, 0.2, 1.0);
     out.color = c;
+    if (seg > 0u) {
+        let pp = point_at(s.start + seg - 1u);
+        let rp = max(hw * pressure_factor(s.brush, pp.z), 0.5);
+        out.prev = vec4<f32>(o + pp.xy * scale, rp, 1.0);
+    }
+    out.along = vec4<f32>(pa.w * scale, pb.w * scale, max(s.width * scale, 1.5), f32(s.dash));
     return out;
 }
 
-fn coverage(in: VsOut) -> f32 {
-    let pa = in.px - in.a;
-    let ba = in.b - in.a;
+// Distance from p to segment ab, and where along it (0..1) the closest point is.
+fn seg_dist(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
+    let pa = p - a;
+    let ba = b - a;
     let h = clamp(dot(pa, ba) / max(dot(ba, ba), 1e-6), 0.0, 1.0);
-    let dist = length(pa - ba * h);
-    let rad = mix(in.r.x, in.r.y, h);
-    return clamp(rad + 0.5 - dist, 0.0, 1.0);
+    return vec2<f32>(length(pa - ba * h), h);
 }
 
-// Normal ink: premultiplied alpha over.
+fn coverage(in: VsOut) -> f32 {
+    let dh = seg_dist(in.px, in.a, in.b);
+    var dist = dh.x;
+    let h = dh.y;
+    let rad = mix(in.r.x, in.r.y, h);
+    // Dashes and dots: round-ended pieces along the stroke.
+    let dash = u32(in.along.w);
+    if (dash != 0u) {
+        let t = mix(in.along.x, in.along.y, h);
+        let u = in.along.z;
+        var period = u * 2.4;
+        var on = 0.0;
+        if (dash == 1u) {
+            period = u * 6.0;
+            on = u * 3.0;
+        }
+        let m = t - floor(t / period) * period;
+        var gap = 0.0;
+        if (m > on) {
+            gap = min(m - on, period - m);
+        }
+        dist = length(vec2<f32>(dist, gap));
+    }
+    var cov = clamp(rad + 0.5 - dist, 0.0, 1.0);
+    // Translucent ink: where the previous segment of this stroke already
+    // covers the pixel, leave it, so joints do not darken.
+    if (in.prev.w > 0.5 && in.color.a < 0.999 && dash == 0u) {
+        let dp = seg_dist(in.px, in.prev.xy, in.a);
+        let rp = mix(in.prev.z, in.r.x, dp.y);
+        if (clamp(rp + 0.5 - dp.x, 0.0, 1.0) >= cov) {
+            cov = 0.0;
+        }
+    }
+    return cov;
+}
+
+// Fill: inside test (non-zero winding) over the outline, with 1 px AA from
+// the distance to the nearest edge.
+fn fill_coverage(in: VsOut) -> f32 {
+    let s = stroke_at(in.ids.x);
+    let o = in.xform.xy;
+    let scale = in.xform.z;
+    let n = min(s.len, FILL_MAX_PTS);
+    var wind = 0;
+    var dmin = 1e30;
+    var prev = o + point_at(s.start + n - 1u).xy * scale;
+    for (var i = 0u; i < n; i = i + 1u) {
+        let cur = o + point_at(s.start + i).xy * scale;
+        dmin = min(dmin, seg_dist(in.px, prev, cur).x);
+        let crosses = (prev.y <= in.px.y) != (cur.y <= in.px.y);
+        if (crosses) {
+            let x = prev.x + (in.px.y - prev.y) / (cur.y - prev.y) * (cur.x - prev.x);
+            if (x > in.px.x) {
+                if (cur.y > prev.y) {
+                    wind = wind + 1;
+                } else {
+                    wind = wind - 1;
+                }
+            }
+        }
+        prev = cur;
+    }
+    if (wind != 0) {
+        return clamp(0.5 + dmin, 0.0, 1.0);
+    }
+    return clamp(0.5 - dmin, 0.0, 1.0);
+}
+
+// Normal ink and fills: premultiplied alpha over.
 @fragment
 fn fs_stroke(in: VsOut) -> @location(0) vec4<f32> {
-    let cov = coverage(in);
+    var cov = 0.0;
+    if (in.ids.y == 1u) {
+        cov = fill_coverage(in);
+    } else {
+        cov = coverage(in);
+    }
     if (cov <= 0.0) {
         discard;
     }
