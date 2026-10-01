@@ -21,10 +21,16 @@ pub fn strokes_near(scene: &Scene, list: &DrawList, p: [f32; 2], radius: f32) ->
         let hw = s.width * inst.scale * 0.5;
         let r = radius + hw;
         let at = |q: &[f32; 4]| [inst.ox + q[0] * inst.scale, inst.oy + q[1] * inst.scale];
-        let hit = pts
-            .windows(2)
-            .any(|w| seg_dist(p, at(&w[0]), at(&w[1])) <= r)
-            || (pts.len() == 1 && seg_dist(p, at(&pts[0]), at(&pts[0])) <= r);
+        let hit = if s.brush == crate::Brush::Fill {
+            let poly: Vec<[f32; 2]> = pts.iter().map(at).collect();
+            inside(p, &poly)
+                || (0..poly.len())
+                    .any(|i| seg_dist(p, poly[i], poly[(i + 1) % poly.len()]) <= radius)
+        } else {
+            pts.windows(2)
+                .any(|w| seg_dist(p, at(&w[0]), at(&w[1])) <= r)
+                || (pts.len() == 1 && seg_dist(p, at(&pts[0]), at(&pts[0])) <= r)
+        };
         if hit {
             out.push(inst.stroke);
         }
@@ -34,7 +40,23 @@ pub fn strokes_near(scene: &Scene, list: &DrawList, p: [f32; 2], radius: f32) ->
     out
 }
 
-fn seg_dist(p: [f32; 2], a: [f32; 2], b: [f32; 2]) -> f32 {
+/// Point in polygon (even-odd).
+pub fn inside(p: [f32; 2], poly: &[[f32; 2]]) -> bool {
+    let mut odd = false;
+    let n = poly.len();
+    for i in 0..n {
+        let (a, b) = (poly[i], poly[(i + 1) % n]);
+        if (a[1] > p[1]) != (b[1] > p[1]) {
+            let x = a[0] + (p[1] - a[1]) / (b[1] - a[1]) * (b[0] - a[0]);
+            if x > p[0] {
+                odd = !odd;
+            }
+        }
+    }
+    odd
+}
+
+pub fn seg_dist(p: [f32; 2], a: [f32; 2], b: [f32; 2]) -> f32 {
     let (bx, by) = (b[0] - a[0], b[1] - a[1]);
     let (px, py) = (p[0] - a[0], p[1] - a[1]);
     let len2 = bx * bx + by * by;

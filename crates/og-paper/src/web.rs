@@ -31,6 +31,8 @@ pub enum Cmd {
     Timeline(Option<usize>),
     /// Make the moment shown in the timeline the current canvas (undoable).
     TimelineRestore,
+    /// The page's text editor finished (Some: the text) or was cancelled.
+    Text(Option<String>),
 }
 
 /// Counters the try-mode tour checks off.
@@ -52,6 +54,13 @@ thread_local! {
     static DIRTY: Cell<bool> = const { Cell::new(false) };
     static STATS: Cell<Stats> = Cell::new(Stats { deep_draw: f64::NEG_INFINITY, ..Default::default() });
     static OUTBOX: RefCell<Vec<&'static str>> = RefCell::default();
+    static TEXT_REQ: RefCell<String> = RefCell::default();
+}
+
+/// Ask the page to show its text editor; `json` says where and with what.
+pub fn text_request(json: String) {
+    TEXT_REQ.with(|t| *t.borrow_mut() = json);
+    emit("text");
 }
 
 pub fn set_window(w: Arc<Window>) {
@@ -227,6 +236,20 @@ pub fn og_requests() -> String {
         .map(|s| format!("\"{s}\""))
         .collect();
     format!("[{}]", v.join(","))
+}
+
+/// Where and how to show the text editor the app asked for ("text"
+/// request): JSON with x, y (CSS px, top-left), size (cap height, CSS px),
+/// color and the starting text.
+#[wasm_bindgen]
+pub fn og_text_request() -> String {
+    TEXT_REQ.with(|t| t.borrow().clone())
+}
+
+/// The text editor's result: the text, or nothing if cancelled.
+#[wasm_bindgen]
+pub fn og_text_done(text: Option<String>) {
+    push(Cmd::Text(text));
 }
 
 /// Ask for a snapshot of the canvas; pick it up with `og_snapshot_take`.

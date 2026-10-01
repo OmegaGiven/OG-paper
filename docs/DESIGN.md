@@ -25,7 +25,10 @@ Phase 0 is done ([`PHASE0.md`](PHASE0.md)); Phase 1 milestone M1 is done, plus s
 | Area | Working today |
 | --- | --- |
 | Platforms | Windows, macOS, Linux, Android (APK) and the web (WASM, WebGPU or WebGL2, installable PWA), built by CI on every push |
-| Ink | Pen (pressure), marker, highlighter; stroke eraser; eyedropper; color dial + custom colors; width per brush; undo/redo (Ctrl+Z / two-finger tap, Ctrl+Y / three-finger tap) |
+| Ink | Pen (pressure), marker, highlighter; solid / dashed / dotted strokes; opacity; stroke eraser; eyedropper; color dial + custom colors; width per brush; undo/redo (Ctrl+Z / two-finger tap, Ctrl+Y / three-finger tap) |
+| Shapes | One Shapes tool: rectangle, ellipse, diamond, triangle, star, polygon, line, arrow. Excalidraw-style options: fill (none, hachure, cross-hatch, zigzag, solid) and fill color, stroke width and style, sloppiness (architect, artist, cartoonist), sharp / round edges, star points / polygon sides, line type (straight, curved, elbow), arrowheads at either end, opacity. Shift keeps proportions / snaps angles, Alt draws from the centre |
+| Text | Text tool with three single-stroke fonts (Normal, Hand-drawn, Code), sizes, alignment, color and opacity; multi-line; double-tap a text with Select to edit it. Text is ink, so it stays sharp at any zoom |
+| Select and edit | Tap or box-select; Shift-click to add; move, resize (corner handles, Shift keeps proportions, Alt from the centre), rotate (knob above the box, Shift snaps to 15°); duplicate, delete, bring to front, send to back, flip; restyle a selection from the tool panel; copy / paste; arrow keys nudge. All edits are one undo step each |
 | Canvas | Unbounded pan and zoom (tested past 10^45 in the app, 10^48 in the spike); content of any size at any depth |
 | Files | Desktop and Android: autosave to `.ogp` (SQLite), New / Open / Save As. Web: autosave in browser storage, download / open `.ogpt` offline copies |
 | Bookmarks (web) | Save the current view; rename, delete; tap to fly there (animated zoom + pan across any depth, framed for the screen size) |
@@ -34,9 +37,9 @@ Phase 0 is done ([`PHASE0.md`](PHASE0.md)); Phase 1 milestone M1 is done, plus s
 
 **Controls.** All controls are round buttons drawn by the app (egui), sized for touch on touch screens:
 
-- **Tool button** (bottom right) fans out a quarter circle of tools: pen, marker, highlighter, picker, eraser, pan.
-- **Tool panel** (top left, like Excalidraw's properties panel) shows the selected brush's settings and stays out while you draw: stroke preview, width, pressure (pen), color swatches and a custom color. Its chevron tucks it into a small sliders button that pops it back out; it starts open on wide screens and tucked on phones. New per-tool options (textures, presets) will be added as sections here.
-- **Color button** (above it) opens the color dial.
+- **Tool button** (bottom right) fans out the tools in quarter-circle rings: pen, marker, highlighter and eraser on the inner ring; select, shapes, text, picker and pan on the outer one. Fans fill rings from the inside out, so a longer menu adds a ring instead of one huge curve (the ⚙ fan does the same).
+- **Tool panel** (top left, like Excalidraw's properties panel) shows the current tool's settings, or the selection's, and stays out while you draw. Pens: stroke preview, width, pressure (pen), stroke style, opacity and the color dial (preset rings around the current color, a hue ring, an eyedropper, saturation / brightness bars). Shapes: shape picker and all the shape options above, with the dial switching between stroke and fill color. Text: font, size, alignment, opacity, color. Select: actions (duplicate, delete, front, back, flip, edit text) and the style of what is selected; changes apply when the pointer is released. Its chevron tucks it into a small sliders button that pops it back out; it starts open on wide screens and tucked on phones. New per-tool options (textures, presets) will be added as sections here.
+- **Keyboard:** 1 / 2 / 3 pen / marker / highlighter, E eraser, I picker, H pan, V select, S shapes, R / O / D / A / L rectangle / ellipse / diamond / arrow / line, T text; with a selection: Delete, Ctrl+D duplicate, Ctrl+C / Ctrl+V copy / paste, Ctrl+] / Ctrl+[ front / back, arrows nudge (Shift: 10 px), Esc deselect; Ctrl+A selects everything on screen.
 - **Undo / redo** (left of the tool button): ↩ and ↪.
 - **Settings button ⚙** (top right) fans out the canvas commands: New canvas, Open, Save copy, Home, and on the web Bookmarks, Timeline, Full screen and (try mode) Tour. The zoom depth is shown under it. The web page tells the app which items it offers and draws the panels (bookmark list, timeline bar, tour) as HTML.
 
@@ -178,23 +181,40 @@ A canvas is one `.ogp` file: a SQLite database with a published, openly licensed
 
 **Migrating off Endless Paper:** their vector PDF export → our PDF import. Depth and layers will not survive.
 
-### Implemented today: `.ogp` format 0.1
+### Implemented today: `.ogp` format 0.2
 
-The v1 schema above is the target. What the app writes now (`crates/ogpaper-file`, `meta.format_version = "0.1"`) is a subset, and every 0.1 file stays readable as the schema grows:
+The v1 schema above is the target. What the app writes now (`crates/ogpaper-file`, `meta.format_version = "0.2"`) is a subset. 0.2 only adds to 0.1: 0.1 files open and are upgraded in place (new columns and table), and 0.1 readers can still read 0.2 files (they ignore what they do not know).
 
 | Table | Columns | Notes |
 | --- | --- | --- |
-| `meta` | `key` TEXT PK, `value` TEXT | Keys: `format` = `ogp`, `format_version` = `0.1`, `README` (plain-English description of the format), `created` (Unix ms), `app` (`og-paper <version>`), `view` (last camera, see below) |
-| `objects` | `id` BLOB PK (UUIDv7, 16 bytes big-endian), `level` INTEGER, `ix` TEXT, `iy` TEXT, `kind` TEXT, `brush` INTEGER, `color` INTEGER, `width` REAL, `points` BLOB, `deleted` INTEGER, `created` INTEGER | Index `objects_cell (level, ix, iy)`. Only `kind = 'stroke'` so far |
+| `meta` | `key` TEXT PK, `value` TEXT | Keys: `format` = `ogp`, `format_version` = `0.2`, `README` (plain-English description of the format), `created` (Unix ms), `app` (`og-paper <version>`), `view` (last camera, see below) |
+| `objects` | `id` BLOB PK (UUIDv7, 16 bytes big-endian), `level` INTEGER, `ix` TEXT, `iy` TEXT, `kind` TEXT, `brush` INTEGER, `color` INTEGER, `width` REAL, `points` BLOB, `deleted` INTEGER, `created` INTEGER, *0.2:* `dash` INTEGER, `z` REAL | Index `objects_cell (level, ix, iy)`. Only `kind = 'stroke'` so far |
+| `groups` *(0.2)* | `id` BLOB PK, `level` INTEGER, `ix` TEXT, `iy` TEXT, `kind` TEXT (`shape` / `text`), `data` BLOB, `strokes` BLOB, `created` INTEGER | Shapes and texts: the strokes they were drawn as, and the settings to edit them again |
 
 - **Cell address:** `level` plus `ix`, `iy` as decimal text (arbitrarily large integers).
 - **Stroke points:** little-endian f32 triples (x, y, pressure) in the anchor cell's local space, where [0,1]² is the cell. Strokes may overflow their cell by up to one cell side.
-- **`width`:** in the same cell-local units. **`color`:** RGBA8 packed R | G<<8 | B<<16 | A<<24. **`brush`:** 0 pen, 1 marker, 2 highlighter.
-- **`deleted`:** 1 = erased (kept as a tombstone for undo and sync). Draw live rows in rowid order.
+- **`width`:** in the same cell-local units. **`color`:** RGBA8 packed R | G<<8 | B<<16 | A<<24; A is the opacity. **`brush`:** 0 pen, 1 marker, 2 highlighter, 3 fill (*0.2*: the points outline a polygon filled with `color`, used for solid shape fills and arrowheads).
+- **`dash`** *(0.2)*: 0 solid, 1 dashed, 2 dotted (pieces sized from the stroke width).
+- **`z`** *(0.2)*: draw order, low to high, ties by rowid; NULL (0.1 rows) means rowid order. "Send to back" writes strokes below everything else.
+- **`deleted`:** 1 = erased (kept as a tombstone for undo and sync).
 - **`created`:** when the row was written (Unix ms); the id's UUIDv7 prefix also holds the stroke's creation time.
 - **`meta.view`:** `level|ix|iy|off_x|off_y|scale`, the camera to reopen at.
+- **`groups.strokes`:** the 16-byte ids of the group's rows in `objects`, concatenated. **`groups.data`:** the group's settings in the same binary record as `.ogpt` (below), in the units of the group's cell. A reader that only draws can ignore `groups`: the strokes are the drawing.
 
-Not yet in 0.1: `cells`, `layers`, `bookmarks`, `blobs`, `ops`, deletion time stamps, and the compact 6-byte point encoding.
+Not yet in 0.2: `cells`, `layers`, `bookmarks`, `blobs`, `ops`, deletion time stamps, and the compact 6-byte point encoding.
+
+### Shapes, text and editing
+
+Shapes and text are stored as ordinary strokes, so everything that works for ink works for them: zoom to any depth, the renderer, the eraser (which takes a whole shape or text), undo, the timeline, autosave and sync. A **group** remembers what they were made from:
+
+- **Shape:** kind, stroke and fill colors, fill style, dash, sloppiness, round edges, sides / points, start and end arrowheads, line type, opacity; a box (centre, half size, rotation) or, for lines and arrows, a list of points; the outline width; and a random seed so hand-drawn wobble looks the same every time it is regenerated.
+- **Text:** the text, font, alignment, color, opacity; its box (centre, half size, rotation) and cap height; and a seed (the hand-drawn font wobbles a little).
+
+The geometry lives in the units of the cell that fits the object, like a stroke's anchor cell, so a shape drawn deep inside a dot stays exact. Generation (`shapes.rs`, `font.rs`) turns a group into pieces: outline passes (two slightly different ones for the hand-drawn looks, with overshoot), hachure / cross-hatch / zigzag lines clipped to the outline, fill polygons, and arrowheads.
+
+**Edits never change strokes in place.** Moving, resizing, rotating, flipping, restyling or reordering deletes the old strokes and adds new ones in one step (`Change::Replace` in the history): undo brings the old ones back, the timeline shows both, and files only ever append rows. While a selection is dragged, its strokes' points are moved in place on screen for a live preview; on release the originals are restored and the edit is committed. Freehand strokes are edited the same way (their points are transformed and re-anchored; widths scale with resizing). Shapes keep their outline width when resized, and text scales as a whole.
+
+**Draw order** is each stroke's `z`; a new object goes on top, and an object's strokes keep a z range of their own, so restyling it does not change what it is above or below.
 
 ### Time stamps and the timeline
 
@@ -208,21 +228,28 @@ Where the log lives today: in web offline copies (`.ogpt`, below). For `.ogp`, f
 
 A bookmark is a name, a camera (cell, offset, scale) and the smaller side of the viewport when it was saved (px), so flying back frames the same area on a phone or a monitor. Flying animates zoom and pan together: if the target is off screen the camera first zooms out until it is in view, then pans toward it while zooming about it, fast across many decades and gently at the end. Web bookmarks are stored in `.ogpt`; the `bookmarks` table of the v1 `.ogp` schema will hold them on desktop.
 
-### Web offline copies: `.ogpt` snapshot v1
+### Web offline copies: `.ogpt` snapshot v2
 
-The web app has no SQLite yet, so it keeps each canvas as one compact binary snapshot: autosaved to the browser's IndexedDB every two seconds after a change, and downloadable / openable as a `.ogpt` file. It holds the whole canvas including erased strokes, the timeline and bookmarks, but not undo history. Codec: `crates/og-paper/src/snapshot.rs` (round-trip tested).
+The web app has no SQLite yet, so it keeps each canvas as one compact binary snapshot: autosaved to the browser's IndexedDB every two seconds after a change, and downloadable / openable as a `.ogpt` file. It holds the whole canvas including erased strokes, the timeline, bookmarks, and shapes and texts with their settings, but not undo history. Version 1 files (before shapes) still open. Codec: `crates/og-paper/src/snapshot.rs` (round-trip tested).
 
 All values little-endian.
 
 | Part | Layout |
 | --- | --- |
-| Header | `"OGPT"` (4 bytes), version u8 = 1 |
+| Header | `"OGPT"` (4 bytes), version u8 = 2 |
 | Camera | addr, `off_x` f64, `off_y` f64, `scale` f64 |
-| Strokes | count u32; each: addr, `width` f32, `color` u32, `brush` u8, `deleted` u8, `uid` u128, point count u32, points (f32 x, y, pressure, reserved) |
+| Strokes | count u32; each: addr, `width` f32, `color` u32, `brush` u8, `deleted` u8, `uid` u128, point count u32, points (f32 x, y, pressure, distance along the stroke), *v2:* `dash` u8, `z` f64 |
 | Events | count u32; each: time i64 (Unix ms), stroke index u32, visible u8 |
 | Bookmarks | count u32; each: name (u32 byte length + UTF-8), camera, `view_px` f64 |
+| Groups *(v2)* | count u32; each: addr, stroke count u32, stroke indexes (u32 each), data |
 
-An **addr** is `level` i64, then `x` and `y` each as (byte length u32, two's-complement little-endian bytes). Stroke indexes in events refer to the order of the strokes section. Readers reject versions they do not know. A later version should only append sections, so newer readers keep reading v1.
+**Data** (a group's settings, also stored in `.ogp` `groups.data`): kind u8 (0 shape, 1 text), then
+- shape: kind u8 (rectangle, ellipse, diamond, triangle, star, polygon, line, arrow), stroke u32, fill u32, fill style u8 (none, hachure, cross-hatch, zigzag, solid), dash u8, sloppiness u8 (architect, artist, cartoonist), round u8, sides u8, start head u8, end head u8 (none, arrow, bar, dot, circle, triangle, triangle outline, diamond, diamond outline), line type u8 (straight, curved, elbow), opacity u8, geometry, width f64, seed u32;
+- text: text (u32 byte length + UTF-8), font u8 (normal, hand-drawn, code), align u8 (left, centre, right), color u32, opacity u8, geometry, cap height f64, seed u32.
+
+**Geometry:** centre f64 x2, half size f64 x2, rotation f64 (radians), point count u32, points f64 x2 (lines and arrows).
+
+An **addr** is `level` i64, then `x` and `y` each as (byte length u32, two's-complement little-endian bytes). Stroke indexes in events refer to the order of the strokes section. Readers reject versions they do not know. A later version should only append, so newer readers keep reading older files.
 
 `.ogpt` is a transport and backup format, not a replacement for `.ogp`: once the web app has SQLite (WASM + OPFS), it will read and write `.ogp`, and the desktop app will import `.ogpt`.
 
@@ -298,13 +325,14 @@ Estimates assume one part-time developer: roughly 10–14 months to 1.0 on all s
 | 3 · iPhone + iPad (4–6 wk) | UIKit pen glue, Pencil prediction, Files integration, TestFlight | < 20 ms pen-to-pixel; 120 fps pan/zoom on iPad Pro |
 | 4 · Sync + v1 features (12–16 wk) | Sync folder + relay, lasso, images, layers, bookmarks, PDF, gallery, text + shapes | 1.0 release on all stores; spec 1.0 frozen |
 
-Done ahead of plan: Android and web builds (Phase 2 scope, without adaptive layout or HTML export), bookmarks (web), and a timeline of the canvas.
+Done ahead of plan: Android and web builds (Phase 2 scope, without adaptive layout or HTML export), bookmarks (web), a timeline of the canvas, shapes, text and select / edit (Phase 4 scope, without layers or lasso).
 
 ### Future to-do
 
 - **Save to / open from:** Save and Open fan out a second ring. Device: on Chrome/Edge the File System Access API (Save writes back to the same file, Save as picks a place, Open uses the system picker); download/upload elsewhere. Cloud: Google Drive first (Google Identity Services sign-in + Drive API with the `drive.file` scope, Google Picker for Open; needs a Google Cloud project, client ID and API key, all client-side), then Dropbox (Chooser/Saver) and OneDrive (File Picker + MSAL). No project server; tokens stay in the page. iCloud has no web API.
 - **Desktop `.ogpt` import**, and `.ogp` in the web app (SQLite WASM + OPFS) so both platforms share one format.
-- **`.ogp` 0.2:** `bookmarks` table, timeline event log (deletion times), then `cells`, `layers`, `blobs`, `ops` toward v1.
+- **`.ogp` 0.3:** `bookmarks` table, timeline event log (deletion times), then `cells`, `layers`, `blobs`, `ops` toward v1.
+- **Editing next:** lasso selection, selecting content too small to see inside a box, groups of objects, arrows that stick to shapes, text inside shapes, multi-point lines, draw-to-shape.
 - **Desktop bookmarks and timeline UI** (the logic is shared; only the web has panels so far).
 - The Phase 1 milestones M2–M5 ([`PHASE1.md`](PHASE1.md)).
 

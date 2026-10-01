@@ -7,9 +7,12 @@
 
 #[cfg(any(test, target_arch = "wasm32"))]
 mod demo;
+mod edit;
 mod egui_io;
+mod font;
+mod objects;
 mod render;
-#[cfg(any(test, target_arch = "wasm32"))]
+mod shapes;
 mod snapshot;
 mod timeline;
 mod ui;
@@ -67,6 +70,10 @@ enum Gesture {
     Erase,
     Pan,
     Pick,
+    /// Dragging out a shape.
+    Shape,
+    /// Selecting, or moving / resizing / rotating the selection.
+    Select,
 }
 
 pub struct App {
@@ -82,6 +89,9 @@ pub struct App {
     draw: DrawList,
     /// When each stroke appeared and disappeared.
     timeline: Timeline,
+    /// Shapes and texts (groups of strokes with their settings).
+    objs: objects::Objects,
+    edit: edit::EditState,
     bookmarks: Vec<Bookmark>,
     /// Viewing the canvas as it was after timeline event `.0`; `.1` holds the
     /// real deleted flags to put back.
@@ -92,6 +102,9 @@ pub struct App {
 
     #[cfg(not(target_arch = "wasm32"))]
     file: Option<OgpFile>,
+    /// Groups already written to the file.
+    #[cfg(not(target_arch = "wasm32"))]
+    groups_saved: usize,
     #[cfg(not(target_arch = "wasm32"))]
     open_path: Option<PathBuf>,
     #[cfg(target_arch = "wasm32")]
@@ -132,12 +145,16 @@ impl App {
             history: History::default(),
             draw: DrawList::default(),
             timeline: Timeline::default(),
+            objs: objects::Objects::default(),
+            edit: edit::EditState::default(),
             bookmarks: Vec::new(),
             tl_view: None,
             fly: None,
             fly_last: Instant::now(),
             #[cfg(not(target_arch = "wasm32"))]
             file: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            groups_saved: 0,
             #[cfg(not(target_arch = "wasm32"))]
             open_path,
             #[cfg(target_arch = "wasm32")]
@@ -245,16 +262,17 @@ impl App {
             .zip(&self.wet)
             .map(|(l, w)| [l[0], l[1], w[2], 0.0])
             .collect();
-        let [r, g, b, a] = ink.color.to_array();
-        let color = u32::from_le_bytes([r, g, b, a]);
-        let id = self.scene.add_stroke_styled(
-            &cell,
-            &pts,
-            (width_cam / side) as f32,
-            color,
+        let style = ogpaper_core::Style {
+            width: (width_cam / side) as f32,
+            color: u32::from_le_bytes(ink.rgba()),
             brush,
-            uid::new(),
-        );
+            dash: if brush == ogpaper_core::Brush::Highlighter {
+                ogpaper_core::Dash::Solid
+            } else {
+                ink.dash
+            },
+        };
+        let id = self.scene.add_stroke_with(&cell, &pts, style, uid::new());
         self.wet.clear();
         self.history.record(Change::Added(vec![id]));
         self.timeline.record(id, true);
@@ -280,7 +298,12 @@ impl App {
             [p[0] as f32, p[1] as f32],
             (ERASER_PT * self.ppp()) as f32,
         );
+        // A shape or text goes as a whole.
+        let mut ids = Vec::new();
         for id in hits {
+            ids.extend_from_slice(self.objs.strokes(&self.objs.obj_of(id)));
+        }
+        for id in ids {
             if self.scene.delete(id) {
                 self.erased.push(id);
                 self.timeline.record(id, false);
@@ -313,9 +336,17 @@ impl App {
             Tool::Hand => Gesture::Pan,
             Tool::Eraser => Gesture::Erase,
             Tool::Picker => Gesture::Pick,
+            Tool::Shapes => Gesture::Shape,
+            Tool::Select => Gesture::Select,
+            Tool::Text => Gesture::None,
             _ => Gesture::Ink,
         };
-        if self.tl_view.is_some() && matches!(self.gesture, Gesture::Ink | Gesture::Erase) {
+        if self.tl_view.is_some()
+            && (matches!(
+                self.gesture,
+                Gesture::Ink | Gesture::Erase | Gesture::Shape | Gesture::Select
+            ) || self.ui.tool == Tool::Text)
+        {
             // The past is read-only: browse it instead.
             self.say("Viewing the timeline: close it (or restore this moment) to draw");
             self.gesture = Gesture::Pan;
@@ -327,6 +358,11 @@ impl App {
             }
             Gesture::Erase => self.erase_at(p),
             Gesture::Pick => self.pick_preview(p),
+            Gesture::Shape => self.shape_begin(p),
+            Gesture::Select => self.select_begin(p),
+            Gesture::None if self.ui.tool == Tool::Text && self.tl_view.is_none() => {
+                self.text_begin(p)
+            }
             _ => {}
         }
     }
@@ -351,6 +387,8 @@ impl App {
                 self.view_changed();
             }
             Gesture::Pick => self.pick_preview(to),
+            Gesture::Shape => self.shape_move(to),
+            Gesture::Select => self.select_move(to),
             Gesture::None => {}
         }
     }
@@ -363,8 +401,14 @@ impl App {
             [p[0] as f32, p[1] as f32],
             (PICK_PT * self.ppp()) as f32,
         );
-        // Ids grow with creation, and newer ink draws on top.
-        let top = *ids.iter().max()?;
+        // The one drawn on top.
+        let top = *ids.iter().max_by(|&&a, &&b| {
+            let (za, zb) = (
+                self.scene.strokes[a as usize].z,
+                self.scene.strokes[b as usize].z,
+            );
+            za.total_cmp(&zb).then(a.cmp(&b))
+        })?;
         let [r, g, b, _] = self.scene.strokes[top as usize].color.to_le_bytes();
         Some(egui::Color32::from_rgb(r, g, b))
     }
@@ -385,8 +429,19 @@ impl App {
             Some(c) => {
                 let back = self.ui.last_ink;
                 self.ui.tool = back;
-                if let Some(ink) = self.ui.ink() {
-                    ink.color = c;
+                let [r, g, b, _] = c.to_array();
+                let col = u32::from_le_bytes([r, g, b, 255]);
+                match back {
+                    Tool::Shapes if self.ui.color_target == ui::ColorTarget::Fill => {
+                        self.ui.shape.fill = col
+                    }
+                    Tool::Shapes => self.ui.shape.stroke = col,
+                    Tool::Text => self.ui.text.color = col,
+                    _ => {
+                        if let Some(ink) = self.ui.ink() {
+                            ink.color = c;
+                        }
+                    }
                 }
             }
             None => self.say("No ink here — tap a stroke to take its color"),
@@ -400,6 +455,8 @@ impl App {
             Gesture::Erase => self.erase_end(),
             Gesture::Pick if !cancel => self.pick_end(),
             Gesture::Pick => self.ui.pick_preview = None,
+            Gesture::Shape => self.shape_end(cancel),
+            Gesture::Select => self.select_end(cancel),
             _ => {}
         }
         self.gesture = Gesture::None;
@@ -440,6 +497,8 @@ impl App {
                     self.say(format!("Saving to {}", f.path().display()));
                     let _ = f.put_all(&self.scene);
                     self.file = Some(f);
+                    self.groups_saved = 0;
+                    self.persist_groups();
                     return;
                 }
                 Err(e) => self.say(format!("Could not create a file: {e}")),
@@ -451,6 +510,34 @@ impl App {
             }
         }
     }
+
+    /// Write shapes and texts created since the last call.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn persist_groups(&mut self) {
+        let Some(f) = &self.file else {
+            return;
+        };
+        for g in &self.objs.groups[self.groups_saved.min(self.objs.groups.len())..] {
+            let fg = ogpaper_file::FileGroup {
+                cell: g.cell.clone(),
+                kind: match g.data {
+                    objects::ObjData::Shape { .. } => "shape".into(),
+                    objects::ObjData::Text { .. } => "text".into(),
+                },
+                data: snapshot::data_bytes(&g.data),
+                strokes: g
+                    .strokes
+                    .iter()
+                    .map(|&s| self.scene.strokes[s as usize].uid)
+                    .collect(),
+            };
+            let _ = f.put_group(uid::new(), &fg);
+        }
+        self.groups_saved = self.objs.groups.len();
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn persist_groups(&mut self) {}
 
     #[cfg(not(target_arch = "wasm32"))]
     fn persist_deleted(&mut self, id: u32) {
@@ -490,6 +577,9 @@ impl App {
         self.tl_view = None;
         self.fly = None;
         self.wet.clear();
+        self.objs = objects::Objects::default();
+        self.edit = edit::EditState::default();
+        self.ui.text_edit = None;
         #[cfg(target_arch = "wasm32")]
         web::touch();
         if let Some(g) = self.gpu.as_mut() {
@@ -513,7 +603,7 @@ impl App {
             return;
         }
         match OgpFile::open(&path) {
-            Ok((f, scene, view)) => {
+            Ok((f, scene, view, groups)) => {
                 let cam = match view {
                     Some(v) => {
                         let mut c = Camera::new(v.cell, v.off, 800.0);
@@ -527,6 +617,8 @@ impl App {
                 let n = scene.strokes.iter().filter(|s| !s.deleted).count();
                 self.file = Some(f);
                 self.load_scene(scene, cam);
+                self.objs = groups_from_file(&self.scene, groups);
+                self.groups_saved = self.objs.groups.len();
                 self.say(format!("Opened {} ({n} strokes)", path.display()));
             }
             Err(e) => self.say(format!("Could not open {}: {e}", path.display())),
@@ -546,6 +638,15 @@ impl App {
 
     fn action(&mut self, a: Action) {
         match a {
+            Action::Duplicate
+            | Action::Delete
+            | Action::ToFront
+            | Action::ToBack
+            | Action::FlipH
+            | Action::FlipV
+            | Action::EditText => self.sel_action(a),
+            Action::TextDone => self.text_commit(),
+            Action::TextCancel => self.text_cancel(),
             Action::Undo => self.undo_redo(false),
             Action::Redo => self.undo_redo(true),
             Action::Home => {
@@ -592,6 +693,10 @@ impl App {
                     }
                     match OgpFile::create(&p).and_then(|f| f.put_all(&self.scene).map(|_| f)) {
                         Ok(f) => {
+                            self.file = Some(f);
+                            self.groups_saved = 0;
+                            self.persist_groups();
+                            let f = self.file.take().expect("file");
                             let _ = f.put_view(&self.cam);
                             self.ui.file_name = file_label(&p);
                             self.say(format!("Saved to {}", p.display()));
@@ -609,10 +714,37 @@ impl App {
     fn shortcut(&mut self, key: &Key) -> bool {
         let ctrl = self.mods.control_key() || self.mods.super_key();
         let shift = self.mods.shift_key();
+        let selecting = self.ui.tool == Tool::Select && !self.edit.selection.is_empty();
+        let step = if shift { 10.0 } else { 1.0 };
         let k = match key {
             Key::Character(c) => c.to_lowercase(),
             Key::Named(NamedKey::Home) => {
                 self.action(Action::Home);
+                return true;
+            }
+            Key::Named(NamedKey::Delete | NamedKey::Backspace) if selecting => {
+                self.sel_action(Action::Delete);
+                return true;
+            }
+            Key::Named(NamedKey::Escape) => {
+                self.edit.selection.clear();
+                self.redraw();
+                return true;
+            }
+            Key::Named(NamedKey::ArrowLeft) if selecting => {
+                self.nudge(-step, 0.0);
+                return true;
+            }
+            Key::Named(NamedKey::ArrowRight) if selecting => {
+                self.nudge(step, 0.0);
+                return true;
+            }
+            Key::Named(NamedKey::ArrowUp) if selecting => {
+                self.nudge(0.0, -step);
+                return true;
+            }
+            Key::Named(NamedKey::ArrowDown) if selecting => {
+                self.nudge(0.0, step);
                 return true;
             }
             _ => return false,
@@ -623,6 +755,30 @@ impl App {
             (true, _, "n") => self.action(Action::New),
             (true, _, "o") => self.action(Action::Open),
             (true, true, "s") | (true, false, "s") => self.action(Action::SaveAs),
+            (true, _, "d") if selecting => self.sel_action(Action::Duplicate),
+            (true, _, "c") if selecting => self.copy_selection(),
+            (true, _, "v") => self.paste(),
+            (true, _, "a") => self.select_all_visible(),
+            (true, _, "]") if selecting => self.sel_action(Action::ToFront),
+            (true, _, "[") if selecting => self.sel_action(Action::ToBack),
+            (false, _, "v") => self.ui.tool = Tool::Select,
+            (false, _, "s") => self.ui.tool = Tool::Shapes,
+            (false, _, "t") => self.ui.tool = Tool::Text,
+            (false, _, "r") => {
+                (self.ui.tool, self.ui.shape.kind) = (Tool::Shapes, shapes::ShapeKind::Rect)
+            }
+            (false, _, "o") => {
+                (self.ui.tool, self.ui.shape.kind) = (Tool::Shapes, shapes::ShapeKind::Ellipse)
+            }
+            (false, _, "d") => {
+                (self.ui.tool, self.ui.shape.kind) = (Tool::Shapes, shapes::ShapeKind::Diamond)
+            }
+            (false, _, "a") => {
+                (self.ui.tool, self.ui.shape.kind) = (Tool::Shapes, shapes::ShapeKind::Arrow)
+            }
+            (false, _, "l") => {
+                (self.ui.tool, self.ui.shape.kind) = (Tool::Shapes, shapes::ShapeKind::Line)
+            }
             (false, _, "1") => (self.ui.tool, self.ui.last_ink) = (Tool::Pen, Tool::Pen),
             (false, _, "2") => (self.ui.tool, self.ui.last_ink) = (Tool::Marker, Tool::Marker),
             (false, _, "3") => {
@@ -631,7 +787,10 @@ impl App {
             (false, _, "e") => self.ui.tool = Tool::Eraser,
             (false, _, "h") => self.ui.tool = Tool::Hand,
             (false, _, "i") => {
-                if self.ui.tool.brush().is_some() {
+                if !matches!(
+                    self.ui.tool,
+                    Tool::Picker | Tool::Eraser | Tool::Hand | Tool::Select
+                ) {
                     self.ui.last_ink = self.ui.tool;
                 }
                 self.ui.tool = Tool::Picker;
@@ -870,7 +1029,7 @@ impl App {
         use web::Cmd;
         let changes = !matches!(
             c,
-            Cmd::Timeline(_) | Cmd::BookmarkGo(_) | Cmd::Home | Cmd::Menu(_)
+            Cmd::Timeline(_) | Cmd::BookmarkGo(_) | Cmd::Home | Cmd::Menu(_) | Cmd::Text(None)
         );
         match c {
             Cmd::Load(bytes, demo) => {
@@ -880,6 +1039,7 @@ impl App {
                         self.load_scene(s.scene, s.cam);
                         self.timeline = s.timeline;
                         self.bookmarks = s.bookmarks;
+                        self.objs = s.objs;
                         self.ui.file_name = "Canvas".into();
                     }
                     other => {
@@ -924,6 +1084,13 @@ impl App {
                     }
                 }
             }
+            Cmd::Text(Some(text)) => {
+                if let Some(t) = self.edit.text.as_mut() {
+                    t.text = text;
+                }
+                self.text_commit();
+            }
+            Cmd::Text(None) => self.text_cancel(),
             Cmd::Timeline(i) => self.timeline_show(i),
             Cmd::TimelineRestore => self.timeline_restore(),
         }
@@ -950,7 +1117,13 @@ impl App {
                 let live = live.clone();
                 timeline::apply(&mut self.scene, &live);
             }
-            let bytes = snapshot::encode(&self.scene, &self.cam, &self.timeline, &self.bookmarks);
+            let bytes = snapshot::encode(
+                &self.scene,
+                &self.cam,
+                &self.timeline,
+                &self.bookmarks,
+                &self.objs,
+            );
             if let Some(shown) = scene_flags {
                 timeline::apply(&mut self.scene, &shown);
             }
@@ -1062,6 +1235,9 @@ impl App {
         self.ui.can_undo = self.history.can_undo();
         self.ui.can_redo = self.history.can_redo();
         self.ui.strokes = self.scene.strokes.iter().filter(|s| !s.deleted).count();
+        let pointer_down = self.egui_ctx.input(|i| i.pointer.any_down());
+        self.sync_sel_panel(pointer_down);
+        self.build_overlay();
         let raw = self.egui_io.as_mut().expect("egui").take_input(&window);
         let mut actions = Vec::new();
         let out = self
@@ -1109,15 +1285,17 @@ impl App {
         query(&self.scene, &self.cam, w, h, VIEW, &mut self.draw);
         let ink = self.ui.ink().copied();
         let wet = match (self.gesture == Gesture::Ink, ink, self.ui.tool.brush()) {
-            (true, Some(ink), Some(brush)) => {
-                let [r, g, b, a] = ink.color.to_array();
-                Some(Wet {
-                    pts: &self.wet,
-                    width_px: ink.width * self.ppp() as f32,
-                    color: u32::from_le_bytes([r, g, b, a]),
-                    brush,
-                })
-            }
+            (true, Some(ink), Some(brush)) => Some(Wet {
+                pts: &self.wet,
+                width_px: ink.width * self.ppp() as f32,
+                color: u32::from_le_bytes(ink.rgba()),
+                brush,
+                dash: if brush == ogpaper_core::Brush::Highlighter {
+                    ogpaper_core::Dash::Solid
+                } else {
+                    ink.dash
+                },
+            }),
             _ => None,
         };
         let paint = UiPaint {
@@ -1295,6 +1473,37 @@ impl ApplicationHandler for App {
             _ => {}
         }
     }
+}
+
+/// Shapes and texts read from a file, matched to the strokes loaded.
+#[cfg(not(target_arch = "wasm32"))]
+fn groups_from_file(scene: &Scene, groups: Vec<ogpaper_file::FileGroup>) -> objects::Objects {
+    let by_uid: HashMap<u128, u32> = scene
+        .strokes
+        .iter()
+        .enumerate()
+        .map(|(i, s)| (s.uid, i as u32))
+        .collect();
+    let mut objs = objects::Objects::default();
+    for g in groups {
+        let Ok(data) = snapshot::get_data(&g.data) else {
+            continue;
+        };
+        let strokes: Vec<u32> = g
+            .strokes
+            .iter()
+            .filter_map(|u| by_uid.get(u).copied())
+            .collect();
+        if strokes.is_empty() {
+            continue;
+        }
+        objs.add(objects::Group {
+            cell: g.cell,
+            data,
+            strokes,
+        });
+    }
+    objs
 }
 
 #[cfg(not(target_arch = "wasm32"))]

@@ -7,9 +7,10 @@ The formal spec (v1) will be written during Phase 1. Until then, the design live
 [`../docs/DESIGN.md`](../docs/DESIGN.md#data-model-and-file-format):
 
 - [Target v1 schema](../docs/DESIGN.md#schema-v1-draft) and [longevity guarantees](../docs/DESIGN.md#longevity-guarantees)
-- [`.ogp` format 0.1](../docs/DESIGN.md#implemented-today-ogp-format-01): what the app writes today (`meta` + `objects`)
+- [`.ogp` format 0.2](../docs/DESIGN.md#implemented-today-ogp-format-02): what the app writes today (`meta`, `objects`, `groups`)
+- [Shapes, text and editing](../docs/DESIGN.md#shapes-text-and-editing): how shapes and text are stored as strokes plus their settings
 - [Time stamps and the timeline](../docs/DESIGN.md#time-stamps-and-the-timeline): the stroke event log
 - [Bookmarks](../docs/DESIGN.md#bookmarks)
-- [`.ogpt` snapshot v1](../docs/DESIGN.md#web-offline-copies-ogpt-snapshot-v1): the web app's offline copies (byte layout)
+- [`.ogpt` snapshot v2](../docs/DESIGN.md#web-offline-copies-ogpt-snapshot-v2): the web app's offline copies (byte layout, including the shape / text record)
 
 Every `.ogp` file also explains itself: its `meta` table has a `README` row describing the format.

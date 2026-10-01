@@ -5,7 +5,7 @@
 // Used by /app/ and /try/; the canvas itself is the Rust app in ./pkg/.
 
 import init, {
-  og_load, og_demo, og_blank, og_status, og_requests, og_set_menu,
+  og_load, og_demo, og_blank, og_status, og_requests, og_set_menu, og_text_request, og_text_done,
   og_bookmark_add, og_bookmark_go, og_bookmark_remove, og_bookmark_rename,
   og_timeline, og_timeline_restore, og_snapshot_request, og_snapshot_take,
 } from './pkg/og_paper.js';
@@ -62,6 +62,11 @@ const CSS = `
 .og-tl .og-icon { width: 36px; height: 36px; box-shadow: none; }
 .og-loading { position: fixed; inset: 0; z-index: 30; display: grid; place-items: center; background: #f5f3ec; color: #5d5d68;
   font: 15px system-ui, sans-serif; text-align: center; padding: 16px; }
+.og-text { position: fixed; z-index: 22; min-width: 160px; min-height: 1.4em; padding: 2px 4px; margin: -3px 0 0 -5px;
+  border: 1.5px dashed #466ee6; border-radius: 4px; background: rgba(255,255,255,.85); outline: none; resize: both;
+  font-family: "Comic Sans MS", "Segoe Print", system-ui, sans-serif; line-height: 1.25; color: #1c1c24; }
+.og-text-hint { position: fixed; z-index: 22; font: 12px system-ui, sans-serif; color: #5d5d68; background: #fcfbf8;
+  border: 1px solid #d4d1c7; border-radius: 6px; padding: 2px 6px; }
 .og-toast { position: fixed; z-index: 25; left: 50%; bottom: calc(80px + env(safe-area-inset-bottom)); transform: translateX(-50%);
   background: #1c1c24; color: #fff; padding: 8px 14px; border-radius: 10px; font: 14px system-ui, sans-serif; opacity: 0;
   transition: opacity .25s; pointer-events: none; max-width: calc(100vw - 32px); }
@@ -317,6 +322,46 @@ export async function start({ mode = 'app' } = {}) {
     say(`Loaded ${f.name}`);
     show(null);
   };
+  // ---- text: a real textarea, so phones show their keyboard ----
+  let textBox = null;
+  function closeText(commit) {
+    if (!textBox) return;
+    const { area, hint } = textBox;
+    textBox = null;
+    og_text_done(commit ? area.value : undefined);
+    area.remove();
+    hint.remove();
+    // Shortcuts work again straight away.
+    document.querySelector('canvas')?.focus();
+  }
+  function openTextEditor() {
+    closeText(true);
+    let req;
+    try { req = JSON.parse(og_text_request()); } catch { return; }
+    const area = el('textarea', { class: 'og-text', rows: '1', spellcheck: 'false', 'aria-label': 'Text' });
+    area.value = req.text || '';
+    // Cap height ~ 0.7 em.
+    area.style.fontSize = `${Math.max(10, req.size / 0.7)}px`;
+    area.style.left = `${req.x}px`;
+    area.style.top = `${req.y}px`;
+    area.style.color = req.color || '#1c1c24';
+    const hint = el('div', { class: 'og-text-hint' }, 'Enter for a new line · Ctrl+Enter or tap away to finish · Esc to cancel');
+    hint.style.left = `${req.x}px`;
+    hint.style.top = `${Math.max(4, req.y - 26)}px`;
+    const grow = () => { area.style.height = 'auto'; area.style.height = `${area.scrollHeight + 2}px`; area.style.width = `${Math.max(160, Math.min(innerWidth - req.x - 12, area.scrollWidth + 24))}px`; };
+    area.addEventListener('input', grow);
+    area.addEventListener('keydown', e => {
+      if (e.key === 'Escape') { e.preventDefault(); closeText(false); }
+      else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); closeText(true); }
+      e.stopPropagation();
+    });
+    area.addEventListener('blur', () => setTimeout(() => closeText(true), 0));
+    document.body.append(hint, area);
+    textBox = { area, hint };
+    grow();
+    area.focus();
+  }
+
   function newCanvas() {
     if (status().strokes > 0 && !confirm('Start a new, blank canvas? The current one is replaced (save a copy first to keep it).')) return;
     openTimeline(false);
@@ -382,6 +427,7 @@ export async function start({ mode = 'app' } = {}) {
       else if (r === 'timeline') openTimeline(!tlOpen);
       else if (r === 'fullscreen') fullScreen();
       else if (r === 'tour' && cards.tour) show('tour');
+      else if (r === 'text') openTextEditor();
     }
     if (s.ready) {
       // Bookmarks list (only rebuilt when it changes).

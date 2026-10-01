@@ -13,6 +13,11 @@ use crate::scene::Scene;
 pub enum Change {
     Added(Vec<u32>),
     Deleted(Vec<u32>),
+    /// An edit that swaps strokes for new ones (move, resize, restyle, ...).
+    Replace {
+        removed: Vec<u32>,
+        added: Vec<u32>,
+    },
 }
 
 #[derive(Default)]
@@ -54,10 +59,19 @@ impl History {
 }
 
 fn apply(scene: &mut Scene, c: &Change, inverse: bool) -> Vec<u32> {
-    let (ids, delete) = match c {
-        Change::Added(ids) => (ids, inverse),
-        Change::Deleted(ids) => (ids, !inverse),
-    };
+    match c {
+        Change::Added(ids) => set(scene, ids, inverse),
+        Change::Deleted(ids) => set(scene, ids, !inverse),
+        Change::Replace { removed, added } => {
+            let mut v = set(scene, removed, !inverse);
+            v.extend(set(scene, added, inverse));
+            v
+        }
+    }
+}
+
+/// Delete (`delete`) or restore strokes; returns the ones that changed.
+fn set(scene: &mut Scene, ids: &[u32], delete: bool) -> Vec<u32> {
     ids.iter()
         .copied()
         .filter(|&id| {
@@ -96,5 +110,22 @@ mod tests {
         assert!(h.can_redo());
         h.record(Change::Added(vec![]));
         assert!(!h.can_redo(), "a new edit clears redo");
+    }
+
+    #[test]
+    fn undo_redo_replace() {
+        let mut s = Scene::new();
+        let a = s.add_stroke(&CellAddr::new(0, 0, 0), &[[0.1, 0.1], [0.5, 0.5]], 0.01, 0);
+        let b = s.add_stroke(&CellAddr::new(0, 0, 0), &[[0.2, 0.1], [0.6, 0.5]], 0.01, 0);
+        s.delete(a);
+        let mut h = History::default();
+        h.record(Change::Replace {
+            removed: vec![a],
+            added: vec![b],
+        });
+        h.undo(&mut s);
+        assert!(!s.strokes[a as usize].deleted && s.strokes[b as usize].deleted);
+        h.redo(&mut s);
+        assert!(s.strokes[a as usize].deleted && !s.strokes[b as usize].deleted);
     }
 }

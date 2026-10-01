@@ -11,7 +11,7 @@
 
 use std::sync::Arc;
 
-use ogpaper_core::{Brush, DrawList, Scene, TileInst};
+use ogpaper_core::{Brush, Dash, DrawList, Scene, TileInst};
 use winit::window::Window;
 
 /// Segments per instance; must match MAX_SEG in the shader.
@@ -57,6 +57,7 @@ pub struct Wet<'a> {
     pub width_px: f32,
     pub color: u32,
     pub brush: Brush,
+    pub dash: Dash,
 }
 
 /// egui output for this frame.
@@ -66,10 +67,12 @@ pub struct UiPaint {
     pub pixels_per_point: f32,
 }
 
-fn rec(start: u32, len: u32, brush: Brush, width: f32, color: u32) -> StrokeRec {
+/// Top byte of `len_brush`: brush in bits 0-3, dash pattern in bits 4-5.
+fn rec(start: u32, len: u32, brush: Brush, dash: Dash, width: f32, color: u32) -> StrokeRec {
+    let kind = brush as u32 | (dash as u32) << 4;
     StrokeRec {
         start,
-        len_brush: len.min(0xFF_FFFF) | ((brush as u32) << 24),
+        len_brush: len.min(0xFF_FFFF) | (kind << 24),
         width,
         color,
     }
@@ -334,9 +337,10 @@ impl Renderer {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        // Fill polygons read their outline in the fragment stage too.
         let tex_entry = |binding, sample_type| wgpu::BindGroupLayoutEntry {
             binding,
-            visibility: wgpu::ShaderStages::VERTEX,
+            visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
             ty: wgpu::BindingType::Texture {
                 sample_type,
                 view_dimension: wgpu::TextureViewDimension::D2,
@@ -508,6 +512,20 @@ impl Renderer {
         self.point_len = scene.points.len();
     }
 
+    /// Re-upload the points of strokes whose points were changed in place
+    /// (the live preview while moving, resizing or rotating a selection).
+    pub fn update_points(&mut self, scene: &Scene, ids: &[u32]) {
+        self.sync(scene);
+        for &id in ids {
+            let s = &scene.strokes[id as usize];
+            let (a, b) = (s.start as usize, (s.start + s.len) as usize);
+            if b <= self.point_len {
+                self.points
+                    .write(&self.queue, a, bytemuck::cast_slice(&scene.points[a..b]));
+            }
+        }
+    }
+
     /// Upload strokes added to the scene since the last sync.
     pub fn sync(&mut self, scene: &Scene) {
         if scene.strokes.len() == self.stroke_len {
@@ -581,19 +599,32 @@ impl Renderer {
             } else {
                 &mut ink
             };
-            push_windows(list, i.stroke, s.len as usize, i.ox, i.oy, i.scale);
+            let len = if s.brush == Brush::Fill {
+                1 // one instance covers the whole polygon
+            } else {
+                s.len as usize
+            };
+            push_windows(list, i.stroke, len, i.ox, i.oy, i.scale);
         }
         if let Some(w) = wet.filter(|w| !w.pts.is_empty()) {
             let n = w.pts.len().min(WET_PTS);
-            let pts: Vec<[f32; 4]> = w.pts[w.pts.len() - n..]
+            let mut along = 0.0f32;
+            let src = &w.pts[w.pts.len() - n..];
+            let pts: Vec<[f32; 4]> = src
                 .iter()
-                .map(|p| [p[0], p[1], p[2], 0.0])
+                .enumerate()
+                .map(|(i, p)| {
+                    if i > 0 {
+                        along += (p[0] - src[i - 1][0]).hypot(p[1] - src[i - 1][1]);
+                    }
+                    [p[0], p[1], p[2], along]
+                })
                 .collect();
             let base = self.points.cap - WET_PTS;
             self.points
                 .write(&self.queue, base, bytemuck::cast_slice(&pts));
             let slot = self.strokes.cap - 1;
-            let r = rec(base as u32, n as u32, w.brush, w.width_px, w.color);
+            let r = rec(base as u32, n as u32, w.brush, w.dash, w.width_px, w.color);
             self.strokes
                 .write(&self.queue, slot, bytemuck::bytes_of(&r));
             let list = if w.brush == Brush::Highlighter {
@@ -693,7 +724,7 @@ fn push_windows(list: &mut Vec<InstGpu>, stroke: u32, len: usize, ox: f32, oy: f
 }
 
 fn to_rec(s: &ogpaper_core::Stroke) -> StrokeRec {
-    rec(s.start, s.len, s.brush, s.width, s.color)
+    rec(s.start, s.len, s.brush, s.dash, s.width, s.color)
 }
 
 fn upload_scene(device: &wgpu::Device, queue: &wgpu::Queue, scene: &Scene) -> (DataTex, DataTex) {
@@ -742,4 +773,22 @@ fn make_bind(
             },
         ],
     })
+}
+
+#[cfg(test)]
+mod tests {
+    /// The canvas shader parses and validates (wgpu would only find out at
+    /// pipeline creation, on the user's machine).
+    #[test]
+    fn shader_validates() {
+        use wgpu::naga;
+        let module = naga::front::wgsl::parse_str(include_str!("shader.wgsl"))
+            .unwrap_or_else(|e| panic!("{}", e.emit_to_string(include_str!("shader.wgsl"))));
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::empty(),
+        )
+        .validate(&module)
+        .unwrap_or_else(|e| panic!("{e:?}"));
+    }
 }

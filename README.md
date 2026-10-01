@@ -29,21 +29,24 @@ Proprietary infinite-canvas apps such as Endless Paper keep your work in undocum
 
 ## What works today
 
-- **Ink:** pen with pressure, marker, highlighter, stroke eraser, eyedropper, color dial with custom colors, per-brush width, unlimited undo/redo.
+- **Ink:** pen with pressure, marker, highlighter; solid, dashed or dotted; any opacity; stroke eraser, eyedropper, color dial with custom colors, per-brush width, unlimited undo/redo.
+- **Shapes:** one Shapes tool with rectangle, ellipse, diamond, triangle, star, polygon, line and arrow, and Excalidraw-style options: hachure / cross-hatch / zigzag / solid fill, fill color, stroke width and style, sloppiness (clean to cartoon), sharp or round edges, curved and elbow lines, nine arrowheads, opacity.
+- **Text:** three single-stroke fonts (normal, hand-drawn, code), sizes, alignment, color, opacity. Text is ink, so it stays sharp at any zoom.
+- **Select and edit:** tap or drag a box to select; move, resize, rotate, flip, duplicate, delete, bring to front / send to back, copy / paste, and restyle anything from the tool panel; double-tap a text to edit it. Each edit is one undo step.
 - **Endless canvas:** pan and zoom with no limit; content at any depth stays exact.
-- **Controls:** round buttons that fan out like radial menus: tools (bottom right), color, ↩ undo / ↪ redo, a tool panel (top left, collapsible) with the selected brush's width, pressure and colors, and ⚙ settings (top right) for New canvas, Open, Save copy, Home, Bookmarks, Timeline, Full screen and the tour.
+- **Controls:** round buttons that fan out like radial menus, in rings when there are many items: tools (bottom right), ↩ undo / ↪ redo, a tool panel (top left, collapsible) with the current tool's or the selection's settings, and ⚙ settings (top right) for New canvas, Open, Save copy, Home, Bookmarks, Timeline, Full screen and the tour. Keyboard shortcuts for every tool (see [`docs/DESIGN.md`](docs/DESIGN.md#where-it-stands-2026-10-01)).
 - **Files:** desktop and Android autosave to a `.ogp` file (SQLite) with New / Open / Save As. The web app autosaves in your browser and saves / opens `.ogpt` offline copies.
 - **Bookmarks** (web): save a view, then fly back to it with one tap, across any zoom depth.
 - **Timeline** (web): every stroke is time-stamped; scrub or play back the canvas as it was at any moment, and restore it.
 - **Try mode** (web): a demo canvas with 15 worlds nested inside dots, down to 10^45, and a guided checklist.
 
-File formats (`.ogp` 0.1, the timeline log, bookmarks, `.ogpt` v1) are documented in [`docs/DESIGN.md`](docs/DESIGN.md#implemented-today-ogp-format-01).
+File formats (`.ogp` 0.2, shapes and text, the timeline log, bookmarks, `.ogpt` v2) are documented in [`docs/DESIGN.md`](docs/DESIGN.md#implemented-today-ogp-format-02).
 
 ## Coming next
 
 - **Save to / open from** the cloud: Save and Open fan out to device, Google Drive, Dropbox or OneDrive, signed in from the page with no project server.
 - `.ogpt` copies in the desktop app, and `.ogp` in the web app, so both share one format; bookmarks and the timeline on desktop.
-- Stickers (images), shapes and lasso select, textured brushes, layers, export, multi-device sync — see [`docs/PHASE1.md`](docs/PHASE1.md) and the [to-do list](docs/DESIGN.md#future-to-do).
+- Stickers (images), lasso select, arrows that stick to shapes, textured brushes, layers, export, multi-device sync — see [`docs/PHASE1.md`](docs/PHASE1.md) and the [to-do list](docs/DESIGN.md#future-to-do).
 
 ## Stack
 

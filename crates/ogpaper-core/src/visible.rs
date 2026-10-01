@@ -249,7 +249,7 @@ pub fn query(scene: &Scene, cam: &Camera, vw: f64, vh: f64, params: Params, out:
             let a = &scene.node(r).addr;
             ctx.descend(r, a.origin_in(&cam.cell), a.side_in(&cam.cell), None, out);
         }
-        finish(out);
+        finish(scene, out);
         return;
     }
 
@@ -300,13 +300,20 @@ pub fn query(scene: &Scene, cam: &Camera, vw: f64, vh: f64, params: Params, out:
         }
         lvl -= 1;
     }
-    finish(out);
+    finish(scene, out);
 }
 
-/// Draw order = creation order (stroke ids grow as you draw), so newer ink
-/// always lands on top, whatever cell each stroke is anchored in.
-fn finish(out: &mut DrawList) {
-    out.strokes.sort_unstable_by_key(|s| s.stroke);
+/// Draw order = z, then creation order (stroke ids grow as you draw), so
+/// newer ink lands on top whatever cell each stroke is anchored in, and
+/// "send to back" works by giving strokes a lower z.
+fn finish(scene: &Scene, out: &mut DrawList) {
+    out.strokes.sort_unstable_by(|a, b| {
+        let (sa, sb) = (
+            &scene.strokes[a.stroke as usize],
+            &scene.strokes[b.stroke as usize],
+        );
+        sa.z.total_cmp(&sb.z).then(a.stroke.cmp(&b.stroke))
+    });
     out.stats.strokes = out.strokes.len() as u32;
     out.stats.dots = out.dots.len() as u32;
     out.stats.tiles = out.tiles.len() as u32;
