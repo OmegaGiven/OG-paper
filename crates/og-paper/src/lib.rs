@@ -118,10 +118,13 @@ pub struct App {
 impl App {
     pub fn new(open_path: Option<PathBuf>) -> Self {
         let _ = &open_path;
+        // Light controls on light paper, whatever the system theme.
+        let egui_ctx = egui::Context::default();
+        egui_ctx.set_theme(egui::Theme::Light);
         Self {
             window: None,
             gpu: None,
-            egui_ctx: egui::Context::default(),
+            egui_ctx,
             egui_io: None,
             ui: UiState::default(),
             scene: Scene::new(),
