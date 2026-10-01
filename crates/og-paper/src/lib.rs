@@ -5,10 +5,17 @@
 
 //! OG Paper: an open-source infinite canvas.
 
+#[cfg(any(test, target_arch = "wasm32"))]
+mod demo;
 mod egui_io;
 mod render;
+#[cfg(any(test, target_arch = "wasm32"))]
+mod snapshot;
+mod timeline;
 mod ui;
 mod uid;
+#[cfg(target_arch = "wasm32")]
+mod web;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -23,6 +30,7 @@ use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Window, WindowId};
 
 use render::{Renderer, UiPaint, Wet};
+use timeline::{Bookmark, Timeline};
 use ui::{Action, Menu, Tool, UiState};
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -44,8 +52,11 @@ fn dist(a: [f64; 2], b: [f64; 2]) -> f64 {
     (a[0] - b[0]).hypot(a[1] - b[1])
 }
 
+/// Pixels per level-0 cell at scale 1.
+const BASE_PX: f64 = 800.0;
+
 fn home_camera() -> Camera {
-    Camera::new(CellAddr::new(0, 0, 0), [0.5, 0.5], 800.0)
+    Camera::new(CellAddr::new(0, 0, 0), [0.5, 0.5], BASE_PX)
 }
 
 /// What the pointer is doing right now.
@@ -69,6 +80,15 @@ pub struct App {
     cam: Camera,
     history: History,
     draw: DrawList,
+    /// When each stroke appeared and disappeared.
+    timeline: Timeline,
+    bookmarks: Vec<Bookmark>,
+    /// Viewing the canvas as it was after timeline event `.0`; `.1` holds the
+    /// real deleted flags to put back.
+    tl_view: Option<(usize, Vec<bool>)>,
+    /// Animated flight to a view (bookmarks); any input cancels it.
+    fly: Option<Camera>,
+    fly_last: Instant,
 
     #[cfg(not(target_arch = "wasm32"))]
     file: Option<OgpFile>,
@@ -108,6 +128,11 @@ impl App {
             cam: home_camera(),
             history: History::default(),
             draw: DrawList::default(),
+            timeline: Timeline::default(),
+            bookmarks: Vec::new(),
+            tl_view: None,
+            fly: None,
+            fly_last: Instant::now(),
             #[cfg(not(target_arch = "wasm32"))]
             file: None,
             #[cfg(not(target_arch = "wasm32"))]
@@ -229,6 +254,15 @@ impl App {
         );
         self.wet.clear();
         self.history.record(Change::Added(vec![id]));
+        self.timeline.record(id, true);
+        #[cfg(target_arch = "wasm32")]
+        {
+            let z = self.cam.log10_zoom();
+            web::stats(|s| {
+                s.drawn += 1;
+                s.deep_draw = s.deep_draw.max(z);
+            });
+        }
         if let Some(g) = self.gpu.as_mut() {
             g.sync(&self.scene);
         }
@@ -246,7 +280,10 @@ impl App {
         for id in hits {
             if self.scene.delete(id) {
                 self.erased.push(id);
+                self.timeline.record(id, false);
                 self.persist_deleted(id);
+                #[cfg(target_arch = "wasm32")]
+                web::stats(|s| s.erased += 1);
             }
         }
         self.redraw();
@@ -267,6 +304,7 @@ impl App {
             self.redraw();
             return;
         }
+        self.fly = None;
         self.gesture = match self.ui.tool {
             _ if self.space => Gesture::Pan,
             Tool::Hand => Gesture::Pan,
@@ -274,6 +312,11 @@ impl App {
             Tool::Picker => Gesture::Pick,
             _ => Gesture::Ink,
         };
+        if self.tl_view.is_some() && matches!(self.gesture, Gesture::Ink | Gesture::Erase) {
+            // The past is read-only: browse it instead.
+            self.say("Viewing the timeline: close it (or restore this moment) to draw");
+            self.gesture = Gesture::Pan;
+        }
         match self.gesture {
             Gesture::Ink => {
                 self.wet.clear();
@@ -363,12 +406,23 @@ impl App {
     // ---- undo / file -----------------------------------------------------
 
     fn undo_redo(&mut self, redo: bool) {
+        if self.tl_view.is_some() {
+            self.say("Close the timeline to undo or redo");
+            return;
+        }
         let changed = if redo {
             self.history.redo(&mut self.scene)
         } else {
             self.history.undo(&mut self.scene)
         };
-        for id in changed.unwrap_or_default() {
+        let changed = changed.unwrap_or_default();
+        #[cfg(target_arch = "wasm32")]
+        if !changed.is_empty() {
+            web::stats(|s| s.undos += 1);
+        }
+        for id in changed {
+            let alive = !self.scene.strokes[id as usize].deleted;
+            self.timeline.record(id, alive);
             self.persist_deleted(id);
         }
         self.redraw();
@@ -402,24 +456,39 @@ impl App {
         }
     }
 
+    // The web keeps the canvas in browser storage: the page asks for a
+    // snapshot whenever something changed.
     #[cfg(target_arch = "wasm32")]
-    fn persist_new(&mut self, _id: u32) {}
+    fn persist_new(&mut self, _id: u32) {
+        web::touch();
+    }
     #[cfg(target_arch = "wasm32")]
-    fn persist_deleted(&mut self, _id: u32) {}
+    fn persist_deleted(&mut self, _id: u32) {
+        web::touch();
+    }
 
     fn save_view(&mut self) {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(f) = &self.file {
             let _ = f.put_view(&self.cam);
         }
+        #[cfg(target_arch = "wasm32")]
+        if self.view_dirty_since.is_some() {
+            web::touch();
+        }
         self.view_dirty_since = None;
     }
 
     fn load_scene(&mut self, scene: Scene, cam: Camera) {
+        self.timeline = Timeline::from_scene(&scene, timeline::now_ms());
         self.scene = scene;
         self.cam = cam;
         self.history = History::default();
+        self.tl_view = None;
+        self.fly = None;
         self.wet.clear();
+        #[cfg(target_arch = "wasm32")]
+        web::touch();
         if let Some(g) = self.gpu.as_mut() {
             g.reset(&self.scene);
         }
@@ -466,6 +535,7 @@ impl App {
             Action::Undo => self.undo_redo(false),
             Action::Redo => self.undo_redo(true),
             Action::Home => {
+                self.fly = None;
                 self.cam = home_camera();
                 self.view_changed();
             }
@@ -476,8 +546,14 @@ impl App {
                     self.file = None;
                 }
                 self.ui.file_name = "Untitled".into();
+                self.bookmarks.clear();
                 self.load_scene(Scene::new(), home_camera());
             }
+            // The page handles files on the web: download / pick a copy.
+            #[cfg(target_arch = "wasm32")]
+            Action::Open => web::emit("open"),
+            #[cfg(target_arch = "wasm32")]
+            Action::SaveAs => web::emit("save"),
             #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
             Action::Open => {
                 if let Some(p) = rfd::FileDialog::new()
@@ -555,6 +631,7 @@ impl App {
         let slop_scale = self.ppp();
         match phase {
             TouchPhase::Started => {
+                self.fly = None;
                 if self.touches.is_empty() {
                     self.touch_ink = Some(id);
                     self.multi_tap = None;
@@ -629,6 +706,286 @@ impl App {
         }
     }
 
+    // ---- bookmarks and flying ---------------------------------------------
+
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    fn view_px(&self) -> f64 {
+        let [w, h] = self.size();
+        w.min(h).max(1.0)
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    fn bookmark_add(&mut self, name: String) {
+        let name = if name.trim().is_empty() {
+            format!("View {}", self.bookmarks.len() + 1)
+        } else {
+            name.trim().to_string()
+        };
+        self.say(format!("Bookmarked \"{name}\""));
+        self.bookmarks.push(Bookmark {
+            name,
+            cam: self.cam.clone(),
+            view_px: self.view_px(),
+        });
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    /// Start flying to bookmark `i`, framed for this screen.
+    fn bookmark_go(&mut self, i: usize) {
+        let Some(b) = self.bookmarks.get(i) else {
+            return;
+        };
+        let mut target = b.cam.clone();
+        target.base_px = self.cam.base_px;
+        target.zoom_at(self.view_px() / b.view_px, [0.0, 0.0]);
+        self.fly = Some(target);
+        self.fly_last = Instant::now();
+        self.redraw();
+    }
+
+    /// One frame of a flight: pan the target toward the centre and zoom
+    /// about it, quickly across many decades and gently at the end. If the
+    /// target is off screen, zoom out first until it is in view.
+    fn fly_step(&mut self) {
+        let Some(target) = self.fly.clone() else {
+            return;
+        };
+        let now = Instant::now();
+        let dt = (now - self.fly_last).as_secs_f64().clamp(0.001, 0.05);
+        self.fly_last = now;
+        let half = self.view_px() * 0.5;
+        let p = self.cam.to_screen(&target.cell, target.off);
+        let d = p[0].hypot(p[1]);
+        let dz = target.log10_zoom() - self.cam.log10_zoom();
+        if d < 0.5 && dz.abs() < 1e-3 || !d.is_finite() && dz.abs() < 1e-3 {
+            self.cam = target;
+            self.fly = None;
+            self.view_changed();
+            return;
+        }
+        if !d.is_finite() || d > half * 1.5 {
+            // Out of sight: back out until it shows, faster the farther it is.
+            let need = if d.is_finite() {
+                (d / half).log10()
+            } else {
+                300.0
+            };
+            let speed = (need * 2.5).clamp(1.0, 18.0);
+            self.cam
+                .zoom_at(10f64.powf(-need.min(speed * dt)), [0.0, 0.0]);
+        } else {
+            let k = 1.0 - (-7.0 * dt).exp();
+            self.cam.pan_px(-p[0] * k, -p[1] * k);
+            let p = self.cam.to_screen(&target.cell, target.off);
+            let speed = (dz.abs() * 2.5).clamp(0.4, 18.0);
+            let step = dz.signum() * dz.abs().min(speed * dt);
+            self.cam.zoom_at(10f64.powf(step), p);
+        }
+        self.view_changed();
+    }
+
+    // ---- timeline ----------------------------------------------------------
+
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    /// Show the canvas as it was after event `i` (None: back to now).
+    fn timeline_show(&mut self, i: Option<usize>) {
+        match i {
+            Some(i) if !self.timeline.events.is_empty() => {
+                if self.gesture == Gesture::Ink || self.gesture == Gesture::Erase {
+                    self.end(true);
+                }
+                let i = i.min(self.timeline.events.len() - 1);
+                let live = match self.tl_view.take() {
+                    Some((_, live)) => live,
+                    None => self.scene.strokes.iter().map(|s| !s.deleted).collect(),
+                };
+                let vis = self.timeline.visible_after(i, self.scene.strokes.len());
+                timeline::apply(&mut self.scene, &vis);
+                self.tl_view = Some((i, live));
+            }
+            _ => {
+                if let Some((_, live)) = self.tl_view.take() {
+                    timeline::apply(&mut self.scene, &live);
+                }
+            }
+        }
+        self.redraw();
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    /// Keep the moment on screen: leave the timeline with the canvas as it
+    /// was then. Recorded as one erase and one redraw, so it can be undone.
+    fn timeline_restore(&mut self) {
+        let Some((_, live)) = self.tl_view.take() else {
+            return;
+        };
+        let (mut gone, mut back) = (Vec::new(), Vec::new());
+        for (id, &was) in live.iter().enumerate() {
+            let now = !self.scene.strokes[id].deleted;
+            if was && !now {
+                gone.push(id as u32);
+            } else if !was && now {
+                back.push(id as u32);
+            }
+        }
+        for &id in &gone {
+            self.timeline.record(id, false);
+            self.persist_deleted(id);
+        }
+        for &id in &back {
+            self.timeline.record(id, true);
+            self.persist_deleted(id);
+        }
+        if !gone.is_empty() {
+            self.history.record(Change::Deleted(gone));
+        }
+        if !back.is_empty() {
+            self.history.record(Change::Added(back));
+        }
+        self.say("Restored that moment (undo to go back)");
+        self.redraw();
+    }
+
+    // ---- web page bridge ---------------------------------------------------
+
+    #[cfg(target_arch = "wasm32")]
+    fn web_cmd(&mut self, c: web::Cmd) {
+        use web::Cmd;
+        let changes = !matches!(c, Cmd::Timeline(_) | Cmd::BookmarkGo(_) | Cmd::Home);
+        match c {
+            Cmd::Load(bytes, demo) => {
+                let snap = bytes.map(|b| snapshot::decode(&b, BASE_PX));
+                match snap {
+                    Some(Ok(s)) => {
+                        self.load_scene(s.scene, s.cam);
+                        self.timeline = s.timeline;
+                        self.bookmarks = s.bookmarks;
+                        self.ui.file_name = "Canvas".into();
+                    }
+                    other => {
+                        if let Some(Err(e)) = other {
+                            self.say(format!("Could not open that copy: {e}"));
+                        }
+                        if demo {
+                            self.web_cmd(Cmd::Demo);
+                        } else {
+                            self.web_cmd(Cmd::Blank);
+                        }
+                    }
+                }
+            }
+            Cmd::Demo => {
+                let d = demo::build();
+                let tl = d.timeline(timeline::now_ms());
+                self.bookmarks = d.bookmarks();
+                let [w, h] = self.size();
+                let cam = demo::frame_cell(&d.worlds[0], w, h);
+                self.load_scene(d.scene, cam);
+                self.timeline = tl;
+                self.ui.file_name = "Try-mode demo".into();
+            }
+            Cmd::Blank => self.action(Action::New),
+            Cmd::Home => {
+                self.fly = Some(home_camera());
+                self.fly_last = Instant::now();
+            }
+            Cmd::BookmarkAdd(name) => self.bookmark_add(name),
+            Cmd::BookmarkGo(i) => self.bookmark_go(i),
+            Cmd::BookmarkRemove(i) => {
+                if i < self.bookmarks.len() {
+                    self.bookmarks.remove(i);
+                }
+            }
+            Cmd::BookmarkRename(i, name) => {
+                if let Some(b) = self.bookmarks.get_mut(i) {
+                    if !name.trim().is_empty() {
+                        b.name = name.trim().to_string();
+                    }
+                }
+            }
+            Cmd::Timeline(i) => self.timeline_show(i),
+            Cmd::TimelineRestore => self.timeline_restore(),
+        }
+        if changes {
+            web::touch();
+        }
+        self.redraw();
+    }
+
+    /// Hand the page our status (and a snapshot, if it asked for one).
+    #[cfg(target_arch = "wasm32")]
+    fn web_publish(&mut self) {
+        if web::snapshot_wanted() {
+            // Saved as it is now, not as the timeline is showing it.
+            let mut scene_flags = None;
+            if let Some((_, live)) = &self.tl_view {
+                scene_flags = Some(
+                    self.scene
+                        .strokes
+                        .iter()
+                        .map(|s| !s.deleted)
+                        .collect::<Vec<_>>(),
+                );
+                let live = live.clone();
+                timeline::apply(&mut self.scene, &live);
+            }
+            let bytes = snapshot::encode(&self.scene, &self.cam, &self.timeline, &self.bookmarks);
+            if let Some(shown) = scene_flags {
+                timeline::apply(&mut self.scene, &shown);
+            }
+            web::put_snapshot(bytes);
+        }
+        let st = web::get_stats();
+        let marks: Vec<String> = self
+            .bookmarks
+            .iter()
+            .map(|b| {
+                format!(
+                    "{{\"name\":{},\"zoom\":{:.2}}}",
+                    web::json_str(&b.name),
+                    b.cam.log10_zoom()
+                )
+            })
+            .collect();
+        let ev = &self.timeline.events;
+        let tl = format!(
+            "{{\"on\":{},\"i\":{},\"n\":{},\"t\":{},\"first\":{},\"last\":{}}}",
+            self.tl_view.is_some(),
+            self.tl_view
+                .as_ref()
+                .map_or(ev.len().saturating_sub(1), |v| v.0),
+            ev.len(),
+            self.tl_view
+                .as_ref()
+                .and_then(|v| ev.get(v.0))
+                .or(ev.last())
+                .map_or(0, |e| e.t),
+            ev.first().map_or(0, |e| e.t),
+            ev.last().map_or(0, |e| e.t),
+        );
+        let deep = if st.deep_draw.is_finite() {
+            st.deep_draw
+        } else {
+            -99.0
+        };
+        web::set_status(format!(
+            "{{\"ready\":true,\"zoom\":{:.3},\"strokes\":{},\"drawn\":{},\"erased\":{},\"undos\":{},\"deepDraw\":{:.2},\"flying\":{},\"dirty\":{},\"bookmarks\":[{}],\"timeline\":{}}}",
+            self.cam.log10_zoom(),
+            self.scene.strokes.iter().filter(|s| !s.deleted).count(),
+            st.drawn,
+            st.erased,
+            st.undos,
+            deep,
+            self.fly.is_some(),
+            web::is_dirty(),
+            marks.join(","),
+            tl,
+        ));
+        if self.fly.is_some() {
+            self.redraw();
+        }
+    }
+
     // ---- frame -----------------------------------------------------------
 
     fn frame(&mut self) {
@@ -662,6 +1019,11 @@ impl App {
             }
         }
         log::debug!("frame");
+        #[cfg(target_arch = "wasm32")]
+        for c in web::take_cmds() {
+            self.web_cmd(c);
+        }
+        self.fly_step();
         if self.message_until.is_some_and(|t| Instant::now() > t) {
             self.ui.message = None;
             self.message_until = None;
@@ -717,6 +1079,9 @@ impl App {
             }
         }
 
+        #[cfg(target_arch = "wasm32")]
+        self.web_publish();
+
         // Canvas
         let [w, h] = self.size();
         query(&self.scene, &self.cam, w, h, VIEW, &mut self.draw);
@@ -762,6 +1127,8 @@ impl ApplicationHandler for App {
                     attrs.with_append(true)
                 };
                 let w = Arc::new(el.create_window(attrs).expect("create window"));
+                #[cfg(target_arch = "wasm32")]
+                web::set_window(w.clone());
                 self.window = Some(w.clone());
                 w
             }
@@ -848,6 +1215,7 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::MouseWheel { delta, .. } if !over_ui => {
+                self.fly = None;
                 let (dx, dy) = match delta {
                     MouseScrollDelta::LineDelta(x, y) => (x as f64 * 40.0, y as f64 * 40.0),
                     MouseScrollDelta::PixelDelta(p) => (p.x, p.y),
@@ -861,6 +1229,7 @@ impl ApplicationHandler for App {
                 self.view_changed();
             }
             WindowEvent::PinchGesture { delta, .. } => {
+                self.fly = None;
                 self.cam.zoom_at(1.0 + delta, self.centred(self.cursor));
                 self.view_changed();
             }
@@ -877,6 +1246,7 @@ impl ApplicationHandler for App {
                     self.begin(self.cursor, 1.0)
                 }
                 (ElementState::Pressed, MouseButton::Middle | MouseButton::Right) if !over_ui => {
+                    self.fly = None;
                     self.gesture = Gesture::Pan;
                 }
                 (ElementState::Released, _) if self.gesture != Gesture::None => self.end(false),

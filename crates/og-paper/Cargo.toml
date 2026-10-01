@@ -16,6 +16,7 @@ path = "src/main.rs"
 
 [dependencies]
 ogpaper-core = { path = "../ogpaper-core" }
+num-bigint = "0.4"
 wgpu = "30"
 winit = "0.30"
 egui = "0.36"

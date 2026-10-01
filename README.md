@@ -20,7 +20,10 @@ Proprietary infinite-canvas apps such as Endless Paper keep your work in undocum
 
 ## Try it
 
-- **Web:** https://omegagiven.github.io/OG-paper/ — open the app, then “Install app” / “Add to Home screen” for full screen.
+- **Try mode:** https://omegagiven.github.io/OG-paper/try/ — the real app on a demo canvas 10^45 deep, with a guided tour.
+- **Web:** https://omegagiven.github.io/OG-paper/app/ — then “Install app” / “Add to Home screen” for full screen.
+  The web app autosaves in your browser and has bookmarks (fly to any saved view), a timeline (every stroke is
+  time-stamped; scrub, replay or restore any moment) and offline copies (download / load a `.ogpt` file).
 - **Windows, macOS, Linux, Android:** [releases page](https://github.com/OmegaGiven/OG-paper/releases)
   (every push to `main` also produces builds under the CI run's artifacts).
 
