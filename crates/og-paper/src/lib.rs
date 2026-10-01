@@ -530,6 +530,17 @@ impl App {
         }
     }
 
+    fn new_canvas(&mut self) {
+        self.save_view();
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.file = None;
+        }
+        self.ui.file_name = "Untitled".into();
+        self.bookmarks.clear();
+        self.load_scene(Scene::new(), home_camera());
+    }
+
     fn action(&mut self, a: Action) {
         match a {
             Action::Undo => self.undo_redo(false),
@@ -539,21 +550,24 @@ impl App {
                 self.cam = home_camera();
                 self.view_changed();
             }
-            Action::New => {
-                self.save_view();
-                #[cfg(not(target_arch = "wasm32"))]
-                {
-                    self.file = None;
-                }
-                self.ui.file_name = "Untitled".into();
-                self.bookmarks.clear();
-                self.load_scene(Scene::new(), home_camera());
-            }
-            // The page handles files on the web: download / pick a copy.
+            #[cfg(not(target_arch = "wasm32"))]
+            Action::New => self.new_canvas(),
+            // The page handles these on the web: it asks before replacing the
+            // canvas, downloads / picks offline copies and shows its panels.
+            #[cfg(target_arch = "wasm32")]
+            Action::New => web::emit("new"),
             #[cfg(target_arch = "wasm32")]
             Action::Open => web::emit("open"),
             #[cfg(target_arch = "wasm32")]
             Action::SaveAs => web::emit("save"),
+            #[cfg(target_arch = "wasm32")]
+            Action::Bookmarks => web::emit("bookmarks"),
+            #[cfg(target_arch = "wasm32")]
+            Action::Timeline => web::emit("timeline"),
+            #[cfg(target_arch = "wasm32")]
+            Action::FullScreen => web::emit("fullscreen"),
+            #[cfg(target_arch = "wasm32")]
+            Action::Tour => web::emit("tour"),
             #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
             Action::Open => {
                 if let Some(p) = rfd::FileDialog::new()
@@ -851,7 +865,10 @@ impl App {
     #[cfg(target_arch = "wasm32")]
     fn web_cmd(&mut self, c: web::Cmd) {
         use web::Cmd;
-        let changes = !matches!(c, Cmd::Timeline(_) | Cmd::BookmarkGo(_) | Cmd::Home);
+        let changes = !matches!(
+            c,
+            Cmd::Timeline(_) | Cmd::BookmarkGo(_) | Cmd::Home | Cmd::Menu(_)
+        );
         match c {
             Cmd::Load(bytes, demo) => {
                 let snap = bytes.map(|b| snapshot::decode(&b, BASE_PX));
@@ -884,7 +901,8 @@ impl App {
                 self.timeline = tl;
                 self.ui.file_name = "Try-mode demo".into();
             }
-            Cmd::Blank => self.action(Action::New),
+            Cmd::Blank => self.new_canvas(),
+            Cmd::Menu(items) => self.ui.app_items = items,
             Cmd::Home => {
                 self.fly = Some(home_camera());
                 self.fly_last = Instant::now();
@@ -1037,6 +1055,7 @@ impl App {
 
         // UI
         self.ui.zoom_log10 = self.cam.log10_zoom();
+        self.ui.timeline_on = self.tl_view.is_some();
         self.ui.can_undo = self.history.can_undo();
         self.ui.can_redo = self.history.can_redo();
         self.ui.strokes = self.scene.strokes.iter().filter(|s| !s.deleted).count();
@@ -1189,7 +1208,18 @@ impl ApplicationHandler for App {
             }
             None => false,
         };
-        let over_ui = self.egui_ctx.is_pointer_over_egui() && self.gesture == Gesture::None;
+        // Also hit-test the UI at the cursor: egui's hover state lags a
+        // frame, so a click with no mouse move before it would otherwise ink
+        // under a button. (The root background layer covers the whole screen
+        // and is canvas, not UI.)
+        let ppp = self.egui_ctx.pixels_per_point() as f64;
+        let at = egui::pos2((self.cursor[0] / ppp) as f32, (self.cursor[1] / ppp) as f32);
+        let over_ui = (self.egui_ctx.is_pointer_over_egui()
+            || self
+                .egui_ctx
+                .layer_id_at(at)
+                .is_some_and(|l| l.order != egui::Order::Background))
+            && self.gesture == Gesture::None;
 
         match event {
             WindowEvent::CloseRequested => {
