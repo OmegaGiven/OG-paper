@@ -4,7 +4,7 @@
 
 Write a sentence inside the dot of an "i", then zoom out until a whole notebook is a speck. Pick up the same canvas on your Windows laptop, Android phone, iPad or a browser. And if this project ever stops, your files still open: the format is openly documented, stored in SQLite, and readable with a tiny standard-library Python script.
 
-> **Status: Phase 0 (zoom spike).** A prototype flies from 10^-0.6 to 10^49 zoom over a 1M-stroke canvas at ~6,000 fps on desktop — see [`docs/PHASE0.md`](docs/PHASE0.md). Design spec: [`docs/DESIGN.md`](docs/DESIGN.md).
+> **Status: Phase 1 (the app), early alpha.** Drawing, files and the web app work on Windows, macOS, Linux, Android and the browser — see [What works today](#what-works-today). The Phase 0 spike flies from 10^-0.6 to 10^49 zoom over a 1M-stroke canvas at ~6,000 fps on desktop ([`docs/PHASE0.md`](docs/PHASE0.md)). Design spec: [`docs/DESIGN.md`](docs/DESIGN.md).
 
 ## Why
 
@@ -27,7 +27,25 @@ Proprietary infinite-canvas apps such as Endless Paper keep your work in undocum
 - **Windows, macOS, Linux, Android:** [releases page](https://github.com/OmegaGiven/OG-paper/releases)
   (every push to `main` also produces builds under the CI run's artifacts).
 
-## Planned stack
+## What works today
+
+- **Ink:** pen with pressure, marker, highlighter, stroke eraser, eyedropper, color dial with custom colors, per-brush width, unlimited undo/redo.
+- **Endless canvas:** pan and zoom with no limit; content at any depth stays exact.
+- **Controls:** round buttons that fan out like radial menus: tools (bottom right), color, ↩ undo / ↪ redo, a tool panel (top left, collapsible) with the selected brush's width, pressure and colors, and ⚙ settings (top right) for New canvas, Open, Save copy, Home, Bookmarks, Timeline, Full screen and the tour.
+- **Files:** desktop and Android autosave to a `.ogp` file (SQLite) with New / Open / Save As. The web app autosaves in your browser and saves / opens `.ogpt` offline copies.
+- **Bookmarks** (web): save a view, then fly back to it with one tap, across any zoom depth.
+- **Timeline** (web): every stroke is time-stamped; scrub or play back the canvas as it was at any moment, and restore it.
+- **Try mode** (web): a demo canvas with 15 worlds nested inside dots, down to 10^45, and a guided checklist.
+
+File formats (`.ogp` 0.1, the timeline log, bookmarks, `.ogpt` v1) are documented in [`docs/DESIGN.md`](docs/DESIGN.md#implemented-today-ogp-format-01).
+
+## Coming next
+
+- **Save to / open from** the cloud: Save and Open fan out to device, Google Drive, Dropbox or OneDrive, signed in from the page with no project server.
+- `.ogpt` copies in the desktop app, and `.ogp` in the web app, so both share one format; bookmarks and the timeline on desktop.
+- Stickers (images), shapes and lasso select, textured brushes, layers, export, multi-device sync — see [`docs/PHASE1.md`](docs/PHASE1.md) and the [to-do list](docs/DESIGN.md#future-to-do).
+
+## Stack
 
 Rust core · wgpu renderer · winit · egui · SQLite. See [`docs/DESIGN.md`](docs/DESIGN.md) for architecture, file format, sync design and roadmap.
 

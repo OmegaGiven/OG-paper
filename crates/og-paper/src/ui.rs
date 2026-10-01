@@ -69,7 +69,6 @@ pub enum Menu {
     None,
     Tools,
     Colors,
-    Settings,
     /// The settings button's fan (canvas commands).
     App,
 }
@@ -141,6 +140,9 @@ pub struct UiState {
     pub app_items: Vec<AppItem>,
     /// Timeline view open (its fan item shows as active).
     pub timeline_on: bool,
+    /// The tool panel (top left) is expanded; collapsed it is one small button.
+    /// `None` until the first frame, which picks by screen width.
+    pub panel_open: Option<bool>,
 }
 
 impl Default for UiState {
@@ -175,6 +177,7 @@ impl Default for UiState {
             touch_ui: false,
             app_items: vec![AppItem::New, AppItem::Open, AppItem::Save, AppItem::Home],
             timeline_on: false,
+            panel_open: None,
         }
     }
 }
@@ -351,7 +354,9 @@ pub fn draw(ctx: &egui::Context, st: &mut UiState) -> Vec<Action> {
                     }
                     if resp.clicked() {
                         if selected && tool.brush().is_some() {
-                            st.menu = Menu::Settings;
+                            // Picking the current brush again brings its panel back.
+                            st.panel_open = Some(true);
+                            st.menu = Menu::None;
                         } else {
                             st.tool = tool;
                             if tool.brush().is_some() {
@@ -382,7 +387,8 @@ pub fn draw(ctx: &egui::Context, st: &mut UiState) -> Vec<Action> {
             if (tool_resp.long_touched() || tool_resp.secondary_clicked())
                 && st.tool.brush().is_some()
             {
-                st.menu = Menu::Settings;
+                st.panel_open = Some(true);
+                st.menu = Menu::None;
             }
 
             // While the tool fan is open, its items use the space of the other buttons.
@@ -406,7 +412,7 @@ pub fn draw(ctx: &egui::Context, st: &mut UiState) -> Vec<Action> {
             }
 
             // ---- undo / redo
-            let undo_row = if st.menu == Menu::None || st.menu == Menu::Settings {
+            let undo_row = if st.menu == Menu::None {
                 vec![(g.undo, false, st.can_undo), (g.redo, true, st.can_redo)]
             } else {
                 vec![]
@@ -439,80 +445,7 @@ pub fn draw(ctx: &egui::Context, st: &mut UiState) -> Vec<Action> {
         color_dial(ctx, st, c);
     }
 
-    // ---- tool settings popover, beside the buttons
-    if st.menu == Menu::Settings {
-        let tool = st.tool;
-        let touch = st.touch_ui;
-        egui::Area::new(Id::new("settings"))
-            .order(Order::Foreground)
-            .anchor(
-                Align2::RIGHT_BOTTOM,
-                vec2(-(g.r * 2.0 + 30.0), -(g.r * 2.0 + 30.0)),
-            )
-            .show(ctx, |ui| {
-                egui::Frame::popup(ui.style()).show(ui, |ui| {
-                    ui.set_min_width(if touch { 240.0 } else { 210.0 });
-                    if touch {
-                        ui.style_mut().spacing.interact_size.y = 36.0;
-                        ui.style_mut().spacing.slider_width = 180.0;
-                    }
-                    let Some(ink) = ink_of(st, tool) else { return };
-                    let mut done = false;
-                    ui.horizontal(|ui| {
-                        ui.strong(tool.name());
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            done = ui.button("Done").clicked();
-                        });
-                    });
-                    // Live preview of the stroke.
-                    let (rect, _) =
-                        ui.allocate_exact_size(vec2(ui.available_width(), 60.0), Sense::hover());
-                    let w = ink.width.min(52.0);
-                    let a = if tool == Tool::Highlighter { 140 } else { 255 };
-                    let col = Color32::from_rgba_unmultiplied(
-                        ink.color.r(),
-                        ink.color.g(),
-                        ink.color.b(),
-                        a,
-                    );
-                    let pts: Vec<Pos2> = (0..24)
-                        .map(|i| {
-                            let x = i as f32 / 23.0;
-                            pos2(
-                                rect.left() + 18.0 + x * (rect.width() - 36.0),
-                                rect.center().y + (x * 6.0).sin() * 10.0,
-                            )
-                        })
-                        .collect();
-                    ui.painter().add(Shape::line(pts, Stroke::new(w, col)));
-                    let max = if tool == Tool::Highlighter {
-                        80.0
-                    } else {
-                        48.0
-                    };
-                    ui.add(
-                        egui::Slider::new(&mut ink.width, 0.5..=max)
-                            .logarithmic(true)
-                            .text("size")
-                            .suffix(" px"),
-                    );
-                    if tool == Tool::Pen {
-                        ui.checkbox(&mut ink.pressure, "Width follows pen pressure");
-                    }
-                    let [r, g2, b, _] = ink.color.to_array();
-                    let mut c3 = [r, g2, b];
-                    ui.horizontal(|ui| {
-                        ui.label("Custom color");
-                        if ui.color_edit_button_srgb(&mut c3).changed() {
-                            ink.color = Color32::from_rgb(c3[0], c3[1], c3[2]);
-                        }
-                    });
-                    if done {
-                        st.menu = Menu::None;
-                    }
-                });
-            });
-    }
+    tool_panel(ctx, st);
 
     app_menu(ctx, st, &g, &mut actions);
 
@@ -548,6 +481,196 @@ pub fn draw(ctx: &egui::Context, st: &mut UiState) -> Vec<Action> {
             });
     }
     actions
+}
+
+/// The tool panel, top left: the selected brush's settings, open until it
+/// is collapsed to a small button (which pops it back out). New per-tool
+/// options (textures, presets, ...) go here as sections.
+fn tool_panel(ctx: &egui::Context, st: &mut UiState) {
+    let tool = st.tool;
+    if tool.brush().is_none() {
+        return;
+    }
+    let touch = st.touch_ui;
+    let m = if touch { 18.0 } else { 16.0 };
+    let screen = ctx.content_rect();
+    let top_left = screen.min + vec2(m, m);
+    // Open by default where there is room; tucked away on phones.
+    let open = *st.panel_open.get_or_insert(screen.width() >= 700.0);
+
+    if !open {
+        // Collapsed: a small round button showing the tool and its color.
+        let r = if touch { 24.0 } else { 19.0 };
+        egui::Area::new(Id::new("tool_panel_btn"))
+            .order(Order::Foreground)
+            .fixed_pos(top_left)
+            .show(ctx, |ui| {
+                let (rect, resp) =
+                    ui.allocate_exact_size(Vec2::splat(2.0 * r + 4.0), Sense::click());
+                let c = rect.center();
+                let p = ui.painter();
+                let col = ink_of(st, tool).map(|i| i.color).unwrap_or(INKY);
+                disc(
+                    p,
+                    c,
+                    r,
+                    if resp.hovered() { Color32::WHITE } else { FACE },
+                    false,
+                );
+                sliders_icon(p, c, r, col);
+                if resp.clicked() {
+                    st.panel_open = Some(true);
+                }
+                resp.on_hover_text(format!("{} settings", tool.name()));
+            });
+        return;
+    }
+
+    egui::Area::new(Id::new("tool_panel"))
+        .order(Order::Foreground)
+        .fixed_pos(top_left)
+        .show(ctx, |ui| {
+            // Light like the rest of the controls, whatever the system theme.
+            ui.style_mut().visuals = egui::Visuals::light();
+            let frame = egui::Frame::new()
+                .fill(FACE)
+                .stroke(Stroke::new(1.0, EDGE))
+                .corner_radius(12.0)
+                .inner_margin(12.0)
+                .shadow(egui::Shadow {
+                    offset: [0, 2],
+                    blur: 10,
+                    spread: 0,
+                    color: Color32::from_black_alpha(40),
+                });
+            frame.show(ui, |ui| {
+                let w = if touch { 236.0 } else { 204.0 };
+                ui.set_width(w);
+                if touch {
+                    ui.style_mut().spacing.interact_size.y = 34.0;
+                    ui.style_mut().spacing.slider_width = w - 70.0;
+                } else {
+                    ui.style_mut().spacing.slider_width = w - 64.0;
+                }
+                ui.horizontal(|ui| {
+                    ui.strong(tool.name());
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let (rect, resp) = ui.allocate_exact_size(
+                            Vec2::splat(if touch { 30.0 } else { 22.0 }),
+                            Sense::click(),
+                        );
+                        let p = ui.painter();
+                        if resp.hovered() {
+                            p.circle_filled(
+                                rect.center(),
+                                rect.width() * 0.5,
+                                Color32::from_gray(232),
+                            );
+                        }
+                        collapse_icon(p, rect.center(), rect.width() * 0.5);
+                        if resp.clicked() {
+                            st.panel_open = Some(false);
+                        }
+                        resp.on_hover_text("Hide (tap the button to bring it back)");
+                    });
+                });
+                let Some(ink) = ink_of(st, tool) else { return };
+
+                // Live preview of the stroke.
+                let (rect, _) =
+                    ui.allocate_exact_size(vec2(ui.available_width(), 48.0), Sense::hover());
+                let pw = ink.width.min(40.0);
+                let a = if tool == Tool::Highlighter { 140 } else { 255 };
+                let col =
+                    Color32::from_rgba_unmultiplied(ink.color.r(), ink.color.g(), ink.color.b(), a);
+                let pts: Vec<Pos2> = (0..24)
+                    .map(|i| {
+                        let x = i as f32 / 23.0;
+                        pos2(
+                            rect.left() + 14.0 + x * (rect.width() - 28.0),
+                            rect.center().y + (x * 6.0).sin() * 8.0,
+                        )
+                    })
+                    .collect();
+                ui.painter().add(Shape::line(pts, Stroke::new(pw, col)));
+
+                ui.label(egui::RichText::new("Stroke width").small().weak());
+                let max = if tool == Tool::Highlighter {
+                    80.0
+                } else {
+                    48.0
+                };
+                ui.add(
+                    egui::Slider::new(&mut ink.width, 0.5..=max)
+                        .logarithmic(true)
+                        .suffix(" px"),
+                );
+                if tool == Tool::Pen {
+                    ui.checkbox(&mut ink.pressure, "Width follows pressure");
+                }
+
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new("Color").small().weak());
+                let swatches: &[Color32] = if tool == Tool::Highlighter {
+                    &HIGHLIGHT
+                } else {
+                    &BASIC
+                };
+                let sw = if touch { 24.0 } else { 18.0 };
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = vec2(5.0, 5.0);
+                    for &c in swatches {
+                        let (rect, resp) = ui.allocate_exact_size(Vec2::splat(sw), Sense::click());
+                        let p = ui.painter();
+                        let on = ink.color.to_opaque() == c;
+                        p.circle_filled(rect.center(), sw * 0.5, c);
+                        p.circle_stroke(
+                            rect.center(),
+                            sw * 0.5,
+                            Stroke::new(if on { 2.5 } else { 1.0 }, if on { ACCENT } else { EDGE }),
+                        );
+                        if resp.clicked() {
+                            ink.color = c;
+                        }
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Custom");
+                    let [r, g2, b, _] = ink.color.to_array();
+                    let mut c3 = [r, g2, b];
+                    if ui.color_edit_button_srgb(&mut c3).changed() {
+                        ink.color = Color32::from_rgb(c3[0], c3[1], c3[2]);
+                    }
+                });
+            });
+        });
+}
+
+/// Three slider lines with knobs; the middle knob shows the ink color.
+fn sliders_icon(p: &egui::Painter, c: Pos2, r: f32, ink: Color32) {
+    let s = r * 0.5;
+    let line = Stroke::new((r * 0.09).max(1.2), INKY);
+    for (i, k) in [(-1.0, 0.35), (0.0, -0.4), (1.0, 0.1)] {
+        let y = c.y + i * s * 0.75;
+        p.line_segment([pos2(c.x - s, y), pos2(c.x + s, y)], line);
+        let kc = pos2(c.x + k * s, y);
+        p.circle_filled(kc, r * 0.15, if i == 0.0 { ink } else { FACE });
+        p.circle_stroke(kc, r * 0.15, line);
+    }
+}
+
+/// A chevron pointing left: tuck the panel away into its corner.
+fn collapse_icon(p: &egui::Painter, c: Pos2, r: f32) {
+    let s = r * 0.45;
+    let line = Stroke::new((r * 0.13).max(1.4), INKY);
+    p.add(Shape::line(
+        vec![
+            c + vec2(s * 0.6, -s * 0.9),
+            c + vec2(-s * 0.4, 0.0),
+            c + vec2(s * 0.6, s * 0.9),
+        ],
+        line,
+    ));
 }
 
 /// Radius of the settings fan: about one item and a gap apart along the arc.

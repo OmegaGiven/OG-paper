@@ -66,7 +66,7 @@ const CSS = `
   background: #1c1c24; color: #fff; padding: 8px 14px; border-radius: 10px; font: 14px system-ui, sans-serif; opacity: 0;
   transition: opacity .25s; pointer-events: none; max-width: calc(100vw - 32px); }
 .og-toast.on { opacity: .92; }
-@media (max-width: 520px) { .og-tl input[type=range] { flex-basis: 60px; } .og-tl .restore { padding: 6px 8px; } .og-tl { right: calc(84px + env(safe-area-inset-right)); bottom: auto; top: calc(10px + env(safe-area-inset-top)); } }
+@media (max-width: 520px) { .og-tl input[type=range] { flex-basis: 60px; } .og-tl .restore { padding: 6px 8px; } .og-tl { right: calc(84px + env(safe-area-inset-right)); bottom: calc(86px + env(safe-area-inset-bottom)); } }
 `;
 
 const TOUR = [
