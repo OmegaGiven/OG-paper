@@ -7,10 +7,11 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
-<link rel="manifest" href="manifest.webmanifest">
-<link rel="icon" href="icon-192.png">
-<link rel="apple-touch-icon" href="icon-192.png">
-<title>OG Paper</title>
+
+<link rel="icon" href="../app/icon-192.png">
+<link rel="apple-touch-icon" href="../app/icon-192.png">
+<title>OG Paper — Try mode</title>
+<meta name="description" content="Try the OG Paper infinite canvas in your browser: a demo canvas 10^45 deep, bookmarks, a timeline and offline copies.">
 <style>
   html, body { margin: 0; height: 100%; overflow: hidden; background: #f5f3ec; overscroll-behavior: none; }
   /* dvh = the height actually visible between the browser's toolbars; the
@@ -23,12 +24,10 @@
 </head>
 <body>
 <script type="module">
-  // The canvas plus bookmarks, timeline, offline copies and browser autosave.
-  import { start } from './og-web.js';
-  start({ mode: 'app' });
-
-  // Installable app (Add to Home screen): opens with no browser bars.
-  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+  // Try mode: the real app, starting on a demo canvas with a guided tour.
+  // Drawings autosave in this browser, separately from /app/.
+  import { start } from '../app/og-web.js';
+  start({ mode: 'try' });
 </script>
 </body>
 </html>

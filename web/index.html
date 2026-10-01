@@ -44,7 +44,8 @@
   <p class="lead">An open-source infinite canvas. Zoom in forever, draw at any depth, and keep your work in an open
     file format that outlives the app.</p>
   <div class="cta">
-    <a class="btn primary" href="app/">Open the app</a>
+    <a class="btn primary" href="try/">Try it now</a>
+    <a class="btn" href="app/">Open the app</a>
     <a class="btn" href="https://github.com/OmegaGiven/OG-paper/releases">Downloads</a>
     <a class="btn" href="spike/?chain=25">Zoom demo (10<sup>48</sup> deep)</a>
     <a class="btn" href="https://github.com/OmegaGiven/OG-paper">Source</a>
@@ -54,8 +55,16 @@
     <div class="card"><h3>Truly endless</h3><p>Unlimited zoom depth with no precision loss: tested from 10<sup>-0.6</sup> to 10<sup>49</sup>.</p></div>
     <div class="card"><h3>Fast at any size</h3><p>Only what is on screen is drawn: the same frame time at 1M or 10M strokes.</p></div>
     <div class="card"><h3>Files you own</h3><p>Every canvas is one <code>.ogp</code> SQLite file with a published, openly licensed format.</p></div>
+    <div class="card"><h3>Bookmarks</h3><p>Save any view and fly back to it with one tap, even 10<sup>45</sup> zoom levels away.</p></div>
+    <div class="card"><h3>Timeline</h3><p>Every stroke is time-stamped. Scrub or replay the canvas as it was at any moment, and restore it.</p></div>
+    <div class="card"><h3>Offline copies</h3><p>The web app autosaves in your browser. Download a copy of a canvas, or load one back, any time.</p></div>
     <div class="card"><h3>Everywhere</h3><p>One Rust engine for Windows, macOS, Linux, Android and the web. Installs as an app from your browser.</p></div>
   </div>
+
+  <h2>Try mode</h2>
+  <p><a href="try/">Try mode</a> opens the real app on a demo canvas: a home page with a world hidden in the dot of an
+    “i”, and inside that another, and another, 15 worlds down to 10<sup>45</sup>. A checklist walks you through drawing,
+    zooming, panning, erasing, bookmarks and the timeline. Your drawings there autosave in this browser, separate from the app.</p>
 
   <h2>Get it</h2>
   <table>
@@ -68,8 +77,9 @@
 
   <h2>Status</h2>
   <p>Early development (Phase 1). Working: pen, marker, highlighter with pressure, color dial and picker, eraser,
-    undo/redo, autosave to <code>.ogp</code> on desktop. Next: stickers (paste PNG/JPG/SVG), shapes and selection,
-    textured brushes, multi-device sync. The web demo keeps drawings only until you close the tab.</p>
+    undo/redo, autosave to <code>.ogp</code> on desktop; on the web, bookmarks, a timeline, browser autosave and
+    downloadable offline copies (<code>.ogpt</code>). Next: stickers (paste PNG/JPG/SVG), shapes and selection,
+    textured brushes, multi-device sync, opening web copies in the desktop app.</p>
 
   <footer>Created by OmegaGiven and contributors · App: MPL-2.0 · File format spec: CC BY 4.0</footer>
 </main>
