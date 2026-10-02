@@ -220,7 +220,7 @@ impl AppItem {
             AppItem::Open => "Open",
             AppItem::Save => "Save copy",
             AppItem::Home => "Home",
-            AppItem::Picture => "Insert picture",
+            AppItem::Picture => "Insert picture / PDF",
             AppItem::Bookmarks => "Bookmarks",
             AppItem::Timeline => "Timeline",
             AppItem::FullScreen => "Full screen",

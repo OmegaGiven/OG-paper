@@ -6,7 +6,7 @@
 
 import init, {
   og_load, og_demo, og_blank, og_status, og_requests, og_set_menu, og_text_request, og_text_done, og_font_add,
-  og_copy, og_paste_own, og_paste_image, og_paste_text,
+  og_copy, og_paste_own, og_paste_image, og_paste_text, og_pdf_page,
   og_bookmark_add, og_bookmark_go, og_bookmark_remove, og_bookmark_rename,
   og_search, og_search_results, og_search_go, og_export, og_export_take, og_has_selection,
   og_timeline, og_timeline_range, og_timeline_restore, og_snapshot_request, og_snapshot_take,
@@ -641,6 +641,43 @@ export async function start({ mode = 'app' } = {}) {
       say(`Could not add the picture: ${e.message || e}`);
     }
   }
+  const isPdf = f => f.type === 'application/pdf' || /\.pdf$/i.test(f.name || '');
+  // PDFs are drawn by pdf.js, fetched the first time one is imported.
+  const PDFJS = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/';
+  let pdfjs = null;
+  async function addPdf(f, at) {
+    const name = f.name || 'PDF';
+    say(`Opening ${name}…`);
+    try {
+      if (!pdfjs) {
+        pdfjs = await import(PDFJS + 'pdf.min.mjs');
+        pdfjs.GlobalWorkerOptions.workerSrc = PDFJS + 'pdf.worker.min.mjs';
+      }
+      const doc = await pdfjs.getDocument({ data: new Uint8Array(await f.arrayBuffer()) }).promise;
+      const total = Math.min(doc.numPages, 200);
+      if (doc.numPages > total) say(`${name} has ${doc.numPages} pages; importing the first ${total}`);
+      for (let i = 0; i < total; i++) {
+        const page = await doc.getPage(i + 1);
+        const v = page.getViewport({ scale: 1 });
+        const k = Math.min(2200 / Math.max(v.width, v.height), 4);
+        const vp = page.getViewport({ scale: k });
+        const c = document.createElement('canvas');
+        c.width = Math.ceil(vp.width);
+        c.height = Math.ceil(vp.height);
+        const g = c.getContext('2d');
+        g.fillStyle = '#fff';
+        g.fillRect(0, 0, c.width, c.height);
+        await page.render({ canvasContext: g, viewport: vp }).promise;
+        const png = await new Promise(r => c.toBlob(r, 'image/png'));
+        const err = og_pdf_page(new Uint8Array(await png.arrayBuffer()), i, total, at?.[0], at?.[1], name);
+        if (err) { say(`Could not import page ${i + 1}: ${err}`); return; }
+        page.cleanup();
+      }
+      doc.destroy();
+    } catch (e) {
+      say(e?.name === 'PasswordException' ? `${name} is password-protected` : `Could not import ${name}: ${e?.message || e}`);
+    }
+  }
   // An HTML table (from a spreadsheet or a web page) as tab-separated text.
   function htmlTable(html) {
     if (!/<table/i.test(html)) return null;
@@ -656,6 +693,9 @@ export async function start({ mode = 'app' } = {}) {
     const table = htmlTable(dt.getData('text/html') || '');
     if (table) { og_paste_text(table, at?.[0], at?.[1]); return; }
     const files = [...dt.files];
+    const pdfs = files.filter(isPdf);
+    for (const [i, f] of pdfs.entries()) await addPdf(f, at && [at[0] + i * 24, at[1] + i * 24]);
+    if (pdfs.length) return;
     const pics = files.filter(f => f.type.startsWith('image/'));
     if (pics.length) {
       for (const [i, f] of pics.entries()) await addPicture(f, at && [at[0] + i * 24, at[1] + i * 24]);
@@ -713,10 +753,10 @@ export async function start({ mode = 'app' } = {}) {
     e.preventDefault();
     pasteFrom(e.dataTransfer, [e.clientX, e.clientY]);
   });
-  const picPicker = el('input', { type: 'file', accept: 'image/*', multiple: '', hidden: '' });
+  const picPicker = el('input', { type: 'file', accept: 'image/*,application/pdf,.pdf', multiple: '', hidden: '' });
   root.append(picPicker);
   picPicker.onchange = async () => {
-    for (const f of picPicker.files) await addPicture(f, null);
+    for (const f of picPicker.files) await (isPdf(f) ? addPdf(f, null) : addPicture(f, null));
     picPicker.value = '';
   };
 

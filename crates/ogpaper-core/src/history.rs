@@ -33,6 +33,18 @@ impl History {
         self.redo.clear();
     }
 
+    /// Add strokes to the last edit when it only added strokes (an import
+    /// spread over several frames stays one undo step). False otherwise.
+    pub fn extend_added(&mut self, ids: &[u32]) -> bool {
+        match self.undo.last_mut() {
+            Some(Change::Added(v)) => {
+                v.extend_from_slice(ids);
+                true
+            }
+            _ => false,
+        }
+    }
+
     pub fn can_undo(&self) -> bool {
         !self.undo.is_empty()
     }

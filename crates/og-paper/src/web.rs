@@ -50,6 +50,9 @@ pub enum Cmd {
     PasteOwn,
     /// A picture pasted, dropped or picked; where (CSS px), if known.
     Picture(crate::images::Asset, Option<[f64; 2]>),
+    /// A page of a PDF being imported: the page, its index, the page
+    /// count, where (CSS px), the file name.
+    PdfPage(crate::images::Asset, usize, usize, Option<[f64; 2]>, String),
     /// Text pasted or dropped (a table if it looks like one).
     PasteText(String, Option<[f64; 2]>),
 }
@@ -411,6 +414,26 @@ pub fn og_paste_image(bytes: Vec<u8>, x: Option<f64>, y: Option<f64>) -> String 
     match crate::images::prepare(bytes) {
         Ok(a) => {
             push(Cmd::Picture(a, at(x, y)));
+            String::new()
+        }
+        Err(e) => e,
+    }
+}
+
+/// One page of a PDF the page is importing (rendered with pdf.js), in
+/// order: page 0 starts the import. Returns an error message, or "".
+#[wasm_bindgen]
+pub fn og_pdf_page(
+    bytes: Vec<u8>,
+    index: usize,
+    total: usize,
+    x: Option<f64>,
+    y: Option<f64>,
+    name: String,
+) -> String {
+    match crate::images::prepare(bytes) {
+        Ok(a) => {
+            push(Cmd::PdfPage(a, index, total, at(x, y), name));
             String::new()
         }
         Err(e) => e,

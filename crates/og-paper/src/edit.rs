@@ -157,7 +157,23 @@ impl App {
     // ---- records ---------------------------------------------------------
 
     /// Bookkeeping after strokes were added and removed by one edit.
-    fn record_edit(&mut self, removed: Vec<u32>, added: Vec<u32>) {
+    /// Record added strokes as part of the last undo step, if that step
+    /// only added strokes; else as a new one.
+    pub(crate) fn record_added_merged(&mut self, added: Vec<u32>) {
+        if !self.history.extend_added(&added) {
+            return self.record_edit(vec![], added);
+        }
+        for &id in &added {
+            self.timeline.record(id, true);
+            self.persist_new(id);
+        }
+        self.persist_groups();
+        if let Some(g) = self.gpu.as_mut() {
+            g.sync(&self.scene);
+        }
+    }
+
+    pub(crate) fn record_edit(&mut self, removed: Vec<u32>, added: Vec<u32>) {
         for &id in &removed {
             self.scene.delete(id);
             self.timeline.record(id, false);
@@ -188,7 +204,11 @@ impl App {
 
     /// Store new object data (camera units) as a group at draw orders `z`
     /// (or on top). Returns the group and its strokes.
-    fn add_group(&mut self, data_cam: &ObjData, z: Option<(f64, f64)>) -> (u32, Vec<u32>) {
+    pub(crate) fn add_group(
+        &mut self,
+        data_cam: &ObjData,
+        z: Option<(f64, f64)>,
+    ) -> (u32, Vec<u32>) {
         let (cell, data) = home(data_cam, &self.cam);
         let n = data.pieces().len().max(1) as f64;
         let z = z.unwrap_or((self.scene.z_top + 1.0, self.scene.z_top + n));
@@ -1108,7 +1128,7 @@ impl App {
     // ---- pasting and inserting ---------------------------------------------
 
     /// Screen point (px) for something pasted: `at`, or the middle of the screen.
-    fn drop_point(&self, at: Option<[f64; 2]>) -> [f64; 2] {
+    pub(crate) fn drop_point(&self, at: Option<[f64; 2]>) -> [f64; 2] {
         let s = self.size();
         at.unwrap_or([s[0] * 0.5, s[1] * 0.5])
     }

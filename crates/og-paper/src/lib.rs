@@ -14,6 +14,7 @@ mod font;
 mod hotbar;
 mod images;
 mod objects;
+mod pdf;
 mod prefs;
 mod render;
 mod search;
@@ -110,6 +111,8 @@ pub struct App {
     tl_from: usize,
     /// Animated flight to a view (bookmarks); any input cancels it.
     fly: Option<Camera>,
+    /// A PDF being imported, a page per frame.
+    pdf: Option<pdf::PdfJob>,
     /// A searched-for text being outlined: its group and when it started.
     flash: Option<(u32, Instant)>,
     fly_last: Instant,
@@ -173,6 +176,7 @@ impl App {
             tl_view: None,
             tl_from: 0,
             fly: None,
+            pdf: None,
             flash: None,
             fly_last: Instant::now(),
             #[cfg(not(target_arch = "wasm32"))]
@@ -838,7 +842,10 @@ impl App {
             #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
             Action::Picture => {
                 if let Some(p) = rfd::FileDialog::new()
-                    .add_filter("Pictures", &["png", "jpg", "jpeg", "gif", "webp", "svg"])
+                    .add_filter(
+                        "Pictures and PDFs",
+                        &["png", "jpg", "jpeg", "gif", "webp", "svg", "pdf"],
+                    )
                     .pick_file()
                 {
                     self.open_dropped(p, None);
@@ -1028,6 +1035,10 @@ impl App {
                 return;
             }
         };
+        if ext == "pdf" {
+            self.import_pdf(bytes, at, &file_label(&path));
+            return;
+        }
         if ext == "svg" {
             match images::from_svg(&bytes) {
                 Ok(a) => self.insert_image(a, at),
@@ -1504,6 +1515,10 @@ impl App {
                 }
             }
             Cmd::PasteOwn => self.paste(),
+            Cmd::PdfPage(page, i, n, at, name) => {
+                let k = web_dpr() as f64;
+                self.pdf_page(page, i, n, at.map(|p| [p[0] * k, p[1] * k]), &name);
+            }
             Cmd::Picture(a, at) => {
                 let k = web_dpr() as f64;
                 self.insert_image(a, at.map(|p| [p[0] * k, p[1] * k]));
@@ -1739,6 +1754,10 @@ impl App {
         #[cfg(target_arch = "wasm32")]
         self.web_publish();
 
+        // A PDF import: one page per frame.
+        if self.pdf.is_some() && self.pdf_step() {
+            window.request_redraw();
+        }
         // Search (desktop panel): refresh results as the query changes, and
         // fly to a picked one.
         if self.ui.search_open && self.ui.search_ran != self.ui.search_query {
