@@ -65,6 +65,8 @@ pub struct EditState {
     pub marquee: Option<([f64; 2], [f64; 2])>,
     /// Lasso loop being drawn (px).
     pub lasso: Option<Vec<[f64; 2]>>,
+    /// A picture being cropped.
+    pub crop: Option<crate::crop::CropEdit>,
     pub text: Option<TextEdit>,
     pub clipboard: Vec<ObjRef>,
     pub last_tap: Option<(Instant, [f64; 2])>,
@@ -221,7 +223,7 @@ impl App {
         (g, ids)
     }
 
-    fn z_range(&self, ids: &[u32]) -> (f64, f64) {
+    pub(crate) fn z_range(&self, ids: &[u32]) -> (f64, f64) {
         ids.iter().fold((f64::MAX, f64::MIN), |(lo, hi), &i| {
             let z = self.scene.strokes[i as usize].z;
             (lo.min(z), hi.max(z))
@@ -570,6 +572,9 @@ impl App {
     }
 
     pub(crate) fn select_begin(&mut self, p: [f64; 2]) {
+        if self.edit.crop.is_some() && self.crop_begin(p) {
+            return;
+        }
         self.sel_alive();
         let ppp = self.ppp();
         // Double tap on a text: edit it.
@@ -744,6 +749,9 @@ impl App {
     }
 
     pub(crate) fn select_move(&mut self, p: [f64; 2]) {
+        if self.edit.crop.is_some() {
+            return self.crop_move(p);
+        }
         if let Some(d) = self.edit.sel_drag.as_mut() {
             d.cur = p;
             self.drag_preview();
@@ -759,6 +767,9 @@ impl App {
     }
 
     pub(crate) fn select_end(&mut self, cancel: bool) {
+        if self.edit.crop.is_some() {
+            return self.crop_end();
+        }
         if let Some(d) = self.edit.sel_drag.take() {
             let op = if cancel { None } else { self.drag_op(&d) };
             // Put the original points back; the edit makes new strokes.
@@ -883,7 +894,10 @@ impl App {
     /// Replace each selected object by an edited copy. `edit` returns the new
     /// strokes for one object (adding them to the scene); the old ones are
     /// deleted, all in one undo step.
-    fn replace_selection(&mut self, mut edit: impl FnMut(&mut App, ObjRef) -> Option<ObjRef>) {
+    pub(crate) fn replace_selection(
+        &mut self,
+        mut edit: impl FnMut(&mut App, ObjRef) -> Option<ObjRef>,
+    ) {
         self.sel_alive();
         let sel = self.edit.selection.clone();
         let mut removed = Vec::new();
@@ -1164,6 +1178,7 @@ impl App {
                 pts: vec![],
             },
             opacity: 255,
+            crop: objects::FULL_CROP,
         });
         self.say("Picture added — drag to move, corners to resize");
     }
@@ -1217,8 +1232,10 @@ impl App {
     pub(crate) fn sync_sel_panel(&mut self, pointer_down: bool) {
         self.sel_alive();
         if !self.ui.tool.selects() {
+            self.crop_cancel();
             self.edit.selection.clear();
         }
+        self.ui.cropping = self.edit.crop.is_some();
         let sel = self.edit.selection.clone();
         if sel != self.edit.sel_seen_for {
             let s = self.describe(&sel);
@@ -1381,9 +1398,15 @@ impl App {
                             seed,
                         }
                     }
-                    ObjData::Image { id, geom, opacity } => ObjData::Image {
+                    ObjData::Image {
                         id,
                         geom,
+                        opacity,
+                        crop,
+                    } => ObjData::Image {
+                        id,
+                        geom,
+                        crop,
                         opacity: if a.opacity != b.opacity {
                             a.opacity
                         } else {
@@ -1432,7 +1455,9 @@ impl App {
         if let Some(l) = &self.edit.lasso {
             ov.lasso = Some(l.iter().map(|&q| to_pt(q)).collect());
         }
-        if self.ui.tool.selects() && self.edit.text.is_none() {
+        if self.edit.crop.is_some() {
+            self.crop_overlay(&mut ov);
+        } else if self.ui.tool.selects() && self.edit.text.is_none() {
             let boxed = match self.edit.sel_drag.as_ref() {
                 Some(d) => {
                     let op = self.drag_op(d);

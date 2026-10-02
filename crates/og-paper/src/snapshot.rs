@@ -119,11 +119,19 @@ pub fn put_data(b: &mut Vec<u8>, d: &ObjData) {
             id,
             geom: g,
             opacity,
+            crop,
         } => {
-            b.push(3);
+            // Kind 5 is kind 3 plus the crop; uncropped pictures stay kind 3.
+            let cropped = *crop != crate::objects::FULL_CROP;
+            b.push(if cropped { 5 } else { 3 });
             b.extend_from_slice(&id.to_le_bytes());
             b.push(*opacity);
             geom(b, g);
+            if cropped {
+                for v in crop {
+                    b.extend_from_slice(&v.to_le_bytes());
+                }
+            }
         }
         ObjData::Table {
             cells,
@@ -480,11 +488,22 @@ impl<'a> Reader<'a> {
                     seed,
                 })
             }
-            3 => {
+            3 | 5 => {
                 let id = u64::from_le_bytes(self.take(8)?.try_into().expect("8 bytes"));
                 let opacity = self.u8()?;
                 let geom = geom(self)?;
-                Ok(ObjData::Image { id, geom, opacity })
+                let mut crop = crate::objects::FULL_CROP;
+                if kind == 5 {
+                    for v in &mut crop {
+                        *v = f32::from_le_bytes(self.take(4)?.try_into().expect("4 bytes"));
+                    }
+                }
+                Ok(ObjData::Image {
+                    id,
+                    geom,
+                    opacity,
+                    crop,
+                })
             }
             4 => {
                 let rows = self.u32()? as usize;
@@ -619,6 +638,7 @@ mod tests {
                 id: 77,
                 geom: Geom::default(),
                 opacity: 128,
+                crop: [0.25, 0.0, 1.0, 0.5],
             },
             strokes: vec![a],
         });
@@ -639,7 +659,10 @@ mod tests {
             assert_eq!(snap.objs.groups[i].data, objs.groups[i].data);
         }
         assert_eq!(snap.objs.images[&77].w, 3);
-        assert_eq!(snap.objs.image_of.get(&a), Some(&(77, 128)));
+        assert_eq!(
+            snap.objs.image_of.get(&a),
+            Some(&(77, 128, [0.25, 0.0, 1.0, 0.5]))
+        );
         assert_eq!(snap.scene.strokes[0].z, s.strokes[0].z);
         assert_eq!(snap.bookmarks[0].cam.cell, cam.cell);
         assert_eq!(snap.bookmarks[0].view_px, 640.0);

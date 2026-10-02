@@ -229,6 +229,8 @@ pub struct Renderer {
 struct ImgInst {
     corners: [f32; 8],
     misc: [f32; 4],
+    /// The part of the picture shown: u0, v0, u1, v1.
+    crop: [f32; 4],
 }
 
 /// A vertex buffer that grows to fit.
@@ -501,7 +503,7 @@ impl Renderer {
             bind_group_layouts: &[Some(&img_bgl)],
             immediate_size: 0,
         });
-        let img_attrs = wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32x4];
+        let img_attrs = wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32x4, 3 => Float32x4];
         let img_pipe = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("image"),
             layout: Some(&img_layout),
@@ -777,7 +779,7 @@ impl Renderer {
             let s = &scene.strokes[i.stroke as usize];
             if s.brush == Brush::Fill && s.color == 0 {
                 // An invisible outline; a picture's corners if it places one.
-                if let Some(&(id, opacity)) = objs.image_of.get(&i.stroke) {
+                if let Some(&(id, opacity, crop)) = objs.image_of.get(&i.stroke) {
                     let p = scene.stroke_points(i.stroke);
                     if p.len() == 4 {
                         let mut corners = [0.0; 8];
@@ -786,7 +788,15 @@ impl Renderer {
                             corners[2 * k + 1] = i.oy + q[1] * i.scale;
                         }
                         let misc = [vw, vh, opacity as f32 / 255.0, 0.0];
-                        pics.push((ink.len(), id, ImgInst { corners, misc }));
+                        pics.push((
+                            ink.len(),
+                            id,
+                            ImgInst {
+                                corners,
+                                misc,
+                                crop,
+                            },
+                        ));
                     }
                 }
                 continue;

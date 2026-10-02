@@ -22,6 +22,8 @@ fn vs_image(
     @location(1) p23: vec4<f32>,
     // viewport w, h; opacity; unused
     @location(2) misc: vec4<f32>,
+    // The part of the picture shown: u0, v0, u1, v1.
+    @location(3) crop: vec4<f32>,
 ) -> VsOut {
     // Two triangles: 0 1 2, 0 2 3.
     var corner = array<u32, 6>(0u, 1u, 2u, 0u, 2u, 3u);
@@ -40,7 +42,7 @@ fn vs_image(
     }
     var out: VsOut;
     out.pos = vec4<f32>(p.x / misc.x * 2.0 - 1.0, 1.0 - p.y / misc.y * 2.0, 0.0, 1.0);
-    out.uv = uv;
+    out.uv = mix(crop.xy, crop.zw, uv);
     out.alpha = misc.z;
     return out;
 }

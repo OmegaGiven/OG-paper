@@ -207,6 +207,7 @@ impl App {
                             pts: vec![],
                         },
                         opacity: 255,
+                        crop: crate::objects::FULL_CROP,
                     };
                     let cur = std::mem::replace(&mut self.cam, job.cam.clone());
                     let (g, ids) = self.add_group(&data, None);

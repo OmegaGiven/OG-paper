@@ -5,6 +5,7 @@
 
 //! OG Paper: an open-source infinite canvas.
 
+mod crop;
 #[cfg(any(test, target_arch = "wasm32"))]
 mod demo;
 mod edit;
@@ -438,7 +439,7 @@ impl App {
             );
             za.total_cmp(&zb).then(a.cmp(&b))
         })?;
-        if let Some(&(id, _)) = self.objs.image_of.get(&top) {
+        if let Some(&(id, _, _)) = self.objs.image_of.get(&top) {
             return self.picture_color(top, id, p);
         }
         let [r, g, b, _] = self.scene.strokes[top as usize].color.to_le_bytes();
@@ -474,6 +475,14 @@ impl App {
         }
         let u = (d[0] * b[1] - d[1] * b[0]) / det;
         let v = (a[0] * d[1] - a[1] * d[0]) / det;
+        // Through the crop to the whole picture.
+        let cr = self
+            .objs
+            .image_of
+            .get(&carrier)
+            .map_or(objects::FULL_CROP, |e| e.2);
+        let u = cr[0] as f64 + u.clamp(0.0, 1.0) * (cr[2] - cr[0]) as f64;
+        let v = cr[1] as f64 + v.clamp(0.0, 1.0) * (cr[3] - cr[1]) as f64;
         let mut cache = self.pick_img.borrow_mut();
         if cache.as_ref().is_none_or(|(cid, _)| *cid != id) {
             let img = image::load_from_memory(&self.objs.images.get(&id)?.bytes).ok()?;
@@ -791,10 +800,19 @@ impl App {
             | Action::FlipH
             | Action::FlipV
             | Action::EditText => self.sel_action(a),
+            Action::Crop => self.crop_start(),
+            Action::CropDone => self.crop_done(),
+            Action::CropCancel => self.crop_cancel(),
             Action::TextDone => self.text_commit(),
             Action::TextCancel => self.text_cancel(),
-            Action::Undo => self.undo_redo(false),
-            Action::Redo => self.undo_redo(true),
+            Action::Undo => {
+                self.crop_cancel();
+                self.undo_redo(false)
+            }
+            Action::Redo => {
+                self.crop_cancel();
+                self.undo_redo(true)
+            }
             Action::Home => {
                 self.fly = None;
                 self.cam = home_camera();
@@ -1071,6 +1089,14 @@ impl App {
             Key::Character(c) => c.to_lowercase(),
             Key::Named(NamedKey::Home) => {
                 self.action(Action::Home);
+                return true;
+            }
+            Key::Named(NamedKey::Enter) if self.edit.crop.is_some() => {
+                self.crop_done();
+                return true;
+            }
+            Key::Named(NamedKey::Escape) if self.edit.crop.is_some() => {
+                self.crop_cancel();
                 return true;
             }
             Key::Named(NamedKey::Delete | NamedKey::Backspace) if selecting => {

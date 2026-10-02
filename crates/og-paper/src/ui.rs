@@ -327,6 +327,8 @@ pub struct UiState {
     pub text_size: f32,
     /// The selection, for the panel (app fills it; panel edits it).
     pub sel: SelStyle,
+    /// A picture is being cropped.
+    pub cropping: bool,
     /// Font names egui can draw (the picker shows each name in its font).
     pub egui_fonts: std::collections::HashSet<String>,
     /// Text being typed (native editor): the screen point and the text.
@@ -397,6 +399,7 @@ impl Default for UiState {
                 AppItem::Search,
                 AppItem::Grid,
             ],
+            cropping: false,
             search_open: false,
             search_focus: false,
             search_query: String::new(),
@@ -562,6 +565,10 @@ pub enum Action {
     ToBack,
     FlipH,
     FlipV,
+    /// Crop the selected picture; finish; give up.
+    Crop,
+    CropDone,
+    CropCancel,
     EditText,
     /// Load a font file of your own.
     AddFont,
@@ -1561,7 +1568,7 @@ fn tool_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) 
                                 actions,
                             ),
                             Tool::Select | Tool::Lasso => {
-                                select_actions(ui, st.sel.kind, actions);
+                                select_actions(ui, st.sel.kind, st.sel.count, st.cropping, actions);
                                 match st.sel.kind {
                                     SelKind::Ink => match st.sel.ink.as_mut() {
                                         Some(ink) => ink_section(
@@ -2044,7 +2051,25 @@ fn font_picker(
 }
 
 /// Buttons for what can be done with a selection.
-fn select_actions(ui: &mut egui::Ui, kind: SelKind, actions: &mut Vec<Action>) {
+fn select_actions(
+    ui: &mut egui::Ui,
+    kind: SelKind,
+    count: usize,
+    cropping: bool,
+    actions: &mut Vec<Action>,
+) {
+    if cropping {
+        ui.label("Drag the edges or corners; drag inside to slide.");
+        ui.horizontal(|ui| {
+            if ui.button("Done").on_hover_text("Enter").clicked() {
+                actions.push(Action::CropDone);
+            }
+            if ui.button("Cancel").on_hover_text("Esc").clicked() {
+                actions.push(Action::CropCancel);
+            }
+        });
+        return;
+    }
     ui.horizontal_wrapped(|ui| {
         let items = [
             (Action::Duplicate, "Duplicate", "Ctrl+D"),
@@ -2061,6 +2086,15 @@ fn select_actions(ui: &mut egui::Ui, kind: SelKind, actions: &mut Vec<Action>) {
         }
         if kind == SelKind::Text && ui.button("Edit text").clicked() {
             actions.push(Action::EditText);
+        }
+        if kind == SelKind::Images
+            && count == 1
+            && ui
+                .button("Crop")
+                .on_hover_text("Crop the picture")
+                .clicked()
+        {
+            actions.push(Action::Crop);
         }
     });
 }

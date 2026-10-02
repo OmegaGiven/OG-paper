@@ -84,9 +84,11 @@ enum Item {
     },
     Image {
         id: u64,
-        /// Top-left, top-right, bottom-right, bottom-left (px).
+        /// Top-left, top-right, bottom-right, bottom-left (px) of the part shown.
         corners: [[f64; 2]; 4],
         opacity: f64,
+        /// The part shown: u0, v0, u1, v1.
+        crop: [f64; 4],
     },
 }
 
@@ -200,7 +202,7 @@ impl App {
                     || -> [[f64; 2]; 4] { std::array::from_fn(|k| [pts[k][0], pts[k][1]]) };
                 if s.color == 0 {
                     // A picture's corners, if it places one.
-                    if let Some(&(pic, op)) = self.objs.image_of.get(&id) {
+                    if let Some(&(pic, op, crop)) = self.objs.image_of.get(&id) {
                         if pts.len() == 4 {
                             let c = corners();
                             c.iter().for_each(|&q| grow(q, 0.0));
@@ -208,6 +210,7 @@ impl App {
                                 id: pic,
                                 corners: c,
                                 opacity: op as f64 / 255.0,
+                                crop: crop.map(|v| v as f64),
                             });
                         }
                     }
@@ -444,12 +447,16 @@ impl Page {
                     id,
                     corners,
                     opacity,
+                    crop,
                 } => {
                     let Some(a) = images.get(id) else { continue };
                     let [tl, tr, _, bl] = corners.map(|q| self.map(q, k));
+                    // The unit square is the part shown; a nested viewport
+                    // shows just that part of the whole picture.
+                    let (w, h) = (a.w as f64, a.h as f64);
                     let _ = write!(
                         s,
-                        "<image x=\"0\" y=\"0\" width=\"1\" height=\"1\" preserveAspectRatio=\"none\" transform=\"matrix({} {} {} {} {} {})\"",
+                        "<g transform=\"matrix({} {} {} {} {} {})\"",
                         num6(tr[0] - tl[0]),
                         num6(tr[1] - tl[1]),
                         num6(bl[0] - tl[0]),
@@ -462,7 +469,13 @@ impl Page {
                     }
                     let _ = writeln!(
                         s,
-                        " href=\"data:{};base64,{}\"/>",
+                        "><svg width=\"1\" height=\"1\" viewBox=\"{} {} {} {}\" preserveAspectRatio=\"none\"><image width=\"{}\" height=\"{}\" preserveAspectRatio=\"none\" href=\"data:{};base64,{}\"/></svg></g>",
+                        num6(crop[0] * w),
+                        num6(crop[1] * h),
+                        num6((crop[2] - crop[0]) * w),
+                        num6((crop[3] - crop[1]) * h),
+                        a.w,
+                        a.h,
                         mime(&a.bytes),
                         base64(&a.bytes)
                     );
@@ -633,6 +646,7 @@ impl Page {
                     id,
                     corners,
                     opacity,
+                    crop,
                 } => {
                     let Some(asset) = images.get(id) else {
                         continue;
@@ -648,21 +662,28 @@ impl Page {
                     let xn = format!("X{}", xobj.len());
                     xobj.push((xn.clone(), obj));
                     let [tl, tr, _, bl] = corners.map(|q| self.map(q, k));
-                    // Image space: (0,0) bottom-left, (1,1) top-right.
+                    // Image space: (0,0) bottom-left, (1,1) top-right. The
+                    // unit square is the part shown: clip to it, then place
+                    // the whole picture so that part fills it.
                     c.push_str("q ");
                     if *opacity < 0.999 {
                         let n = gs_name(*opacity, false, &mut gs);
                         let _ = write!(c, "/{n} gs ");
                     }
+                    let (du, dv) = ((crop[2] - crop[0]).max(1e-9), (crop[3] - crop[1]).max(1e-9));
                     let _ = writeln!(
                         c,
-                        "{} {} {} {} {} {} cm /{xn} Do Q",
+                        "{} {} {} {} {} {} cm 0 0 1 1 re W n {} 0 0 {} {} {} cm /{xn} Do Q",
                         num6(tr[0] - tl[0]),
                         num6(tr[1] - tl[1]),
                         num6(tl[0] - bl[0]),
                         num6(tl[1] - bl[1]),
                         num(bl[0]),
-                        num(bl[1])
+                        num(bl[1]),
+                        num6(1.0 / du),
+                        num6(1.0 / dv),
+                        num6(-crop[0] / du),
+                        num6(-(1.0 - crop[3]) / dv)
                     );
                 }
             }
@@ -919,6 +940,7 @@ mod tests {
             id: 7,
             corners: [[100.0, 20.0], [180.0, 20.0], [180.0, 60.0], [100.0, 60.0]],
             opacity: 1.0,
+            crop: [0.0, 0.0, 1.0, 1.0],
         });
         let svg = p.svg(&imgs);
         assert!(svg.contains("href=\"data:image/png;base64,"));

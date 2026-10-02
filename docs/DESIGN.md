@@ -253,10 +253,11 @@ All values little-endian.
 | Groups *(v2)* | count u32; each: addr, stroke count u32, stroke indexes (u32 each), data |
 | Pictures *(v3)* | count u32; each: id u64, byte count u32, the file |
 
-**Data** (a group's settings, also stored in `.ogp` `groups.data`): kind u8 (0 shape, 1 text with a font number, 2 text with a font name, 3 picture, 4 table), then
+**Data** (a group's settings, also stored in `.ogp` `groups.data`): kind u8 (0 shape, 1 text with a font number, 2 text with a font name, 3 picture, 4 table, 5 cropped picture), then
 - shape: kind u8 (rectangle, ellipse, diamond, triangle, star, polygon, line, arrow), stroke u32, fill u32, fill style u8 (none, hachure, cross-hatch, zigzag, solid), dash u8, sloppiness u8 (architect, artist, cartoonist), round u8, sides u8, start head u8, end head u8 (none, arrow, bar, dot, circle, triangle, triangle outline, diamond, diamond outline), line type u8 (straight, curved, elbow), opacity u8, geometry, width f64, seed u32;
 - text (kind 2, written today): text (u32 byte length + UTF-8), font name (u32 byte length + UTF-8), align u8 (left, centre, right), color u32, opacity u8, geometry, cap height f64, seed u32;
 - picture (kind 3): picture id u64, opacity u8, geometry;
+- cropped picture (kind 5): as kind 3, then the part shown as f32 x4 (left, top, right, bottom, as fractions of the picture); the geometry is the box of that part. Writers use kind 3 when all of the picture shows;
 - table (kind 4): row count u32, each row: cell count u32 then cells (u32 byte length + UTF-8); then as text: font name, align u8, color u32, opacity u8, geometry, cap height f64, seed u32;
 - text (kind 1, read only): as kind 2 but font u8 (0 Single-line, 1 Single-line hand, 2 Single-line mono) instead of the name, align u8 (left, centre, right), color u32, opacity u8, geometry, cap height f64, seed u32.
 

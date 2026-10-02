@@ -58,7 +58,14 @@ pub enum ObjData {
         seed: u32,
     },
     /// A picture: `geom` is its box; its file is in [`Objects::images`].
-    Image { id: u64, geom: Geom, opacity: u8 },
+    /// `crop` is the part shown: left, top, right, bottom as fractions of
+    /// the picture ([0, 0, 1, 1] is all of it).
+    Image {
+        id: u64,
+        geom: Geom,
+        opacity: u8,
+        crop: [f32; 4],
+    },
     /// Rows of cells drawn as a grid; `size` is the cap height and `geom`
     /// the whole table's box.
     Table {
@@ -69,6 +76,9 @@ pub enum ObjData {
         seed: u32,
     },
 }
+
+/// A picture's crop when all of it shows.
+pub const FULL_CROP: [f32; 4] = [0.0, 0.0, 1.0, 1.0];
 
 /// A shape or a text: its settings, in the units of `cell`, and its strokes.
 #[derive(Clone, Debug)]
@@ -91,8 +101,9 @@ pub struct Objects {
     pub of_stroke: HashMap<u32, u32>,
     /// Picture files by id.
     pub images: HashMap<u64, Asset>,
-    /// The stroke that places a picture (its corners): picture id and opacity.
-    pub image_of: HashMap<u32, (u64, u8)>,
+    /// The stroke that places a picture (its corners): picture id, opacity
+    /// and crop.
+    pub image_of: HashMap<u32, (u64, u8, [f32; 4])>,
 }
 
 impl Objects {
@@ -115,9 +126,12 @@ impl Objects {
         for &s in &g.strokes {
             self.of_stroke.insert(s, gi);
         }
-        if let ObjData::Image { id, opacity, .. } = g.data {
+        if let ObjData::Image {
+            id, opacity, crop, ..
+        } = g.data
+        {
             for &s in &g.strokes {
-                self.image_of.insert(s, (id, opacity));
+                self.image_of.insert(s, (id, opacity, crop));
             }
         }
         self.groups.push(g);
@@ -269,10 +283,16 @@ impl ObjData {
                 size: size * k,
                 seed: *seed,
             },
-            ObjData::Image { id, geom, opacity } => ObjData::Image {
+            ObjData::Image {
+                id,
+                geom,
+                opacity,
+                crop,
+            } => ObjData::Image {
                 id: *id,
                 geom: geom_map(geom, &f, k),
                 opacity: *opacity,
+                crop: *crop,
             },
             ObjData::Table {
                 cells,
@@ -322,10 +342,16 @@ impl ObjData {
                     seed: *seed,
                 }
             }
-            ObjData::Image { id, geom, opacity } => ObjData::Image {
+            ObjData::Image {
+                id,
+                geom,
+                opacity,
+                crop,
+            } => ObjData::Image {
                 id: *id,
                 geom: op.geom(geom),
                 opacity: *opacity,
+                crop: *crop,
             },
             ObjData::Table {
                 cells,
@@ -769,6 +795,7 @@ mod tests {
             id: 7,
             geom: g,
             opacity: 255,
+            crop: FULL_CROP,
         };
         let p = pic.pieces();
         assert_eq!(p.len(), 1);
@@ -780,7 +807,7 @@ mod tests {
             data: pic,
             strokes: vec![3],
         });
-        assert_eq!(objs.image_of.get(&3), Some(&(7, 255)));
+        assert_eq!(objs.image_of.get(&3), Some(&(7, 255, FULL_CROP)));
     }
 
     #[test]
