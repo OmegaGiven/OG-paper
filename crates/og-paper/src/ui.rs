@@ -37,13 +37,16 @@ pub enum Tool {
     Select,
     /// Select by drawing a loop around things; then like Select.
     Lasso,
+    /// Fill a closed outline with color.
+    Bucket,
 }
 
 /// The tool fan, inner ring first.
-const TOOLS: [Tool; 10] = [
+const TOOLS: [Tool; 11] = [
     Tool::Pen,
     Tool::Marker,
     Tool::Highlighter,
+    Tool::Bucket,
     Tool::Eraser,
     Tool::Select,
     Tool::Lasso,
@@ -75,6 +78,7 @@ impl Tool {
             Tool::Text => "Text",
             Tool::Select => "Select",
             Tool::Lasso => "Lasso",
+            Tool::Bucket => "Bucket",
         }
     }
 
@@ -86,7 +90,10 @@ impl Tool {
     /// Tools with settings in the tool panel.
     fn has_panel(self) -> bool {
         self.brush().is_some()
-            || matches!(self, Tool::Shapes | Tool::Text | Tool::Select | Tool::Lasso)
+            || matches!(
+                self,
+                Tool::Shapes | Tool::Text | Tool::Select | Tool::Lasso | Tool::Bucket
+            )
     }
 }
 
@@ -302,6 +309,10 @@ pub struct UiState {
     pub pen: InkSettings,
     pub marker: InkSettings,
     pub highlighter: InkSettings,
+    /// The bucket's color and opacity (width unused).
+    pub fill: InkSettings,
+    /// Bucket gap closing (points): 0 off.
+    pub fill_gap: u8,
     pub menu: Menu,
     // Read-only status, filled in by the app each frame.
     pub file_name: String,
@@ -380,6 +391,14 @@ impl Default for UiState {
                 dash: Dash::Solid,
                 opacity: 255,
             },
+            fill: InkSettings {
+                color: Color32::from_rgb(250, 210, 30),
+                width: 1.0,
+                pressure: false,
+                dash: Dash::Solid,
+                opacity: 255,
+            },
+            fill_gap: 0,
             menu: Menu::None,
             file_name: "Untitled".into(),
             zoom_log10: 0.0,
@@ -546,6 +565,7 @@ fn ink_of(st: &mut UiState, t: Tool) -> Option<&mut InkSettings> {
         Tool::Pen => Some(&mut st.pen),
         Tool::Marker => Some(&mut st.marker),
         Tool::Highlighter => Some(&mut st.highlighter),
+        Tool::Bucket => Some(&mut st.fill),
         _ => None,
     }
 }
@@ -1550,6 +1570,13 @@ fn tool_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) 
                                 let ink = ink_of(st, tool).expect("brush");
                                 ink_section(ui, ink, tool, touch, &mut dial_hue, true)
                             }
+                            Tool::Bucket => fill_section(
+                                ui,
+                                &mut st.fill,
+                                &mut st.fill_gap,
+                                touch,
+                                &mut dial_hue,
+                            ),
                             Tool::Shapes => shape_section(
                                 ui,
                                 &mut st.shape,
@@ -1756,6 +1783,48 @@ fn ink_section(
         dial_hue,
         touch,
     )
+}
+
+/// The bucket: a swatch, gap closing, opacity and color.
+fn fill_section(
+    ui: &mut egui::Ui,
+    ink: &mut InkSettings,
+    gap: &mut u8,
+    touch: bool,
+    dial_hue: &mut f32,
+) -> bool {
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::hover());
+    let [r, g, b, a] = ink.rgba();
+    ui.painter().rect_filled(
+        rect.shrink2(vec2(14.0, 4.0)),
+        6.0,
+        Color32::from_rgba_unmultiplied(r, g, b, a),
+    );
+    ui.label(
+        egui::RichText::new("Tap inside a closed outline to fill it.")
+            .small()
+            .weak(),
+    );
+    heading(ui, "Close gaps");
+    ui.horizontal(|ui| {
+        for (v, name, tip) in [
+            (0u8, "Off", "Only fill fully closed outlines"),
+            (2, "Small", "Bridge gaps of a few points"),
+            (5, "Medium", "Bridge gaps up to about 10 points"),
+            (9, "Large", "Bridge gaps up to about 18 points"),
+        ] {
+            if ui
+                .selectable_label(*gap == v, name)
+                .on_hover_text(tip)
+                .clicked()
+            {
+                *gap = v;
+            }
+        }
+    });
+    opacity_slider(ui, &mut ink.opacity);
+    heading(ui, "Color");
+    color_dial(ui, &mut ink.color, false, dial_hue, touch)
 }
 
 /// Shape settings (also used for selected shapes, without the width).
@@ -2720,6 +2789,39 @@ fn tool_icon(p: &egui::Painter, c: Pos2, r: f32, tool: Tool, ink: Color32) {
                 [c + vec2(-s * 0.35, s * 0.85), c + vec2(s * 0.35, s * 0.85)],
                 st,
             );
+        }
+        Tool::Bucket => {
+            // A tipped paint bucket with a drip.
+            let s = r * 0.5;
+            let rot = |v: Vec2| {
+                let (sn, cs) = (-0.5f32).sin_cos();
+                c + vec2(v.x * cs - v.y * sn, v.x * sn + v.y * cs) * s
+            };
+            let body = [
+                vec2(-0.6, -0.5),
+                vec2(0.6, -0.5),
+                vec2(0.45, 0.75),
+                vec2(-0.45, 0.75),
+            ];
+            p.add(Shape::convex_polygon(
+                body.iter().map(|&v| rot(v)).collect(),
+                FACE,
+                Stroke::NONE,
+            ));
+            p.add(Shape::closed_line(
+                body.iter().map(|&v| rot(v)).collect(),
+                line,
+            ));
+            p.add(Shape::line(
+                vec![
+                    rot(vec2(-0.55, -0.5)),
+                    rot(vec2(0.0, -1.05)),
+                    rot(vec2(0.55, -0.5)),
+                ],
+                line,
+            ));
+            p.circle_filled(c + vec2(0.85, 0.55) * s, s * 0.22, ink);
+            p.line_segment([c + vec2(0.62, -0.05) * s, c + vec2(0.85, 0.4) * s], line);
         }
         Tool::Lasso => {
             // A dashed loop with a tail.

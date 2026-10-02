@@ -5,6 +5,7 @@
 
 //! OG Paper: an open-source infinite canvas.
 
+mod bucket;
 mod crop;
 #[cfg(any(test, target_arch = "wasm32"))]
 mod demo;
@@ -86,6 +87,8 @@ enum Gesture {
     Shape,
     /// Selecting, or moving / resizing / rotating the selection.
     Select,
+    /// A bucket tap: where it went down (fills on release, unless it moved).
+    Bucket([f64; 2]),
 }
 
 pub struct App {
@@ -368,6 +371,7 @@ impl App {
             Tool::Picker => Gesture::Pick,
             Tool::Shapes => Gesture::Shape,
             Tool::Select | Tool::Lasso => Gesture::Select,
+            Tool::Bucket => Gesture::Bucket(p),
             Tool::Text => Gesture::None,
             _ => Gesture::Ink,
         };
@@ -419,6 +423,11 @@ impl App {
             Gesture::Pick => self.pick_preview(to),
             Gesture::Shape => self.shape_move(to),
             Gesture::Select => self.select_move(to),
+            Gesture::Bucket(a) => {
+                if dist(a, to) > TAP_SLOP_PT * self.ppp() {
+                    self.gesture = Gesture::None;
+                }
+            }
             Gesture::None => {}
         }
     }
@@ -543,6 +552,7 @@ impl App {
             Gesture::Pick => self.ui.pick_preview = None,
             Gesture::Shape => self.shape_end(cancel),
             Gesture::Select => self.select_end(cancel),
+            Gesture::Bucket(p) if !cancel && self.tl_view.is_none() => self.bucket_fill(p),
             _ => {}
         }
         self.gesture = Gesture::None;
@@ -1195,6 +1205,7 @@ impl App {
                 }
             }
             (false, _, "e") => self.ui.tool = Tool::Eraser,
+            (false, _, "g") => self.ui.tool = Tool::Bucket,
             (false, _, "h") => self.ui.tool = Tool::Hand,
             (false, _, "i") => {
                 if !matches!(
