@@ -18,7 +18,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 
 pub use rusqlite::Error;
 
-pub const FORMAT_VERSION: &str = "0.3";
+pub const FORMAT_VERSION: &str = "0.4";
 
 const README: &str = "This is an OG Paper canvas (https://github.com/OmegaGiven/OG-paper). \
 It is a SQLite database. Table `objects` holds one row per drawn object. Each object is \
@@ -80,7 +80,8 @@ impl OgpFile {
                  deleted INTEGER NOT NULL DEFAULT 0,
                  created INTEGER NOT NULL,
                  dash INTEGER NOT NULL DEFAULT 0,
-                 z REAL
+                 z REAL,
+                 params BLOB
              );
              CREATE INDEX objects_cell ON objects (level, ix, iy);
              CREATE TABLE groups (
@@ -123,7 +124,7 @@ impl OgpFile {
         let mut scene = Scene::new();
         {
             let mut q = f.conn.prepare(
-                "SELECT id, level, ix, iy, brush, color, width, points, deleted, dash, z
+                "SELECT id, level, ix, iy, brush, color, width, points, deleted, dash, z, params
                  FROM objects WHERE kind = 'stroke' ORDER BY rowid",
             )?;
             let mut rows = q.query([])?;
@@ -141,6 +142,15 @@ impl OgpFile {
                 let deleted: i64 = r.get(8)?;
                 let dash = Dash::from_u8(r.get::<_, i64>(9)? as u8);
                 let z: Option<f64> = r.get(10)?;
+                let ext = r
+                    .get::<_, Option<Vec<u8>>>(11)?
+                    .and_then(|b| ogpaper_core::BrushParams::decode(&b));
+                // A brush stroke whose parameters can't be read draws as a plain line.
+                let brush = if brush == Brush::Dabs && ext.is_none() {
+                    Brush::Marker
+                } else {
+                    brush
+                };
                 if pts.is_empty() {
                     continue;
                 }
@@ -149,6 +159,7 @@ impl OgpFile {
                     color,
                     brush,
                     dash,
+                    ext,
                 };
                 let z = z.unwrap_or(scene.z_top + 1.0);
                 let sid = scene.add_stroke_at(&cell, &pts, style, uid_from(&id), z);
@@ -200,6 +211,10 @@ impl OgpFile {
             self.conn
                 .execute_batch("ALTER TABLE objects ADD COLUMN z REAL;")?;
         }
+        if !cols.iter().any(|c| c == "params") {
+            self.conn
+                .execute_batch("ALTER TABLE objects ADD COLUMN params BLOB;")?;
+        }
         self.conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS images (
                  id BLOB PRIMARY KEY,
@@ -219,7 +234,7 @@ impl OgpFile {
         )?;
         if matches!(
             self.get_meta("format_version")?.as_deref(),
-            Some("0.1" | "0.2")
+            Some("0.1" | "0.2" | "0.3")
         ) {
             self.set_meta("format_version", FORMAT_VERSION)?;
             self.set_meta("README", README)?;
@@ -281,8 +296,8 @@ impl OgpFile {
         let s = &scene.strokes[id as usize];
         let cell = scene.stroke_cell(id);
         self.conn.execute(
-            "INSERT OR IGNORE INTO objects (id, level, ix, iy, kind, brush, color, width, points, deleted, created, dash, z)
-             VALUES (?1, ?2, ?3, ?4, 'stroke', ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            "INSERT OR IGNORE INTO objects (id, level, ix, iy, kind, brush, color, width, points, deleted, created, dash, z, params)
+             VALUES (?1, ?2, ?3, ?4, 'stroke', ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             params![
                 s.uid.to_be_bytes().to_vec(),
                 cell.level,
@@ -296,6 +311,7 @@ impl OgpFile {
                 now_ms(),
                 s.dash as u8 as i64,
                 s.z,
+                scene.brush_of(id).map(|p| p.encode()),
             ],
         )?;
         Ok(())
@@ -424,7 +440,25 @@ mod tests {
             Brush::Pen,
             43,
         );
+        let brush = ogpaper_core::BrushParams {
+            tip: ogpaper_core::Tip::Bristle,
+            follow: true,
+            ..Default::default()
+        };
+        let c = scene.add_stroke_with(
+            &CellAddr::new(0, 0, 0),
+            &[[0.1, 0.1, 1.0, 0.0], [0.4, 0.2, 0.5, 0.0]],
+            Style {
+                width: 0.05,
+                color: 9,
+                brush: Brush::Dabs,
+                dash: Dash::Solid,
+                ext: Some(brush),
+            },
+            44,
+        );
         let f = OgpFile::create(&path).unwrap();
+        f.put_stroke(&scene, c).unwrap();
         f.put_stroke(&scene, a).unwrap();
         f.put_stroke(&scene, b).unwrap();
         scene.delete(b);
@@ -453,13 +487,15 @@ mod tests {
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].strokes, vec![42]);
         assert_eq!(groups[0].data, vec![1, 2, 3]);
-        assert_eq!(s2.strokes[0].z, scene.strokes[a as usize].z);
-        assert_eq!(s2.strokes.len(), 2);
-        assert_eq!(*s2.stroke_cell(0), deep);
-        assert_eq!(s2.strokes[0].brush, Brush::Highlighter);
-        assert_eq!(s2.strokes[0].uid, 42);
-        assert_eq!(s2.stroke_points(0)[0], [0.1, 0.2, 0.5, 0.0]);
-        assert!(s2.strokes[1].deleted);
+        assert_eq!(s2.brush_of(0), Some(brush));
+        assert_eq!(s2.strokes[0].brush, Brush::Dabs);
+        assert_eq!(s2.strokes[1].z, scene.strokes[a as usize].z);
+        assert_eq!(s2.strokes.len(), 3);
+        assert_eq!(*s2.stroke_cell(1), deep);
+        assert_eq!(s2.strokes[1].brush, Brush::Highlighter);
+        assert_eq!(s2.strokes[1].uid, 42);
+        assert_eq!(s2.stroke_points(1)[0], [0.1, 0.2, 0.5, 0.0]);
+        assert!(s2.strokes[2].deleted);
 
         // A 0.1 file (no dash / z / groups) still opens and is upgraded.
         let old = dir.path().join("old.ogp");
@@ -478,7 +514,7 @@ mod tests {
         assert!(s3.strokes.is_empty() && g3.is_empty());
         assert_eq!(
             f2.get_meta("format_version").unwrap().as_deref(),
-            Some("0.3")
+            Some("0.4")
         );
         let v = view.unwrap();
         assert_eq!(v.cell, cam.cell);

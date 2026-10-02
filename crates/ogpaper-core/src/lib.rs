@@ -7,6 +7,7 @@
 //! a sparse cell tree and bounded per-frame visibility.
 
 pub mod addr;
+pub mod brush;
 pub mod camera;
 pub mod gen;
 pub mod history;
@@ -15,6 +16,7 @@ pub mod scene;
 pub mod visible;
 
 pub use addr::{CellAddr, Level};
+pub use brush::{BrushParams, Dab, Pattern, Tip};
 pub use camera::Camera;
 pub use history::{Change, History};
 pub use scene::{Brush, Dash, Point, Scene, Stroke, Style};

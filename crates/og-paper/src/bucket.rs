@@ -504,6 +504,7 @@ impl App {
             color: u32::from_le_bytes([r, g, b, a]),
             brush: Brush::Fill,
             dash: Dash::Solid,
+            ext: None,
         };
         let mut ids = Vec::new();
         let mut ty = lo[1] - lo[1] % TILE;

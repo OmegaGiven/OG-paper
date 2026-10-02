@@ -688,6 +688,7 @@ pub fn emit(scene: &mut Scene, cell: &CellAddr, data: &ObjData, z: (f64, f64)) -
             color: p.color,
             brush: p.brush,
             dash: p.dash,
+            ext: None,
         };
         let zi = if n > 1 {
             z.0 + (z.1 - z.0) * i as f64 / (n - 1) as f64

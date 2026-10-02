@@ -23,8 +23,10 @@ use crate::shapes::{
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Tool {
+    /// The brush: a plain line (simple), or the brush engine (advanced).
     Pen,
-    Marker,
+    /// Texture: splotches, spatter, stamps and patterns.
+    Texture,
     Highlighter,
     Eraser,
     Hand,
@@ -44,7 +46,7 @@ pub enum Tool {
 /// The tool fan, inner ring first.
 const TOOLS: [Tool; 11] = [
     Tool::Pen,
-    Tool::Marker,
+    Tool::Texture,
     Tool::Highlighter,
     Tool::Bucket,
     Tool::Eraser,
@@ -60,7 +62,7 @@ impl Tool {
     pub fn brush(self) -> Option<Brush> {
         match self {
             Tool::Pen => Some(Brush::Pen),
-            Tool::Marker => Some(Brush::Marker),
+            Tool::Texture => Some(Brush::Dabs),
             Tool::Highlighter => Some(Brush::Highlighter),
             _ => None,
         }
@@ -68,8 +70,8 @@ impl Tool {
 
     fn name(self) -> &'static str {
         match self {
-            Tool::Pen => "Pen",
-            Tool::Marker => "Marker",
+            Tool::Pen => "Brush",
+            Tool::Texture => "Texture",
             Tool::Highlighter => "Highlighter",
             Tool::Eraser => "Eraser",
             Tool::Hand => "Pan",
@@ -102,14 +104,41 @@ impl Tool {
 pub struct InkSettings {
     pub color: Color32,
     pub width: f32,
-    /// Pen only: width follows pressure.
+    /// Brush only: width follows pressure.
     pub pressure: bool,
     pub dash: Dash,
     /// 0..=255.
     pub opacity: u8,
+    /// Brush only: the brush engine (GIMP-style dynamics and looks) instead
+    /// of the plain line.
+    pub advanced: bool,
+    pub params: ogpaper_core::BrushParams,
 }
 
 impl InkSettings {
+    pub fn new(color: Color32, width: f32, pressure: bool, dash: Dash, opacity: u8) -> Self {
+        InkSettings {
+            color,
+            width,
+            pressure,
+            dash,
+            opacity,
+            advanced: false,
+            params: Default::default(),
+        }
+    }
+
+    /// How a stroke drawn with these settings by `tool` is stored.
+    pub fn brush_for(&self, tool: Tool) -> Option<Brush> {
+        match tool {
+            Tool::Pen if self.advanced => Some(Brush::Dabs),
+            Tool::Pen if self.pressure => Some(Brush::Pen),
+            Tool::Pen => Some(Brush::Marker),
+            Tool::Texture => Some(Brush::Dabs),
+            t => t.brush(),
+        }
+    }
+
     /// The color with the opacity applied.
     pub fn rgba(&self) -> [u8; 4] {
         let [r, g, b, a] = self.color.to_array();
@@ -174,6 +203,8 @@ impl PartialEq for InkSettings {
             && self.pressure == o.pressure
             && self.dash == o.dash
             && self.opacity == o.opacity
+            && self.advanced == o.advanced
+            && (!self.advanced || self.params == o.params)
     }
 }
 
@@ -332,7 +363,8 @@ pub struct UiState {
     /// Hue kept while the color is grey, so the dial remembers it.
     pub dial_hue: f32,
     pub pen: InkSettings,
-    pub marker: InkSettings,
+    /// The texture tool's settings (always the brush engine).
+    pub texture: InkSettings,
     pub highlighter: InkSettings,
     /// The bucket's color and opacity (width unused).
     pub fill: InkSettings,
@@ -405,13 +437,23 @@ impl Default for UiState {
                 pressure: true,
                 dash: Dash::Solid,
                 opacity: 255,
+                advanced: false,
+                params: Default::default(),
             },
-            marker: InkSettings {
-                color: Color32::from_rgb(30, 90, 200),
-                width: 8.0,
-                pressure: false,
-                dash: Dash::Solid,
-                opacity: 255,
+            texture: {
+                let look = ogpaper_core::brush::looks()
+                    .into_iter()
+                    .find(|l| l.texture)
+                    .expect("a texture look");
+                InkSettings {
+                    color: Color32::from_rgb(40, 120, 70),
+                    width: 28.0,
+                    pressure: false,
+                    dash: Dash::Solid,
+                    opacity: 255,
+                    advanced: true,
+                    params: look.params,
+                }
             },
             highlighter: InkSettings {
                 color: Color32::from_rgb(255, 214, 0),
@@ -419,6 +461,8 @@ impl Default for UiState {
                 pressure: false,
                 dash: Dash::Solid,
                 opacity: 255,
+                advanced: false,
+                params: Default::default(),
             },
             fill: InkSettings {
                 color: Color32::from_rgb(250, 210, 30),
@@ -426,6 +470,8 @@ impl Default for UiState {
                 pressure: false,
                 dash: Dash::Solid,
                 opacity: 255,
+                advanced: false,
+                params: Default::default(),
             },
             fill_gap: 0,
             menu: Menu::None,
@@ -509,7 +555,7 @@ impl UiState {
         let mut p = Preset::tool(self.tool);
         match self.tool {
             Tool::Pen => p.ink = Some(self.pen),
-            Tool::Marker => p.ink = Some(self.marker),
+            Tool::Texture => p.ink = Some(self.texture),
             Tool::Highlighter => p.ink = Some(self.highlighter),
             Tool::Shapes => p.shape = Some((self.shape, self.shape_width)),
             Tool::Text => p.text = Some((self.text, self.text_size)),
@@ -600,7 +646,7 @@ impl UiState {
 fn ink_of(st: &mut UiState, t: Tool) -> Option<&mut InkSettings> {
     match t {
         Tool::Pen => Some(&mut st.pen),
-        Tool::Marker => Some(&mut st.marker),
+        Tool::Texture => Some(&mut st.texture),
         Tool::Highlighter => Some(&mut st.highlighter),
         Tool::Bucket => Some(&mut st.fill),
         _ => None,
@@ -1880,10 +1926,20 @@ fn tool_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) 
                     .min_scrolled_height(max_h)
                     .show(ui, |ui| {
                         pick = match tool {
-                            Tool::Pen | Tool::Marker | Tool::Highlighter => {
-                                let ink = ink_of(st, tool).expect("brush");
-                                ink_section(ui, ink, tool, touch, &mut dial_hue, true)
+                            Tool::Pen => {
+                                brush_section(ui, &mut st.pen, touch, &mut dial_hue, false)
                             }
+                            Tool::Texture => {
+                                brush_section(ui, &mut st.texture, touch, &mut dial_hue, true)
+                            }
+                            Tool::Highlighter => ink_section(
+                                ui,
+                                &mut st.highlighter,
+                                tool,
+                                touch,
+                                &mut dial_hue,
+                                true,
+                            ),
                             Tool::Bucket => fill_section(
                                 ui,
                                 &mut st.fill,
@@ -1915,7 +1971,7 @@ fn tool_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) 
                                         Some(ink) => ink_section(
                                             ui,
                                             ink,
-                                            Tool::Marker,
+                                            Tool::Texture,
                                             touch,
                                             &mut dial_hue,
                                             false,
@@ -3059,34 +3115,39 @@ fn tool_icon(p: &egui::Painter, c: Pos2, r: f32, tool: Tool, ink: Color32) {
     let line = Stroke::new((r * 0.075).max(1.2), INKY);
     match tool {
         Tool::Pen => {
-            // A ballpoint: slim barrel, pointed tip in the ink color, a clip.
+            // A paintbrush: handle, ferrule, and a tip dipped in the ink color.
             let b = Barrel { c, s: r * 0.62 };
-            b.quad(p, (-0.25, 0.17), (0.95, 0.17), FACE, line);
-            p.add(Shape::convex_polygon(
-                vec![b.at(-0.25, -0.17), b.at(-0.8, 0.0), b.at(-0.25, 0.17)],
-                ink,
-                line,
-            ));
-            p.line_segment([b.at(0.4, -0.3), b.at(0.85, -0.3)], line);
-            p.line_segment([b.at(0.85, -0.3), b.at(0.85, -0.17)], line);
-        }
-        Tool::Marker => {
-            // A fat marker: cap band and rounded nib in the ink color.
-            let b = Barrel { c, s: r * 0.6 };
-            b.quad(p, (-0.2, 0.27), (0.95, 0.27), FACE, line);
-            b.quad(p, (0.62, 0.27), (0.95, 0.27), ink, line);
-            b.quad(p, (-0.45, 0.14), (-0.2, 0.22), FACE, line);
+            b.quad(p, (0.15, 0.1), (0.98, 0.1), FACE, line);
+            b.quad(p, (-0.2, 0.16), (0.15, 0.16), Color32::from_gray(205), line);
             p.add(Shape::convex_polygon(
                 vec![
-                    b.at(-0.45, -0.12),
-                    b.at(-0.72, -0.08),
-                    b.at(-0.78, 0.0),
-                    b.at(-0.72, 0.08),
-                    b.at(-0.45, 0.12),
+                    b.at(-0.2, -0.17),
+                    b.at(-0.55, -0.14),
+                    b.at(-0.85, 0.0),
+                    b.at(-0.55, 0.14),
+                    b.at(-0.2, 0.17),
                 ],
                 ink,
                 line,
             ));
+        }
+        Tool::Texture => {
+            // A sponge dabbing splotches in the ink color.
+            let s = r * 0.5;
+            for (x, y, k) in [
+                (-0.75, 0.7, 0.28),
+                (-0.2, 0.95, 0.18),
+                (-0.95, 0.15, 0.16),
+                (0.35, 0.85, 0.12),
+            ] {
+                p.circle_filled(c + vec2(x, y) * s, k * s * 1.4, ink);
+            }
+            let body = Rect::from_center_size(c + vec2(0.25, -0.25) * s, vec2(1.3, 0.95) * s);
+            p.rect_filled(body, s * 0.25, Color32::from_rgb(250, 225, 120));
+            p.rect_stroke(body, s * 0.25, line, egui::StrokeKind::Middle);
+            for (x, y) in [(-0.05, -0.45), (0.45, -0.2), (0.15, 0.0), (0.6, -0.5)] {
+                p.circle_stroke(c + vec2(x, y) * s, s * 0.08, line);
+            }
         }
         Tool::Highlighter => {
             // A highlighter over the wide translucent swipe it leaves.
@@ -3974,4 +4035,239 @@ fn layout_editor(ctx: &egui::Context, st: &mut UiState) {
         p.insert("layout".into(), st.layout.encode());
         crate::prefs::save(&p);
     }
+}
+
+/// A preview of a brush: its dabs along a wave, drawn with egui shapes.
+fn brush_preview(ui: &mut egui::Ui, ink: &InkSettings, h: f32) {
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::hover());
+    let p = ui.painter_at(rect);
+    p.rect_filled(rect, 8.0, Color32::from_rgb(250, 249, 246));
+    let w = ink.width.clamp(2.0, h * 0.6);
+    let len = rect.width() - 24.0 - w;
+    let n = 40;
+    let pts: Vec<ogpaper_core::Point> = (0..=n)
+        .map(|i| {
+            let t = i as f32 / n as f32;
+            let x = t * len;
+            let y = (t * 6.0).sin() * (h * 0.22 - w * 0.25).max(0.0);
+            // Pressure rises then falls, to show the dynamics.
+            let pr = (t * PI).sin();
+            [x, y, pr, 0.0]
+        })
+        .collect();
+    let mut along = 0.0;
+    let pts: Vec<ogpaper_core::Point> = pts
+        .iter()
+        .enumerate()
+        .map(|(i, q)| {
+            if i > 0 {
+                along += (q[0] - pts[i - 1][0]).hypot(q[1] - pts[i - 1][1]);
+            }
+            [q[0], q[1], q[2], along]
+        })
+        .collect();
+    let [r, g, b, a] = ink.rgba();
+    let col = u32::from_le_bytes([r, g, b, a]);
+    let o = pos2(rect.left() + 12.0 + w * 0.5, rect.center().y);
+    let dabs = ogpaper_core::brush::dabs(&pts, w, col, &ink.params);
+    for d in dabs.iter().take(4000) {
+        let [r, g, b, a] = d.color.to_le_bytes();
+        let c = Color32::from_rgba_unmultiplied(r, g, b, a);
+        let at = o + vec2(d.x, d.y);
+        let (sn, cs) = d.angle.sin_cos();
+        let aspect = ink.params.aspect;
+        let pts: Vec<Pos2> = ogpaper_core::brush::tip_outline(ink.params.tip, d.rand)
+            .into_iter()
+            .map(|v| {
+                let v = vec2(v[0], v[1] * aspect) * d.size;
+                at + vec2(v.x * cs - v.y * sn, v.x * sn + v.y * cs)
+            })
+            .collect();
+        if matches!(ink.params.tip, ogpaper_core::Tip::Ring) {
+            let mut pts = pts;
+            pts.push(pts[0]);
+            p.add(Shape::line(pts, Stroke::new((d.size * 0.12).max(1.0), c)));
+        } else {
+            p.add(Shape::convex_polygon(pts, c, Stroke::NONE));
+        }
+    }
+}
+
+/// The brush (and texture) panel: Simple is the plain line of old; Advanced
+/// opens the brush engine with its looks.
+fn brush_section(
+    ui: &mut egui::Ui,
+    ink: &mut InkSettings,
+    touch: bool,
+    dial_hue: &mut f32,
+    texture: bool,
+) -> bool {
+    if !texture {
+        ui.horizontal(|ui| {
+            if ui
+                .selectable_label(!ink.advanced, "Simple")
+                .on_hover_text("A plain line: width, pressure, dashes")
+                .clicked()
+            {
+                ink.advanced = false;
+            }
+            if ui
+                .selectable_label(ink.advanced, "Advanced")
+                .on_hover_text("The brush engine: looks, tips, dynamics, scatter, color")
+                .clicked()
+            {
+                ink.advanced = true;
+            }
+        });
+        if !ink.advanced {
+            return ink_section(ui, ink, Tool::Pen, touch, dial_hue, true);
+        }
+    }
+    brush_preview(ui, ink, 56.0);
+    heading(ui, if texture { "Texture" } else { "Look" });
+    let looks = ogpaper_core::brush::looks();
+    ui.horizontal_wrapped(|ui| {
+        for l in looks.iter().filter(|l| l.texture == texture) {
+            if ui
+                .selectable_label(ink.params.look == l.params.look, l.name)
+                .clicked()
+            {
+                let seed = ink.params.seed;
+                ink.params = l.params;
+                ink.params.seed = seed;
+            }
+        }
+    });
+    heading(ui, "Size");
+    ui.add(
+        egui::Slider::new(&mut ink.width, 0.5..=200.0)
+            .logarithmic(true)
+            .suffix(" px"),
+    );
+    opacity_slider(ui, &mut ink.opacity);
+    let p = &mut ink.params;
+    egui::CollapsingHeader::new("Tip")
+        .default_open(texture)
+        .show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                for t in ogpaper_core::Tip::ALL {
+                    if ui.selectable_label(p.tip == t, t.name()).clicked() {
+                        p.tip = t;
+                    }
+                }
+            });
+            if p.tip == ogpaper_core::Tip::Pattern {
+                ui.horizontal_wrapped(|ui| {
+                    for pt in ogpaper_core::Pattern::ALL {
+                        if ui.selectable_label(p.pattern == pt, pt.name()).clicked() {
+                            p.pattern = pt;
+                        }
+                    }
+                });
+                ui.add(
+                    egui::Slider::new(&mut p.pattern_scale, 0.05..=4.0)
+                        .logarithmic(true)
+                        .text("pattern size"),
+                );
+            }
+            ui.add(egui::Slider::new(&mut p.hardness, 0.0..=1.0).text("hardness"));
+            let mut sp = p.spacing * 100.0;
+            if ui
+                .add(
+                    egui::Slider::new(&mut sp, 1.0..=300.0)
+                        .logarithmic(true)
+                        .suffix(" %")
+                        .text("spacing"),
+                )
+                .changed()
+            {
+                p.spacing = sp / 100.0;
+            }
+            let mut deg = p.angle.to_degrees();
+            if ui
+                .add(
+                    egui::Slider::new(&mut deg, -180.0..=180.0)
+                        .suffix("°")
+                        .text("angle"),
+                )
+                .changed()
+            {
+                p.angle = deg.to_radians();
+            }
+            ui.add(egui::Slider::new(&mut p.aspect, 0.05..=1.0).text("roundness"));
+            ui.checkbox(&mut p.follow, "Turn with the stroke");
+        });
+    egui::CollapsingHeader::new("Dynamics").show(ui, |ui| {
+        ui.add(egui::Slider::new(&mut p.p_size, 0.0..=1.0).text("pressure → size"));
+        ui.add(egui::Slider::new(&mut p.p_opacity, 0.0..=1.0).text("pressure → opacity"));
+        ui.add(egui::Slider::new(&mut p.s_size, -1.0..=1.0).text("speed → thinner"));
+        ui.add(egui::Slider::new(&mut p.s_opacity, -1.0..=1.0).text("speed → fainter"));
+        ui.add(egui::Slider::new(&mut p.taper_in, 0.0..=20.0).text("taper start"));
+        ui.add(egui::Slider::new(&mut p.taper_out, 0.0..=20.0).text("taper end"));
+        ui.add(
+            egui::Slider::new(&mut p.fade, 0.0..=200.0)
+                .logarithmic(true)
+                .text("fade out"),
+        );
+    });
+    egui::CollapsingHeader::new("Scatter").show(ui, |ui| {
+        ui.add(egui::Slider::new(&mut p.jitter, 0.0..=4.0).text("scatter"));
+        let mut c = p.count as f32;
+        if ui
+            .add(
+                egui::Slider::new(&mut c, 1.0..=32.0)
+                    .step_by(1.0)
+                    .text("per step"),
+            )
+            .changed()
+        {
+            p.count = c as u8;
+        }
+        ui.add(egui::Slider::new(&mut p.size_jitter, 0.0..=1.0).text("size jitter"));
+        ui.add(egui::Slider::new(&mut p.angle_jitter, 0.0..=1.0).text("angle jitter"));
+        ui.add(egui::Slider::new(&mut p.wobble, 0.0..=4.0).text("sketchy wobble"));
+        let mut ps = p.passes as f32;
+        if ui
+            .add(
+                egui::Slider::new(&mut ps, 1.0..=6.0)
+                    .step_by(1.0)
+                    .text("passes"),
+            )
+            .changed()
+        {
+            p.passes = ps as u8;
+        }
+    });
+    egui::CollapsingHeader::new("Paint").show(ui, |ui| {
+        ui.add(
+            egui::Slider::new(&mut p.flow, 0.02..=1.0)
+                .logarithmic(true)
+                .text("flow (build-up)"),
+        );
+        ui.add(egui::Slider::new(&mut p.grain, 0.0..=1.0).text("paper grain"));
+        ui.add(egui::Slider::new(&mut p.hue_jitter, 0.0..=0.5).text("color jitter"));
+        let mut grad = p.color2 != 0;
+        ui.horizontal(|ui| {
+            if ui.checkbox(&mut grad, "Fade to").changed() {
+                p.color2 = if grad { 0xffff_8020 } else { 0 };
+            }
+            if grad {
+                let [r, g, b, a] = p.color2.to_le_bytes();
+                let mut c = Color32::from_rgba_unmultiplied(r, g, b, a);
+                if ui.color_edit_button_srgba(&mut c).changed() {
+                    let [r, g, b, _] = c.to_array();
+                    p.color2 = u32::from_le_bytes([r, g, b, 255]).max(1);
+                }
+            }
+        });
+        if ui
+            .button("New random seed")
+            .on_hover_text("Different scatter, same settings")
+            .clicked()
+        {
+            p.seed = p.seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        }
+    });
+    heading(ui, "Color");
+    color_dial(ui, &mut ink.color, false, dial_hue, touch)
 }

@@ -8,11 +8,12 @@
 //! in browser storage and downloads it as an offline copy (`.ogpt`). It is
 //! not the `.ogp` format and holds no undo history.
 //!
-//! Layout (little endian): b"OGPT", version u8 (3; 1 and 2 are still read), camera,
+//! Layout (little endian): b"OGPT", version u8 (4; 1 to 3 are still read), camera,
 //! then
 //! - strokes: count u32; each: addr, width f32, color u32, brush u8,
 //!   deleted u8, uid u128, point count u32, points (f32 x4 each),
-//!   and in v2: dash u8, z f64
+//!   and in v2: dash u8, z f64; in v4: brush engine parameters (byte
+//!   count u16, then `BrushParams::encode`; 0 = none)
 //! - events: count u32; each: time i64 (ms), stroke u32, alive u8
 //! - bookmarks: count u32; each: name (u32 length + UTF-8), camera, view_px f64
 //! - v2 groups (shapes and texts): count u32; each: addr, stroke count u32,
@@ -32,7 +33,7 @@ use crate::shapes::{ArrowType, FillStyle, Geom, Head, ShapeKind, ShapeStyle, Slo
 use crate::timeline::{Bookmark, Event, Timeline};
 
 const MAGIC: &[u8; 4] = b"OGPT";
-const VERSION: u8 = 3;
+const VERSION: u8 = 4;
 
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 pub struct Snapshot {
@@ -206,6 +207,9 @@ pub fn encode(
         }
         b.push(s.dash as u8);
         b.extend_from_slice(&s.z.to_le_bytes());
+        let ext = scene.brush_of(id).map(|p| p.encode()).unwrap_or_default();
+        b.extend_from_slice(&(ext.len() as u16).to_le_bytes());
+        b.extend_from_slice(&ext);
     }
     b.extend_from_slice(&(timeline.events.len() as u32).to_le_bytes());
     for e in &timeline.events {
@@ -271,11 +275,23 @@ pub fn decode(bytes: &[u8], base_px: f64) -> Result<Snapshot, String> {
         } else {
             (Dash::Solid, scene.z_top + 1.0)
         };
+        let ext = if v >= 4 {
+            let n = u16::from_le_bytes(r.take(2)?.try_into().expect("2 bytes")) as usize;
+            ogpaper_core::BrushParams::decode(r.take(n)?)
+        } else {
+            None
+        };
+        let brush = if brush == Brush::Dabs && ext.is_none() {
+            Brush::Marker
+        } else {
+            brush
+        };
         let style = Style {
             width,
             color,
             brush,
             dash,
+            ext,
         };
         let id = scene.add_stroke_at(&cell, &pts, style, uid, z);
         if deleted {
@@ -569,6 +585,24 @@ mod tests {
         let a = s.add_stroke(&deep, &[[0.1, 0.2], [0.3, 0.4]], 0.01, 0x11223344);
         let b = s.add_stroke(&CellAddr::new(-3, -1, 2), &[[0.5, 0.5]], 0.2, 7);
         s.delete(b);
+        let brush = ogpaper_core::BrushParams {
+            tip: ogpaper_core::Tip::Leaf,
+            jitter: 0.5,
+            seed: 9,
+            ..Default::default()
+        };
+        let c = s.add_stroke_with(
+            &CellAddr::new(0, 0, 0),
+            &[[0.1, 0.1, 1.0, 0.0], [0.2, 0.2, 1.0, 0.0]],
+            Style {
+                width: 0.01,
+                color: 5,
+                brush: Brush::Dabs,
+                dash: Dash::Solid,
+                ext: Some(brush),
+            },
+            3,
+        );
         let tl = Timeline::from_events(vec![
             Event {
                 t: 10,
@@ -645,10 +679,12 @@ mod tests {
         let bytes = encode(&s, &cam, &tl, &marks, &objs);
         let snap = decode(&bytes, 800.0).unwrap();
         let s2 = &snap.scene;
-        assert_eq!(s2.strokes.len(), 2);
+        assert_eq!(s2.strokes.len(), 3);
+        assert_eq!(s2.brush_of(c), Some(brush));
+        assert_eq!(s2.brush_of(a), None);
         assert!(!s2.strokes[0].deleted && s2.strokes[1].deleted);
         let live: u32 = s2.roots.iter().map(|&r| s2.node(r).subtree).sum();
-        assert_eq!(live, 1);
+        assert_eq!(live, 2);
         assert_eq!(s2.stroke_cell(0), s.stroke_cell(a));
         assert_eq!(s2.stroke_points(0), s.stroke_points(a));
         assert_eq!(s2.strokes[0].color, 0x11223344);

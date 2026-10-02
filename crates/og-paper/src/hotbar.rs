@@ -79,13 +79,7 @@ impl Preset {
 
     pub fn ink(tool: Tool, color: Color32, width: f32, pressure: bool, dash: Dash) -> Self {
         Self {
-            ink: Some(InkSettings {
-                color,
-                width,
-                pressure,
-                dash,
-                opacity: 255,
-            }),
+            ink: Some(InkSettings::new(color, width, pressure, dash, 255)),
             ..Self::tool(tool)
         }
     }
@@ -111,7 +105,7 @@ pub fn defaults() -> Saved {
     };
     let bar = vec![
         Some(Preset::ink(Tool::Pen, black, 3.0, true, Dash::Solid)),
-        Some(Preset::ink(Tool::Marker, blue, 8.0, false, Dash::Solid)),
+        Some(Preset::ink(Tool::Pen, blue, 8.0, false, Dash::Solid)),
         Some(Preset::ink(
             Tool::Highlighter,
             Color32::from_rgb(255, 214, 0),
@@ -130,8 +124,8 @@ pub fn defaults() -> Saved {
         Some(Preset::tool(Tool::Eraser)),
     ];
     let mut inv = vec![
-        Some(Preset::ink(Tool::Marker, green, 8.0, false, Dash::Solid)),
-        Some(Preset::ink(Tool::Marker, red, 14.0, false, Dash::Solid)),
+        Some(Preset::ink(Tool::Pen, green, 8.0, false, Dash::Solid)),
+        Some(Preset::ink(Tool::Pen, red, 14.0, false, Dash::Solid)),
         Some(Preset::ink(
             Tool::Pen,
             Color32::from_rgb(90, 90, 100),
@@ -204,7 +198,6 @@ pub fn empty_bar(name: impl Into<String>) -> Toolbar {
 fn tool_key(t: Tool) -> &'static str {
     match t {
         Tool::Pen => "pen",
-        Tool::Marker => "marker",
         Tool::Highlighter => "highlighter",
         Tool::Eraser => "eraser",
         Tool::Hand => "hand",
@@ -214,13 +207,15 @@ fn tool_key(t: Tool) -> &'static str {
         Tool::Select => "select",
         Tool::Lasso => "lasso",
         Tool::Bucket => "bucket",
+        Tool::Texture => "texture",
     }
 }
 
 fn tool_from(k: &str) -> Option<Tool> {
     Some(match k {
         "pen" => Tool::Pen,
-        "marker" => Tool::Marker,
+        // The Marker merged into the brush (pressure off: the same line).
+        "marker" => Tool::Pen,
         "highlighter" => Tool::Highlighter,
         "eraser" => Tool::Eraser,
         "hand" => Tool::Hand,
@@ -230,6 +225,7 @@ fn tool_from(k: &str) -> Option<Tool> {
         "select" => Tool::Select,
         "lasso" => Tool::Lasso,
         "bucket" => Tool::Bucket,
+        "texture" => Tool::Texture,
         _ => return None,
     })
 }
@@ -260,6 +256,9 @@ fn put(p: &Preset) -> String {
             i.dash as u8,
             i.opacity
         );
+        if i.advanced {
+            out += &format!(" brush {}", hex(&i.params.encode()));
+        }
     }
     if let Some((style, w)) = p.shape {
         let d = ObjData::Shape {
@@ -296,7 +295,16 @@ fn get(s: &str) -> Option<Preset> {
                     pressure: w.next()? == "1",
                     dash: Dash::from_u8(w.next()?.parse().ok()?),
                     opacity: w.next()?.parse().ok()?,
+                    advanced: false,
+                    params: Default::default(),
                 });
+            }
+            "brush" => {
+                let params = ogpaper_core::BrushParams::decode(&unhex(w.next()?)?)?;
+                if let Some(i) = p.ink.as_mut() {
+                    i.advanced = true;
+                    i.params = params;
+                }
             }
             "shape" => {
                 if let ObjData::Shape { style, width, .. } =

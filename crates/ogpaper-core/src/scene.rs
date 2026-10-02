@@ -13,6 +13,7 @@
 use std::collections::HashMap;
 
 use crate::addr::{CellAddr, Level};
+use crate::brush::BrushParams;
 
 pub const NONE: u32 = u32::MAX;
 
@@ -48,6 +49,10 @@ pub enum Brush {
     Highlighter = 2,
     /// A filled polygon: the points are its outline (closed implicitly).
     Fill = 3,
+    /// Stamped by the brush engine (see `brush`); its parameters are in
+    /// `Scene::brushes`. Drawn as a constant-width line when too small to
+    /// see the stamps.
+    Dabs = 4,
 }
 
 impl Brush {
@@ -56,6 +61,7 @@ impl Brush {
             1 => Brush::Marker,
             2 => Brush::Highlighter,
             3 => Brush::Fill,
+            4 => Brush::Dabs,
             _ => Brush::Pen,
         }
     }
@@ -90,6 +96,8 @@ pub struct Style {
     pub color: u32,
     pub brush: Brush,
     pub dash: Dash,
+    /// Brush engine parameters (`Brush::Dabs` strokes).
+    pub ext: Option<BrushParams>,
 }
 
 /// Points are in the anchor cell's local space: [0,1] is the cell, and a
@@ -112,6 +120,8 @@ pub struct Stroke {
     pub deleted: bool,
     /// Permanent id (UUIDv7 in files); 0 for synthetic content.
     pub uid: u128,
+    /// 1 + index into `Scene::brushes`, or 0.
+    pub ext: u32,
 }
 
 /// A point: x, y in the anchor cell's local space, pressure in [0, 1], and
@@ -127,6 +137,8 @@ pub struct Scene {
     pub roots_level: Level,
     pub strokes: Vec<Stroke>,
     pub points: Vec<Point>,
+    /// Brush engine parameters of `Brush::Dabs` strokes (`Stroke::ext`).
+    pub brushes: Vec<BrushParams>,
     /// Highest and lowest z in use (new strokes go above `z_top`).
     pub z_top: f64,
     pub z_bottom: f64,
@@ -278,6 +290,7 @@ impl Scene {
             color,
             brush,
             dash: Dash::Solid,
+            ext: None,
         };
         self.add_stroke_with(addr, pts, style, uid)
     }
@@ -315,7 +328,15 @@ impl Scene {
             self.points.push([p[0], p[1], p[2], along]);
         }
         self.note_z(z);
+        let ext = match style.ext {
+            Some(p) => {
+                self.brushes.push(p);
+                self.brushes.len() as u32
+            }
+            None => 0,
+        };
         self.strokes.push(Stroke {
+            ext,
             node,
             start,
             len: pts.len() as u32,
@@ -355,7 +376,16 @@ impl Scene {
             color: s.color,
             brush: s.brush,
             dash: s.dash,
+            ext: self.brush_of(id),
         }
+    }
+
+    /// A stroke's brush engine parameters, if it has them.
+    pub fn brush_of(&self, id: u32) -> Option<BrushParams> {
+        let e = self.strokes.get(id as usize)?.ext;
+        (e > 0)
+            .then(|| self.brushes.get(e as usize - 1).copied())
+            .flatten()
     }
 
     /// Hide a stroke (undoable). Returns false if it was already deleted.

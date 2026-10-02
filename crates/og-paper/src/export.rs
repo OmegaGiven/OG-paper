@@ -228,6 +228,31 @@ impl App {
             if width < 0.05 {
                 continue;
             }
+            // Brush-engine strokes: each stamp's outline, filled.
+            if let (Brush::Dabs, Some(p)) = (s.brush, self.scene.brush_of(id)) {
+                let sc = inst.scale as f64;
+                for d in
+                    ogpaper_core::brush::dabs(self.scene.stroke_points(id), s.width, s.color, &p)
+                {
+                    let (sn, cs) = (d.angle as f64).sin_cos();
+                    let c = [
+                        inst.ox as f64 + d.x as f64 * sc,
+                        inst.oy as f64 + d.y as f64 * sc,
+                    ];
+                    let size = d.size as f64 * sc;
+                    let pts: Vec<[f64; 2]> = ogpaper_core::brush::tip_outline(p.tip, d.rand)
+                        .iter()
+                        .map(|v| {
+                            let (x, y) = (v[0] as f64 * size, v[1] as f64 * p.aspect as f64 * size);
+                            [c[0] + x * cs - y * sn, c[1] + x * sn + y * cs]
+                        })
+                        .collect();
+                    pts.iter().for_each(|&q| grow(q, 0.0));
+                    let (rgb, alpha) = rgb_of(d.color);
+                    items.push(Item::Fill { rgb, alpha, pts });
+                }
+                continue;
+            }
             pts.iter().for_each(|q| grow([q[0], q[1]], width * 0.5));
             let hl = s.brush == Brush::Highlighter;
             let rgb = if hl {
@@ -800,6 +825,7 @@ pub fn sticker_svg(s: &crate::library::Sticker, px: f64) -> String {
                         color: pc.color,
                         brush: pc.brush,
                         dash: pc.dash,
+                        ext: None,
                     };
                     ink(style, p, pic);
                 }

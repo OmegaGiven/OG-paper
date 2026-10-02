@@ -1330,6 +1330,8 @@ impl App {
                     pressure: st.brush == ogpaper_core::Brush::Pen,
                     dash: st.dash,
                     opacity: a,
+                    advanced: false,
+                    params: Default::default(),
                 });
             }
             Some(ObjRef::Group(g)) => match &self.objs.groups[*g as usize].data {

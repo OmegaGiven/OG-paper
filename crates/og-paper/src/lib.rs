@@ -264,11 +264,12 @@ impl App {
     // ---- ink -------------------------------------------------------------
 
     fn ink_add(&mut self, p: [f64; 2], pressure: f32) {
-        let pressure = if self.ui.tool == Tool::Pen && !self.ui.pen.pressure {
-            1.0
-        } else {
-            pressure
-        };
+        let pressure =
+            if self.ui.tool == Tool::Pen && !self.ui.pen.pressure && !self.ui.pen.advanced {
+                1.0
+            } else {
+                pressure
+            };
         let q = [p[0] as f32, p[1] as f32, pressure];
         if let Some(l) = self.wet.last() {
             if (l[0] - q[0]).hypot(l[1] - q[1]) < 1.2 {
@@ -280,7 +281,8 @@ impl App {
     }
 
     fn ink_commit(&mut self) {
-        let Some(brush) = self.ui.tool.brush() else {
+        let tool = self.ui.tool;
+        let Some(brush) = self.ui.ink().and_then(|i| i.brush_for(tool)) else {
             self.wet.clear();
             return;
         };
@@ -313,6 +315,11 @@ impl App {
             } else {
                 ink.dash
             },
+            // A fresh seed per stroke, so no two scatter alike.
+            ext: (brush == ogpaper_core::Brush::Dabs).then(|| ogpaper_core::BrushParams {
+                seed: ink.params.seed ^ (uid::new() as u32),
+                ..ink.params
+            }),
         };
         let id = self.scene.add_stroke_with(&cell, &pts, style, uid::new());
         self.wet.clear();
@@ -1947,8 +1954,14 @@ impl App {
         let [w, h] = self.size();
         query(&self.scene, &self.cam, w, h, VIEW, &mut self.draw);
         let ink = self.ui.ink().copied();
-        let wet = match (self.gesture == Gesture::Ink, ink, self.ui.tool.brush()) {
+        let tool = self.ui.tool;
+        let wet = match (
+            self.gesture == Gesture::Ink,
+            ink,
+            ink.and_then(|i| i.brush_for(tool)),
+        ) {
             (true, Some(ink), Some(brush)) => Some(Wet {
+                params: (brush == ogpaper_core::Brush::Dabs).then_some(ink.params),
                 pts: &self.wet,
                 width_px: ink.width * self.ppp() as f32,
                 color: u32::from_le_bytes(ink.rgba()),

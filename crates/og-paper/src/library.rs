@@ -12,9 +12,10 @@
 //! `.ogps` files in `~/OG Paper/library` on desktop; the web page keeps
 //! them in the browser's storage.
 //!
-//! `.ogps` (all little-endian): magic `OGPS`, version u8 (1), size on screen
-//! f64 (points), item count u32; each item: kind u8, then for ink (0):
-//! width f32, color u32, brush u8, dash u8, point count u32, points (f32 x,
+//! `.ogps` (all little-endian): magic `OGPS`, version u8 (2; 1 is still
+//! read), size on screen f64 (points), item count u32; each item: kind u8,
+//! then for ink (0): width f32, color u32, brush u8, dash u8, (v2) brush
+//! engine parameters (u16 byte count + bytes), point count u32, points (f32 x,
 //! y, pressure); for an object (1): data byte count u32, then the data as in
 //! `.ogp` groups. Then picture count u32; each: id u64, byte count u32, file.
 
@@ -45,7 +46,7 @@ pub struct Sticker {
 impl Sticker {
     pub fn encode(&self) -> Vec<u8> {
         let mut b = b"OGPS".to_vec();
-        b.push(1);
+        b.push(2);
         b.extend_from_slice(&self.size_pt.to_le_bytes());
         b.extend_from_slice(&(self.items.len() as u32).to_le_bytes());
         for it in &self.items {
@@ -56,6 +57,9 @@ impl Sticker {
                     b.extend_from_slice(&style.color.to_le_bytes());
                     b.push(style.brush as u8);
                     b.push(style.dash as u8);
+                    let ext = style.ext.map(|p| p.encode()).unwrap_or_default();
+                    b.extend_from_slice(&(ext.len() as u16).to_le_bytes());
+                    b.extend_from_slice(&ext);
                     b.extend_from_slice(&(pts.len() as u32).to_le_bytes());
                     for p in pts {
                         for v in p {
@@ -90,7 +94,8 @@ impl Sticker {
         if take(4)? != b"OGPS" {
             return Err("not a sticker".into());
         }
-        if take(1)?[0] != 1 {
+        let version = take(1)?[0];
+        if !(1..=2).contains(&version) {
             return Err("a sticker from a newer version of OG Paper".into());
         }
         let f64_ = |s: &[u8]| f64::from_le_bytes(s.try_into().expect("8"));
@@ -105,6 +110,17 @@ impl Sticker {
                     let color = u32_(take(4)?);
                     let brush = Brush::from_u8(take(1)?[0]);
                     let dash = Dash::from_u8(take(1)?[0]);
+                    let ext = if version >= 2 {
+                        let n = u16::from_le_bytes(take(2)?.try_into().expect("2")) as usize;
+                        ogpaper_core::BrushParams::decode(take(n)?)
+                    } else {
+                        None
+                    };
+                    let brush = if brush == Brush::Dabs && ext.is_none() {
+                        Brush::Marker
+                    } else {
+                        brush
+                    };
                     let np = u32_(take(4)?) as usize;
                     let raw = take(np.checked_mul(12).ok_or("bad sticker")?)?;
                     let pts = raw
@@ -121,6 +137,7 @@ impl Sticker {
                             color,
                             brush,
                             dash,
+                            ext,
                         },
                         pts,
                     });
@@ -379,8 +396,12 @@ mod tests {
                     style: Style {
                         width: 0.01,
                         color: 0xff00_00ff,
-                        brush: Brush::Pen,
+                        brush: Brush::Dabs,
                         dash: Dash::Dotted,
+                        ext: Some(ogpaper_core::BrushParams {
+                            tip: ogpaper_core::Tip::Star,
+                            ..Default::default()
+                        }),
                     },
                     pts: vec![[-0.5, 0.0, 0.3], [0.5, 0.1, 0.9]],
                 },
@@ -405,6 +426,7 @@ mod tests {
         match &t.items[0] {
             Item::Ink { style, pts } => {
                 assert_eq!(style.dash, Dash::Dotted);
+                assert_eq!(style.ext.map(|p| p.tip), Some(ogpaper_core::Tip::Star));
                 assert_eq!(pts[1], [0.5, 0.1, 0.9]);
             }
             _ => panic!(),

@@ -59,6 +59,55 @@ pub struct Wet<'a> {
     pub color: u32,
     pub brush: Brush,
     pub dash: Dash,
+    /// Brush engine strokes: their parameters.
+    pub params: Option<ogpaper_core::BrushParams>,
+}
+
+/// One brush-engine stamp for the GPU (see `dab.wgsl`).
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct DabGpu {
+    /// x, y (px), size (px), angle.
+    psa: [f32; 4],
+    /// aspect, hardness, grain, rand.
+    misc: [f32; 4],
+    /// texture x, y (stroke widths), widths per px, pattern scale.
+    tex: [f32; 4],
+    /// color, tip, pattern, flags.
+    ids: [u32; 4],
+}
+
+/// Strokes thinner than this on screen (px) draw as plain lines.
+const DAB_MIN_PX: f32 = 1.5;
+
+fn dab_gpu(
+    d: &ogpaper_core::Dab,
+    p: &ogpaper_core::BrushParams,
+    ox: f32,
+    oy: f32,
+    scale: f32,
+    width: f32,
+) -> DabGpu {
+    let wpx = (width * scale).max(1e-6);
+    DabGpu {
+        psa: [ox + d.x * scale, oy + d.y * scale, d.size * scale, d.angle],
+        misc: [p.aspect, p.hardness, p.grain, d.rand],
+        tex: [
+            d.x / width.max(1e-12),
+            d.y / width.max(1e-12),
+            1.0 / wpx,
+            p.pattern_scale,
+        ],
+        ids: [d.color, p.tip as u32, p.pattern as u32, 0],
+    }
+}
+
+/// What interrupts a run of ink in draw order.
+enum Break {
+    /// Picture number k.
+    Pic(usize),
+    /// Dab instances a..b.
+    Dabs(u32, u32),
 }
 
 /// egui output for this frame.
@@ -208,6 +257,10 @@ pub struct Renderer {
     bind: wgpu::BindGroup,
     ink_pipe: wgpu::RenderPipeline,
     hl_pipe: wgpu::RenderPipeline,
+    dab_pipe: wgpu::RenderPipeline,
+    dabs: Growable,
+    /// Dabs per brush-engine stroke, in its own units (made once).
+    dab_cache: HashMap<u32, Vec<ogpaper_core::Dab>>,
     tile_pipe: wgpu::RenderPipeline,
     ink: Growable,
     hl: Growable,
@@ -473,6 +526,43 @@ impl Renderer {
             &tile_attrs,
         );
 
+        // Brush-engine dabs: their own shader, the canvas bind group.
+        let dab_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("dabs"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("dab.wgsl").into()),
+        });
+        let dab_attrs =
+            wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32x4, 3 => Uint32x4];
+        let dab_pipe = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("dabs"),
+            layout: Some(&layout),
+            vertex: wgpu::VertexState {
+                module: &dab_shader,
+                entry_point: Some("vs_dab"),
+                compilation_options: Default::default(),
+                buffers: &[Some(wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<DabGpu>() as u64,
+                    step_mode: wgpu::VertexStepMode::Instance,
+                    attributes: &dab_attrs,
+                })],
+            },
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &dab_shader,
+                entry_point: Some("fs_dab"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(over),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+
         let img_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("image bgl"),
             entries: &[
@@ -619,6 +709,9 @@ impl Renderer {
             tiles: Growable::new(&device, "tiles", 1 << 14),
             imgs: Growable::new(&device, "images", 1 << 12),
             img_pipe,
+            dab_pipe,
+            dabs: Growable::new(&device, "dabs", 1024 * std::mem::size_of::<DabGpu>()),
+            dab_cache: HashMap::new(),
             img_bgl,
             sampler,
             img_tex: HashMap::new(),
@@ -695,6 +788,9 @@ impl Renderer {
     /// (the live preview while moving, resizing or rotating a selection).
     pub fn update_points(&mut self, scene: &Scene, ids: &[u32]) {
         self.sync(scene);
+        for id in ids {
+            self.dab_cache.remove(id);
+        }
         for &id in ids {
             let s = &scene.strokes[id as usize];
             let (a, b) = (s.start as usize, (s.start + s.len) as usize);
@@ -775,8 +871,36 @@ impl Renderer {
         let (vw, vh) = (self.config.width as f32, self.config.height as f32);
         // Pictures in draw order: (ink instances before it, picture id, quad).
         let mut pics: Vec<(usize, u64, ImgInst)> = Vec::new();
+        // Breaks in the ink: (ink instances before it, what).
+        let mut breaks: Vec<(usize, Break)> = Vec::new();
+        let mut dabs: Vec<DabGpu> = Vec::new();
         for i in &draw.strokes {
             let s = &scene.strokes[i.stroke as usize];
+            if s.brush == Brush::Dabs && s.width * i.scale >= DAB_MIN_PX {
+                if let Some(p) = scene.brush_of(i.stroke) {
+                    let cached = self.dab_cache.entry(i.stroke).or_insert_with(|| {
+                        ogpaper_core::brush::dabs(
+                            scene.stroke_points(i.stroke),
+                            s.width,
+                            s.color,
+                            &p,
+                        )
+                    });
+                    let a = dabs.len() as u32;
+                    dabs.extend(
+                        cached
+                            .iter()
+                            .map(|d| dab_gpu(d, &p, i.ox, i.oy, i.scale, s.width)),
+                    );
+                    let b = dabs.len() as u32;
+                    match breaks.last_mut() {
+                        // Next to the last dabs with no ink between: one run.
+                        Some((at, Break::Dabs(_, e))) if *at == ink.len() && *e == a => *e = b,
+                        _ => breaks.push((ink.len(), Break::Dabs(a, b))),
+                    }
+                    continue;
+                }
+            }
             if s.brush == Brush::Fill && s.color == 0 {
                 // An invisible outline; a picture's corners if it places one.
                 if let Some(&(id, opacity, crop)) = objs.image_of.get(&i.stroke) {
@@ -788,6 +912,7 @@ impl Renderer {
                             corners[2 * k + 1] = i.oy + q[1] * i.scale;
                         }
                         let misc = [vw, vh, opacity as f32 / 255.0, 0.0];
+                        breaks.push((ink.len(), Break::Pic(pics.len())));
                         pics.push((
                             ink.len(),
                             id,
@@ -813,7 +938,35 @@ impl Renderer {
             };
             push_windows(list, i.stroke, len, i.ox, i.oy, i.scale);
         }
-        if let Some(w) = wet.filter(|w| !w.pts.is_empty()) {
+        let wet = wet.filter(|w| !w.pts.is_empty());
+        // A brush-engine stroke being drawn: its dabs, in screen px, on top.
+        let wet = match wet {
+            Some(w) if w.brush == Brush::Dabs && w.params.is_some() => {
+                let p = w.params.expect("params");
+                let mut along = 0.0f32;
+                let pts: Vec<[f32; 4]> = w
+                    .pts
+                    .iter()
+                    .enumerate()
+                    .map(|(i, q)| {
+                        if i > 0 {
+                            along += (q[0] - w.pts[i - 1][0]).hypot(q[1] - w.pts[i - 1][1]);
+                        }
+                        [q[0], q[1], q[2], along]
+                    })
+                    .collect();
+                let a = dabs.len() as u32;
+                let made = ogpaper_core::brush::dabs(&pts, w.width_px, w.color, &p);
+                dabs.extend(
+                    made.iter()
+                        .map(|d| dab_gpu(d, &p, 0.0, 0.0, 1.0, w.width_px)),
+                );
+                breaks.push((ink.len(), Break::Dabs(a, dabs.len() as u32)));
+                None
+            }
+            w => w,
+        };
+        if let Some(w) = wet {
             let n = w.pts.len().min(WET_PTS);
             let mut along = 0.0f32;
             let src = &w.pts[w.pts.len() - n..];
@@ -843,6 +996,8 @@ impl Renderer {
         }
         self.ink
             .upload(&self.device, &self.queue, bytemuck::cast_slice(&ink));
+        self.dabs
+            .upload(&self.device, &self.queue, bytemuck::cast_slice(&dabs));
         self.hl
             .upload(&self.device, &self.queue, bytemuck::cast_slice(&hl));
         self.tiles
@@ -921,14 +1076,25 @@ impl Renderer {
                     pass.draw(0..(MAX_SEG * 6) as u32, a as u32..b as u32);
                 }
             };
-            for (k, (at, id, _)) in pics.iter().enumerate() {
+            for (at, br) in &breaks {
                 ink_run(&mut pass, from, *at);
                 from = *at;
-                if let Some(Some(bind)) = self.img_tex.get(id) {
-                    pass.set_pipeline(&self.img_pipe);
-                    pass.set_bind_group(0, bind, &[]);
-                    pass.set_vertex_buffer(0, self.imgs.buf.slice(..));
-                    pass.draw(0..6, k as u32..k as u32 + 1);
+                match *br {
+                    Break::Pic(k) => {
+                        if let Some(Some(bind)) = self.img_tex.get(&pics[k].1) {
+                            pass.set_pipeline(&self.img_pipe);
+                            pass.set_bind_group(0, bind, &[]);
+                            pass.set_vertex_buffer(0, self.imgs.buf.slice(..));
+                            pass.draw(0..6, k as u32..k as u32 + 1);
+                        }
+                    }
+                    Break::Dabs(a, b) if b > a => {
+                        pass.set_pipeline(&self.dab_pipe);
+                        pass.set_bind_group(0, &self.bind, &[]);
+                        pass.set_vertex_buffer(0, self.dabs.buf.slice(..));
+                        pass.draw(0..6, a..b);
+                    }
+                    Break::Dabs(..) => {}
                 }
             }
             ink_run(&mut pass, from, ink.len());
@@ -1081,7 +1247,12 @@ mod tests {
     #[test]
     fn shader_validates() {
         use wgpu::naga;
-        for src in [include_str!("shader.wgsl"), include_str!("image.wgsl")] {
+        for src in [
+            include_str!("shader.wgsl"),
+            include_str!("image.wgsl"),
+            include_str!("dab.wgsl"),
+            include_str!("grid.wgsl"),
+        ] {
             let module = naga::front::wgsl::parse_str(src)
                 .unwrap_or_else(|e| panic!("{}", e.emit_to_string(src)));
             naga::valid::Validator::new(
