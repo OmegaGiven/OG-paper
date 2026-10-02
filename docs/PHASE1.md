@@ -7,10 +7,10 @@ benchmark.
 | Milestone | Scope | Status |
 | --- | --- | --- |
 | **M1 · App + ink + files** | App shell (winit + wgpu + egui) · toolbar · pen / marker / highlighter with pressure · color swatches + picker · width · stroke eraser · undo/redo · autosave to `.ogp` (SQLite) · New / Open / Save As | Done |
-| **M2 · Stickers** | Paste or drag-drop PNG / JPG / SVG (clipboard, files, browser paste) · move / resize / rotate · images anchored to cells like strokes · SVGs re-rasterized per zoom so they stay crisp at any depth | Done except vector SVG: paste / drop / insert pictures (SVG rasterized at 2x on the web), move / resize / rotate / flip, stored once per file; plus pasted tables |
-| **M3 · Shapes + select** | Line, arrow, rectangle, ellipse, polygon (stroke + fill) · lasso select · move / resize / duplicate / delete across zoom levels | Done except lasso: 8 shapes with Excalidraw-style fills and styles, text, box select, move / resize / rotate / flip / duplicate / delete / reorder / restyle |
+| **M2 · Stickers** | Paste or drag-drop PNG / JPG / SVG (clipboard, files, browser paste) · move / resize / rotate · images anchored to cells like strokes · SVGs re-rasterized per zoom so they stay crisp at any depth | Done except vector SVG: paste / drop / insert pictures (SVG rasterized at 2x), crop in place, move / resize / rotate / flip, stored once per file; plus pasted tables, PDF import and a library of saved stickers |
+| **M3 · Shapes + select** | Line, arrow, rectangle, ellipse, polygon (stroke + fill) · lasso select · move / resize / duplicate / delete across zoom levels | Done: 8 shapes with Excalidraw-style fills and styles, text, box and lasso select, move / resize / rotate / flip / duplicate / delete / reorder / restyle; diagram mode (lines and arrows stick to objects) |
 | **M4 · Textures + brushes** | Pencil grain, fountain pen (tilt/speed), calligraphy nib, spray · brush presets | |
-| **M5 · Scale + polish** | Load-on-demand from `.ogp`, GPU paging, thumbnails, compact cells, quantized points · layers · bookmarks · SVG/PNG/PDF export | Bookmarks done on the web |
+| **M5 · Scale + polish** | Load-on-demand from `.ogp`, GPU paging, thumbnails, compact cells, quantized points · layers · bookmarks · SVG/PNG/PDF export | Bookmarks done on the web; SVG / PNG / JPEG / PDF export of the view or selection done |
 
 Also done, beyond the milestones:
 

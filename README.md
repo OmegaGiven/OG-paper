@@ -30,13 +30,17 @@ Proprietary infinite-canvas apps such as Endless Paper keep your work in undocum
 ## What works today
 
 - **Ink:** pen with pressure, marker, highlighter; solid, dashed or dotted; any opacity; stroke eraser, eyedropper, color dial with custom colors, per-brush width, unlimited undo/redo.
+- **Bucket fill:** tap inside an outline to fill it with real vector ink tucked under the lines (sharp at any zoom), optionally closing small gaps in the outline.
 - **Shapes:** one Shapes tool with rectangle, ellipse, diamond, triangle, star, polygon, line and arrow, and Excalidraw-style options: hachure / cross-hatch / zigzag / solid fill, fill color (or one color for stroke and fill), stroke width and style, sloppiness (clean to cartoon), sharp or round edges, curved and elbow lines, nine arrowheads, opacity.
 - **Text:** 11 bundled open-licensed fonts (hand-drawn, marker, sans, serif, mono, display) plus three single-stroke fonts, or add your own `.ttf` / `.otf`; sizes, alignment, color, opacity. Text is ink (letters are filled outlines), so it stays sharp at any zoom.
-- **Pictures and tables:** paste, drag-drop or insert pictures (PNG, JPEG, GIF, WebP; SVG and more on the web); paste spreadsheet cells or a Markdown table and get a real table you can restyle and edit; pasted text becomes text.
+- **Pictures, PDFs and tables:** paste (Ctrl+V or the Paste button, for phones), drag-drop or insert pictures (PNG, JPEG, GIF, WebP, SVG) and crop them in place (non-destructive); import PDFs, each page a picture to write on; paste spreadsheet cells or a Markdown table and get a real table you can restyle and edit; pasted text becomes text.
+- **Library:** save any selection as a sticker and place copies of it on any canvas, at any zoom.
+- **Diagrams:** in diagram mode, lines and arrows snap to shapes, texts and pictures and follow them when they move.
 - **Saved tools:** Minecraft-style toolbars (keys 1–9) of tools with their settings: a red 2 px pen, a dashed arrow, a font at a size... Keep as many named toolbars as you like and switch between them (`[` / `]`), plus an inventory that grows as you fill it. Tap an empty slot to save the current tool.
-- **Select and edit:** tap or drag a box to select; move, resize, rotate, flip, duplicate, delete, bring to front / send to back, copy / cut / paste, and restyle anything from the tool panel; double-tap a text or table to edit it. Each edit is one undo step.
+- **Select and edit:** tap, drag a box or draw a lasso to select; move, resize, rotate, flip, duplicate, delete, bring to front / send to back, copy / cut / paste, and restyle anything from the tool panel; double-tap a text or table to edit it. Each edit is one undo step.
 - **Endless canvas:** pan and zoom with no limit; content at any depth stays exact.
-- **Controls:** round buttons that fan out like radial menus, in rings when there are many items: tools (bottom right), ↩ undo / ↪ redo, a tool panel (bottom left, collapsible) with the current tool's or the selection's settings, and ⚙ settings (top right) for New canvas, Open, Save copy, Insert picture, Home, Bookmarks, Timeline, Full screen and the tour. Keyboard shortcuts for every tool (see [`docs/DESIGN.md`](docs/DESIGN.md#where-it-stands-2026-10-02)).
+- **Controls:** round buttons that fan out like radial menus, in rings when there are many items: tools (bottom right), ↩ undo / ↪ redo, a tool panel (bottom left, collapsible) with the current tool's or the selection's settings, and ⚙ settings (top right) for New canvas, Open, Save copy, Export, Paste, Library, Insert picture / PDF, Search text, Home, Bookmarks, Timeline, Grid, Diagram, Edit layout, Full screen and the tour. **Edit layout** moves any of them anywhere; fans open toward the middle of the screen from wherever their button is.
+- **Find and show:** search all text on the canvas and fly to it; lines or dot grid behind the ink; export the view or the selection as PNG, JPEG, SVG or PDF. Keyboard shortcuts for every tool (see [`docs/DESIGN.md`](docs/DESIGN.md#where-it-stands-2026-10-02)).
 - **Files:** desktop and Android autosave to a `.ogp` file (SQLite) with New / Open / Save As. The web app autosaves in your browser and saves / opens `.ogpt` offline copies.
 - **Bookmarks** (web): save a view, then fly back to it with one tap, across any zoom depth.
 - **Timeline** (web): every stroke is time-stamped; scrub or play back the canvas as it was at any moment, narrow it to a window of time with the left handle to see one session's work on its own, and restore a moment.
@@ -48,7 +52,7 @@ File formats (`.ogp` 0.3, shapes, text, tables and pictures, the timeline log, b
 
 - **Save to / open from** the cloud: Save and Open fan out to device, Google Drive, Dropbox or OneDrive, signed in from the page with no project server.
 - `.ogpt` copies in the desktop app, and `.ogp` in the web app, so both share one format; bookmarks and the timeline on desktop.
-- Vector SVG stickers, lasso select, arrows that stick to shapes, textured brushes, layers, export, multi-device sync — see [`docs/PHASE1.md`](docs/PHASE1.md) and the [to-do list](docs/DESIGN.md#future-to-do).
+- Vector SVG pictures, textured brushes, layers, frames and presenting, multi-device sync — see [`docs/PHASE1.md`](docs/PHASE1.md) and the [to-do list](docs/DESIGN.md#future-to-do).
 
 ## Stack
 
