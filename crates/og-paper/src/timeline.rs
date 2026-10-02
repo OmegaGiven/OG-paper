@@ -81,6 +81,34 @@ impl Timeline {
         }
         v
     }
+
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    /// A window of time: strokes visible just after event `upto` that were
+    /// first drawn at or after event `from`. Older ink is left out, so one
+    /// stretch of work can be looked at on its own.
+    pub fn visible_between(&self, from: usize, upto: usize, strokes: usize) -> Vec<bool> {
+        let mut v = self.visible_after(upto, strokes);
+        if from == 0 {
+            return v;
+        }
+        // When each stroke first appeared (its creation).
+        let mut born = vec![usize::MAX; strokes];
+        for (i, e) in self.events.iter().enumerate().take(upto + 1) {
+            if e.alive {
+                if let Some(b) = born.get_mut(e.id as usize) {
+                    if *b == usize::MAX {
+                        *b = i;
+                    }
+                }
+            }
+        }
+        for (vis, &b) in v.iter_mut().zip(&born) {
+            if b < from {
+                *vis = false;
+            }
+        }
+        v
+    }
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
@@ -139,6 +167,30 @@ mod tests {
         apply(&mut s, &tl.visible_after(2, 2));
         assert!(s.strokes[a as usize].deleted && !s.strokes[b as usize].deleted);
         assert_eq!(s.node(s.roots[0]).subtree, 1);
+    }
+
+    #[test]
+    fn window_leaves_out_older_ink() {
+        let mut s = Scene::new();
+        let a = s.add_stroke(&CellAddr::new(0, 0, 0), &[[0.1, 0.1], [0.2, 0.2]], 0.01, 0);
+        let b = s.add_stroke(&CellAddr::new(0, 0, 0), &[[0.3, 0.3], [0.4, 0.4]], 0.01, 0);
+        let c = s.add_stroke(&CellAddr::new(0, 0, 0), &[[0.5, 0.5], [0.6, 0.6]], 0.01, 0);
+        let ev = |t, id, alive| Event { t, id, alive };
+        // a drawn, b drawn, a erased, c drawn, a restored (undo of the erase).
+        let tl = Timeline::from_events(vec![
+            ev(1, a, true),
+            ev(2, b, true),
+            ev(3, a, false),
+            ev(4, c, true),
+            ev(5, a, true),
+        ]);
+        // From the start: same as the single-handle view.
+        assert_eq!(tl.visible_between(0, 4, 3), tl.visible_after(4, 3));
+        // From event 1 (b drawn): a was born before the window, so it stays
+        // out even though it came back inside it.
+        assert_eq!(tl.visible_between(1, 4, 3), vec![false, true, true]);
+        // Window [3, 3]: only c.
+        assert_eq!(tl.visible_between(3, 3, 3), vec![false, false, true]);
     }
 
     #[test]

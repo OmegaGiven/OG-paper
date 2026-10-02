@@ -29,6 +29,9 @@ pub enum Cmd {
     BookmarkRename(usize, String),
     /// Show the canvas as it was after timeline event `i`; `None` leaves.
     Timeline(Option<usize>),
+    /// Show only the ink drawn between events `from` and `to` (inclusive)
+    /// that is still there at `to`; `None` leaves.
+    TimelineRange(Option<(usize, usize)>),
     /// Make the moment shown in the timeline the current canvas (undoable).
     TimelineRestore,
     /// The page's text editor finished (Some: the text) or was cancelled.
@@ -229,6 +232,15 @@ pub fn og_bookmark_rename(i: usize, name: String) {
 #[wasm_bindgen]
 pub fn og_timeline(i: i32) {
     push(Cmd::Timeline((i >= 0).then_some(i as usize)));
+}
+
+/// Show only what was drawn between events `from` and `to` (inclusive);
+/// a negative `to` goes back to now.
+#[wasm_bindgen]
+pub fn og_timeline_range(from: i32, to: i32) {
+    push(Cmd::TimelineRange(
+        (to >= 0).then_some((from.max(0) as usize, to as usize)),
+    ));
 }
 
 /// Make the moment shown in the timeline the current canvas.

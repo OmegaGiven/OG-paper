@@ -8,7 +8,7 @@ import init, {
   og_load, og_demo, og_blank, og_status, og_requests, og_set_menu, og_text_request, og_text_done, og_font_add,
   og_copy, og_paste_own, og_paste_image, og_paste_text,
   og_bookmark_add, og_bookmark_go, og_bookmark_remove, og_bookmark_rename,
-  og_timeline, og_timeline_restore, og_snapshot_request, og_snapshot_take,
+  og_timeline, og_timeline_range, og_timeline_restore, og_snapshot_request, og_snapshot_take,
 } from './pkg/og_paper.js';
 
 const ICONS = {
@@ -57,7 +57,19 @@ const CSS = `
 .og-tl { position: fixed; z-index: 20; left: calc(10px + env(safe-area-inset-left)); bottom: calc(10px + env(safe-area-inset-bottom));
   right: calc(210px + env(safe-area-inset-right)); background: var(--face); border: 1px solid var(--edge); border-radius: 14px;
   box-shadow: 0 6px 24px rgba(0,0,0,.18); padding: 10px 12px; display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; }
-.og-tl input[type=range] { flex: 1 1 160px; accent-color: var(--accent); }
+.og-tl .dual { position: relative; flex: 1 1 160px; height: 30px; }
+.og-tl .dual .track { position: absolute; left: 11px; right: 11px; top: 13px; height: 4px; border-radius: 2px; background: #d9d6cc; }
+.og-tl .dual .sel { position: absolute; top: 0; bottom: 0; border-radius: 2px; background: var(--accent); }
+.og-tl .dual input { position: absolute; inset: 0; width: 100%; height: 30px; margin: 0; background: none; pointer-events: none;
+  -webkit-appearance: none; appearance: none; }
+.og-tl .dual input::-webkit-slider-runnable-track { background: none; height: 30px; }
+.og-tl .dual input::-moz-range-track { background: none; }
+.og-tl .dual input::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; pointer-events: auto; width: 22px; height: 22px;
+  margin-top: 4px; border-radius: 50%; background: #fff; border: 3px solid var(--accent); box-shadow: 0 1px 3px rgba(0,0,0,.3); cursor: ew-resize; }
+.og-tl .dual input::-moz-range-thumb { pointer-events: auto; width: 16px; height: 16px; border-radius: 50%; background: #fff;
+  border: 3px solid var(--accent); box-shadow: 0 1px 3px rgba(0,0,0,.3); cursor: ew-resize; }
+.og-tl .dual input.lo::-webkit-slider-thumb { background: var(--accent); }
+.og-tl .dual input.lo::-moz-range-thumb { background: var(--accent); }
 .og-tl .when { flex: 1 1 100%; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; order: -1; display: flex; justify-content: space-between; gap: 8px; }
 .og-tl .when b { color: var(--ink); }
 .og-tl .og-icon { width: 36px; height: 36px; box-shadow: none; }
@@ -72,7 +84,7 @@ const CSS = `
   background: #1c1c24; color: #fff; padding: 8px 14px; border-radius: 10px; font: 14px system-ui, sans-serif; opacity: 0;
   transition: opacity .25s; pointer-events: none; max-width: calc(100vw - 32px); }
 .og-toast.on { opacity: .92; }
-@media (max-width: 520px) { .og-tl input[type=range] { flex-basis: 60px; } .og-tl .restore { padding: 6px 8px; } .og-tl { right: calc(84px + env(safe-area-inset-right)); bottom: calc(86px + env(safe-area-inset-bottom)); } }
+@media (max-width: 520px) { .og-tl .dual { flex-basis: 60px; } .og-tl .restore { padding: 6px 8px; } .og-tl { right: calc(84px + env(safe-area-inset-right)); bottom: calc(86px + env(safe-area-inset-bottom)); } }
 `;
 
 const TOUR = [
@@ -263,13 +275,27 @@ export async function start({ mode = 'app' } = {}) {
   // ---- timeline bar ----
   const tl = el('div', { class: 'og-tl', hidden: '' });
   tl.innerHTML = `
-    <div class="when"><span>Showing the canvas at <b class="at">—</b></span><span class="count"></span></div>
+    <div class="when"><span class="at">—</span><span class="count"></span></div>
     <button class="og-icon play" title="Play" aria-label="Play">${svg('play')}</button>
-    <input type="range" min="0" max="0" value="0" aria-label="Time">
-    <button class="og-btn restore" title="Make this moment the current canvas">Restore</button>
+    <div class="dual" title="Drag the left handle to start later, the right one to end earlier">
+      <div class="track"><div class="sel"></div></div>
+      <input class="lo" type="range" min="0" max="0" value="0" aria-label="Window start">
+      <input class="hi" type="range" min="0" max="0" value="0" aria-label="Window end">
+    </div>
+    <button class="og-btn restore" title="Make the moment at the right handle the current canvas (the left handle only narrows the view)">Restore</button>
     <button class="og-icon close" title="Back to now" aria-label="Close timeline">${svg('close')}</button>`;
   root.append(tl);
-  const range = tl.querySelector('input');
+  // Two handles: lo = first change shown, hi = the moment shown. Only ink
+  // drawn between them (and still there at hi) is on screen.
+  const lo = tl.querySelector('input.lo');
+  const range = tl.querySelector('input.hi');
+  const sel = tl.querySelector('.sel');
+  const paintSel = () => {
+    const max = Math.max(1, +range.max);
+    sel.style.left = `${(+lo.value / max) * 100}%`;
+    sel.style.right = `${100 - (+range.value / max) * 100}%`;
+  };
+  const showRange = () => { paintSel(); og_timeline_range(+lo.value, +range.value); };
   const playBtn = tl.querySelector('.play');
   let tlOpen = false;
   let playing = null;
@@ -289,16 +315,36 @@ export async function start({ mode = 'app' } = {}) {
     if (on) {
       const s = status();
       if (!s.timeline || s.timeline.n === 0) { say('Nothing drawn yet — the timeline fills in as you draw'); tlOpen = false; tl.hidden = true; }
-      else og_timeline(s.timeline.n - 1);
+      else { lo.max = range.max = s.timeline.n - 1; lo.value = 0; range.value = s.timeline.n - 1; showRange(); }
     } else og_timeline(-1);
   }
   tl.querySelector('.close').onclick = () => openTimeline(false);
   tl.querySelector('.restore').onclick = () => { stopPlay(); og_timeline_restore(); tlOpen = false; tl.hidden = true; };
-  range.oninput = () => { stopPlay(); og_timeline(+range.value); setFlag('scrubbed'); };
+  range.oninput = () => {
+    stopPlay();
+    if (+range.value < +lo.value) range.value = lo.value;
+    showRange();
+    setFlag('scrubbed');
+  };
+  lo.oninput = () => {
+    stopPlay();
+    if (+lo.value > +range.value) lo.value = range.value;
+    showRange();
+    setFlag('scrubbed');
+  };
+  // Whichever handle is nearer the pointer gets the drag (they can overlap).
+  tl.querySelector('.dual').addEventListener('pointerdown', e => {
+    const r = e.currentTarget.getBoundingClientRect();
+    const v = ((e.clientX - r.left) / r.width) * Math.max(1, +range.max);
+    const nearLo = Math.abs(v - +lo.value) < Math.abs(v - +range.value) || (+lo.value === +range.value && v < +lo.value);
+    lo.style.zIndex = nearLo ? 2 : 1;
+    range.style.zIndex = nearLo ? 1 : 2;
+  }, true);
   playBtn.onclick = () => {
     if (playing) return stopPlay();
     const n = +range.max + 1;
-    if (+range.value >= n - 1) range.value = 0;
+    // Play the window: the right handle runs from the left one to the end.
+    if (+range.value >= n - 1) range.value = lo.value;
     // About 8 seconds for the whole history, never slower than one change per tick.
     const step = Math.max(1, Math.round(n / 260));
     playBtn.innerHTML = svg('pause');
@@ -307,7 +353,7 @@ export async function start({ mode = 'app' } = {}) {
     playing = setInterval(() => {
       const v = Math.min(n - 1, +range.value + step);
       range.value = v;
-      og_timeline(v);
+      showRange();
       if (v >= n - 1) stopPlay();
     }, 30);
   };
@@ -620,10 +666,18 @@ export async function start({ mode = 'app' } = {}) {
       // Timeline.
       const t = s.timeline;
       if (tlOpen && t) {
-        range.max = Math.max(0, t.n - 1);
-        if (!playing && document.activeElement !== range) range.value = t.i;
-        tl.querySelector('.at').textContent = when(t.t);
-        tl.querySelector('.count').textContent = `change ${t.i + 1} of ${t.n}`;
+        lo.max = range.max = Math.max(0, t.n - 1);
+        if (!playing && document.activeElement !== range && document.activeElement !== lo) {
+          range.value = t.i;
+          lo.value = t.from;
+        }
+        paintSel();
+        tl.querySelector('.at').innerHTML = t.from > 0
+          ? `Only what was drawn from <b>${when(t.tFrom)}</b> to <b>${when(t.t)}</b>`
+          : `Showing the canvas at <b>${when(t.t)}</b>`;
+        tl.querySelector('.count').textContent = t.from > 0
+          ? `changes ${t.from + 1}–${t.i + 1} of ${t.n}`
+          : `change ${t.i + 1} of ${t.n}`;
       }
 
       // Tour.

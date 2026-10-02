@@ -36,7 +36,7 @@ use winit::window::{Window, WindowId};
 
 use render::{Renderer, UiPaint, Wet};
 use timeline::{Bookmark, Timeline};
-use ui::{Action, Menu, Tool, UiState};
+use ui::{Action, Tool, UiState};
 
 #[cfg(not(target_arch = "wasm32"))]
 use ogpaper_file::OgpFile;
@@ -103,6 +103,8 @@ pub struct App {
     /// Viewing the canvas as it was after timeline event `.0`; `.1` holds the
     /// real deleted flags to put back.
     tl_view: Option<(usize, Vec<bool>)>,
+    /// Left handle of the timeline window (first event shown).
+    tl_from: usize,
     /// Animated flight to a view (bookmarks); any input cancels it.
     fly: Option<Camera>,
     fly_last: Instant,
@@ -146,7 +148,7 @@ impl App {
         load_user_fonts();
         egui_ctx.set_theme(egui::Theme::Light);
         let mut ui = UiState::default();
-        (ui.hotbar, ui.inventory) = hotbar::load();
+        ui.load_saved(hotbar::load());
         Self {
             window: None,
             gpu: None,
@@ -162,6 +164,7 @@ impl App {
             edit: edit::EditState::default(),
             bookmarks: Vec::new(),
             tl_view: None,
+            tl_from: 0,
             fly: None,
             fly_last: Instant::now(),
             #[cfg(not(target_arch = "wasm32"))]
@@ -339,7 +342,7 @@ impl App {
     fn begin(&mut self, p: [f64; 2], pressure: f32) {
         // A tap on the canvas while a menu is open only closes the menu.
         if self.ui.menu_open() {
-            self.ui.menu = Menu::None;
+            self.ui.close_menus();
             self.gesture = Gesture::None;
             self.redraw();
             return;
@@ -1036,6 +1039,12 @@ impl App {
             (false, _, "l") => {
                 (self.ui.tool, self.ui.shape.kind) = (Tool::Shapes, shapes::ShapeKind::Line)
             }
+            // Toolbars: [ and ] cycle, Alt+1–9 jump.
+            (false, _, "[") => self.ui.cycle_bar(-1),
+            (false, _, "]") => self.ui.cycle_bar(1),
+            (false, _, d) if self.mods.alt_key() && d.len() == 1 && ("1"..="9").contains(&d) => {
+                self.ui.switch_bar(d.parse::<usize>().expect("digit") - 1);
+            }
             // The quick bar's slots.
             (false, _, d) if d.len() == 1 && ("1"..="9").contains(&d) => {
                 let i = d.parse::<usize>().expect("digit") - 1;
@@ -1224,24 +1233,37 @@ impl App {
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     /// Show the canvas as it was after event `i` (None: back to now).
     fn timeline_show(&mut self, i: Option<usize>) {
-        match i {
-            Some(i) if !self.timeline.events.is_empty() => {
+        self.timeline_range(i.map(|i| (0, i)));
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    /// Show only the ink drawn between events `from` and `to` that is still
+    /// there at `to` (None: back to now). `from` = 0 is the whole history up
+    /// to `to`.
+    fn timeline_range(&mut self, range: Option<(usize, usize)>) {
+        match range {
+            Some((from, i)) if !self.timeline.events.is_empty() => {
                 if self.gesture == Gesture::Ink || self.gesture == Gesture::Erase {
                     self.end(true);
                 }
                 let i = i.min(self.timeline.events.len() - 1);
+                let from = from.min(i);
                 let live = match self.tl_view.take() {
                     Some((_, live)) => live,
                     None => self.scene.strokes.iter().map(|s| !s.deleted).collect(),
                 };
-                let vis = self.timeline.visible_after(i, self.scene.strokes.len());
+                let vis = self
+                    .timeline
+                    .visible_between(from, i, self.scene.strokes.len());
                 timeline::apply(&mut self.scene, &vis);
                 self.tl_view = Some((i, live));
+                self.tl_from = from;
             }
             _ => {
                 if let Some((_, live)) = self.tl_view.take() {
                     timeline::apply(&mut self.scene, &live);
                 }
+                self.tl_from = 0;
             }
         }
         self.redraw();
@@ -1251,6 +1273,15 @@ impl App {
     /// Keep the moment on screen: leave the timeline with the canvas as it
     /// was then. Recorded as one erase and one redraw, so it can be undone.
     fn timeline_restore(&mut self) {
+        // Restore always means the whole canvas at the window's end: the left
+        // handle only narrows the view and never erases older work.
+        if let Some((i, _)) = self.tl_view {
+            if self.tl_from > 0 {
+                let full = self.timeline.visible_after(i, self.scene.strokes.len());
+                timeline::apply(&mut self.scene, &full);
+            }
+        }
+        self.tl_from = 0;
         let Some((_, live)) = self.tl_view.take() else {
             return;
         };
@@ -1289,6 +1320,7 @@ impl App {
         let changes = !matches!(
             c,
             Cmd::Timeline(_)
+                | Cmd::TimelineRange(_)
                 | Cmd::BookmarkGo(_)
                 | Cmd::Home
                 | Cmd::Menu(_)
@@ -1373,6 +1405,7 @@ impl App {
                 self.paste_text(&t, at.map(|p| [p[0] * k, p[1] * k]));
             }
             Cmd::Timeline(i) => self.timeline_show(i),
+            Cmd::TimelineRange(r) => self.timeline_range(r),
             Cmd::TimelineRestore => self.timeline_restore(),
         }
         if changes {
@@ -1425,11 +1458,13 @@ impl App {
             .collect();
         let ev = &self.timeline.events;
         let tl = format!(
-            "{{\"on\":{},\"i\":{},\"n\":{},\"t\":{},\"first\":{},\"last\":{}}}",
+            "{{\"on\":{},\"i\":{},\"from\":{},\"tFrom\":{},\"n\":{},\"t\":{},\"first\":{},\"last\":{}}}",
             self.tl_view.is_some(),
             self.tl_view
                 .as_ref()
                 .map_or(ev.len().saturating_sub(1), |v| v.0),
+            self.tl_from,
+            ev.get(self.tl_from).map_or(0, |e| e.t),
             ev.len(),
             self.tl_view
                 .as_ref()
@@ -1534,7 +1569,7 @@ impl App {
             self.action(a);
         }
         if std::mem::take(&mut self.ui.presets_dirty) {
-            hotbar::save(&self.ui.hotbar, &self.ui.inventory);
+            hotbar::save(&self.ui.saved());
         }
         if out
             .viewport_output
