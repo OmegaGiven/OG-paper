@@ -159,6 +159,10 @@ fn fs_dab(in: VsOut) -> @location(0) vec4<f32> {
     let size = in.kind.z;
     // One pixel, in dab units.
     let aa = 2.0 / max(size, 1.0);
+    // Derivatives must be taken in uniform control flow (WebGPU rejects the
+    // shader otherwise), so before branching on the tip.
+    let cells = in.tex / max(in.kind.w, 0.01);
+    let paa = fwidth(cells.x) + fwidth(cells.y);
     var a = 0.0;
     var col = in.color.rgb;
     switch tip {
@@ -209,8 +213,6 @@ fn fs_dab(in: VsOut) -> @location(0) vec4<f32> {
             a = edge(max(abs(uv.x), abs(uv.y) / 0.16), hardness, aa);
         }
         case 11u: { // pattern inside a round tip
-            let cells = in.tex / max(in.kind.w, 0.01);
-            let paa = fwidth(cells.x) + fwidth(cells.y);
             a = edge(r, hardness, aa) * pattern(u32(in.kind.y + 0.5), cells, max(paa, 0.001));
         }
         case 12u: { // heart (exact distance, point down)

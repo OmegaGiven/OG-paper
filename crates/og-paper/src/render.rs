@@ -1242,6 +1242,30 @@ fn make_bind(
 
 #[cfg(test)]
 mod tests {
+    /// Derivatives (fwidth, dpdx, dpdy) only at a function's top level:
+    /// WebGPU (Chrome's Tint) rejects them in branches on per-pixel values,
+    /// which naga's validator lets through, and every frame then draws black.
+    #[test]
+    fn derivatives_stay_in_uniform_control_flow() {
+        for (name, src) in [
+            ("shader.wgsl", include_str!("shader.wgsl")),
+            ("dab.wgsl", include_str!("dab.wgsl")),
+            ("grid.wgsl", include_str!("grid.wgsl")),
+            ("image.wgsl", include_str!("image.wgsl")),
+        ] {
+            for (i, line) in src.lines().enumerate() {
+                let code = line.split("//").next().unwrap_or("");
+                if ["fwidth(", "dpdx(", "dpdy("]
+                    .iter()
+                    .any(|d| code.contains(d))
+                {
+                    let indent = line.len() - line.trim_start().len();
+                    assert!(indent <= 4, "{name}:{}: derivative inside a block", i + 1);
+                }
+            }
+        }
+    }
+
     /// The canvas shader parses and validates (wgpu would only find out at
     /// pipeline creation, on the user's machine).
     #[test]
