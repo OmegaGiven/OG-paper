@@ -133,6 +133,8 @@ impl App {
         let _ = &open_path;
         // Light controls on light paper, whatever the system theme.
         let egui_ctx = egui::Context::default();
+        #[cfg(not(target_arch = "wasm32"))]
+        load_user_fonts();
         egui_ctx.set_theme(egui::Theme::Light);
         Self {
             window: None,
@@ -636,6 +638,61 @@ impl App {
         self.load_scene(Scene::new(), home_camera());
     }
 
+    /// Pick a font file, keep a copy in the fonts folder and use it.
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+    fn add_font_dialog(&mut self) {
+        let Some(p) = rfd::FileDialog::new()
+            .add_filter("Font (TrueType / OpenType)", &["ttf", "otf", "TTF", "OTF"])
+            .pick_file()
+        else {
+            return;
+        };
+        let bytes = match std::fs::read(&p) {
+            Ok(b) => b,
+            Err(e) => return self.say(format!("Could not read {}: {e}", p.display())),
+        };
+        match font::register(None, "Yours", bytes, true) {
+            Ok((id, name)) => {
+                if let (Some(dir), Some(file)) = (fonts_dir(), p.file_name()) {
+                    let _ = std::fs::create_dir_all(&dir)
+                        .and_then(|_| std::fs::copy(&p, dir.join(file)));
+                }
+                self.font_added(id, &name);
+            }
+            Err(e) => self.say(format!("Could not add {}: {e}", p.display())),
+        }
+    }
+
+    /// Use a font that was just added.
+    fn font_added(&mut self, id: font::FontId, name: &str) {
+        self.ui.text.font = id;
+        if self.ui.tool == Tool::Select && self.ui.sel.kind == ui::SelKind::Text {
+            self.ui.sel.text.font = id;
+        }
+        self.say(format!("Added the font {name}"));
+        self.redraw();
+    }
+
+    /// Let egui draw every outline font (the font picker shows each name in
+    /// its own font).
+    fn sync_egui_fonts(&mut self) {
+        for f in font::list() {
+            if f.outline && !self.ui.egui_fonts.contains(&f.name) {
+                if let Some(bytes) = font::outline_data(&f.name) {
+                    self.egui_ctx.add_font(egui::epaint::text::FontInsert::new(
+                        &f.name,
+                        egui::FontData::from_owned(bytes.to_vec()),
+                        vec![egui::epaint::text::InsertFontFamily {
+                            family: egui::FontFamily::Name(f.name.as_str().into()),
+                            priority: egui::epaint::text::FontPriority::Highest,
+                        }],
+                    ));
+                    self.ui.egui_fonts.insert(f.name.clone());
+                }
+            }
+        }
+    }
+
     fn action(&mut self, a: Action) {
         match a {
             Action::Duplicate
@@ -672,6 +729,10 @@ impl App {
             Action::FullScreen => web::emit("fullscreen"),
             #[cfg(target_arch = "wasm32")]
             Action::Tour => web::emit("tour"),
+            #[cfg(target_arch = "wasm32")]
+            Action::AddFont => web::emit("font"),
+            #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+            Action::AddFont => self.add_font_dialog(),
             #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
             Action::Open => {
                 if let Some(p) = rfd::FileDialog::new()
@@ -1029,7 +1090,12 @@ impl App {
         use web::Cmd;
         let changes = !matches!(
             c,
-            Cmd::Timeline(_) | Cmd::BookmarkGo(_) | Cmd::Home | Cmd::Menu(_) | Cmd::Text(None)
+            Cmd::Timeline(_)
+                | Cmd::BookmarkGo(_)
+                | Cmd::Home
+                | Cmd::Menu(_)
+                | Cmd::Text(None)
+                | Cmd::FontAdded(..)
         );
         match c {
             Cmd::Load(bytes, demo) => {
@@ -1091,6 +1157,7 @@ impl App {
                 self.text_commit();
             }
             Cmd::Text(None) => self.text_cancel(),
+            Cmd::FontAdded(id, name) => self.font_added(id, &name),
             Cmd::Timeline(i) => self.timeline_show(i),
             Cmd::TimelineRestore => self.timeline_restore(),
         }
@@ -1235,6 +1302,7 @@ impl App {
         self.ui.can_undo = self.history.can_undo();
         self.ui.can_redo = self.history.can_redo();
         self.ui.strokes = self.scene.strokes.iter().filter(|s| !s.deleted).count();
+        self.sync_egui_fonts();
         let pointer_down = self.egui_ctx.input(|i| i.pointer.any_down());
         self.sync_sel_panel(pointer_down);
         self.build_overlay();
@@ -1516,6 +1584,43 @@ fn file_label(p: &std::path::Path) -> String {
 /// App-private storage on platforms without a home directory (Android).
 #[cfg(not(target_arch = "wasm32"))]
 static DATA_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// Fonts you added: ~/OG Paper/fonts/ (Android: the app's storage).
+#[cfg(not(target_arch = "wasm32"))]
+fn fonts_dir() -> Option<PathBuf> {
+    let dir = match DATA_DIR.get() {
+        Some(d) => d.join("fonts"),
+        None => std::env::var_os("HOME")
+            .or_else(|| std::env::var_os("USERPROFILE"))
+            .map(PathBuf::from)?
+            .join("OG Paper")
+            .join("fonts"),
+    };
+    Some(dir)
+}
+
+/// Register the fonts saved in the fonts folder.
+#[cfg(not(target_arch = "wasm32"))]
+fn load_user_fonts() {
+    let Some(dir) = fonts_dir() else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for e in entries.flatten() {
+        let p = e.path();
+        let ext = p
+            .extension()
+            .map(|x| x.to_string_lossy().to_lowercase())
+            .unwrap_or_default();
+        if ext == "ttf" || ext == "otf" {
+            if let Ok(bytes) = std::fs::read(&p) {
+                let _ = font::register(None, "Yours", bytes, true);
+            }
+        }
+    }
+}
 
 /// Where a new canvas is saved before you pick a name: ~/OG Paper/.
 #[cfg(not(target_arch = "wasm32"))]

@@ -2250,6 +2250,7 @@ dependencies = [
  "ogpaper-file",
  "pollster",
  "rfd",
+ "ttf-parser",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",

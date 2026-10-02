@@ -16,7 +16,7 @@ Also done, beyond the milestones:
 
 - **Radial controls:** tool fan in rings, undo/redo, a collapsible tool panel (per-tool settings, the color dial, selection actions), and a ⚙ settings fan for canvas commands (replaced the ☰ menu); icons drawn as recognizable objects.
 - **Ink styles:** dashed and dotted strokes, opacity.
-- **Text tool:** single-stroke fonts (normal, hand-drawn, code).
+- **Text tool:** 11 bundled outline fonts, three single-stroke fonts, and your own TTF / OTF fonts.
 - **Web app:** browser autosave, `.ogpt` offline copies (download / open), bookmarks with fly-to, a timeline (scrub, play back, restore), and try mode at `/try/` with a demo canvas 10^45 deep and a guided tour.
 - **Builds:** Windows, macOS, Linux, Android and web in CI; web deployed to GitHub Pages.
 

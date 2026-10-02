@@ -31,7 +31,7 @@ Proprietary infinite-canvas apps such as Endless Paper keep your work in undocum
 
 - **Ink:** pen with pressure, marker, highlighter; solid, dashed or dotted; any opacity; stroke eraser, eyedropper, color dial with custom colors, per-brush width, unlimited undo/redo.
 - **Shapes:** one Shapes tool with rectangle, ellipse, diamond, triangle, star, polygon, line and arrow, and Excalidraw-style options: hachure / cross-hatch / zigzag / solid fill, fill color, stroke width and style, sloppiness (clean to cartoon), sharp or round edges, curved and elbow lines, nine arrowheads, opacity.
-- **Text:** three single-stroke fonts (normal, hand-drawn, code), sizes, alignment, color, opacity. Text is ink, so it stays sharp at any zoom.
+- **Text:** 11 bundled open-licensed fonts (hand-drawn, marker, sans, serif, mono, display) plus three single-stroke fonts, or add your own `.ttf` / `.otf`; sizes, alignment, color, opacity. Text is ink (letters are filled outlines), so it stays sharp at any zoom.
 - **Select and edit:** tap or drag a box to select; move, resize, rotate, flip, duplicate, delete, bring to front / send to back, copy / paste, and restyle anything from the tool panel; double-tap a text to edit it. Each edit is one undo step.
 - **Endless canvas:** pan and zoom with no limit; content at any depth stays exact.
 - **Controls:** round buttons that fan out like radial menus, in rings when there are many items: tools (bottom right), ↩ undo / ↪ redo, a tool panel (top left, collapsible) with the current tool's or the selection's settings, and ⚙ settings (top right) for New canvas, Open, Save copy, Home, Bookmarks, Timeline, Full screen and the tour. Keyboard shortcuts for every tool (see [`docs/DESIGN.md`](docs/DESIGN.md#where-it-stands-2026-10-01)).

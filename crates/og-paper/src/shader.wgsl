@@ -33,8 +33,9 @@ struct StrokeRec {
 };
 
 const BRUSH_FILL: u32 = 3u;
-// Fill polygons are tested point by point; outlines longer than this are cut.
-const FILL_MAX_PTS: u32 = 512u;
+// Fill polygons are tested point by point; outlines longer than this are cut
+// (font.rs keeps letters within it).
+const FILL_MAX_PTS: u32 = 1024u;
 
 fn texel(i: u32) -> vec2<i32> {
     return vec2<i32>(i32(i % g.tex_w), i32(i / g.tex_w));
@@ -237,7 +238,9 @@ fn coverage(in: VsOut) -> f32 {
 }
 
 // Fill: inside test (non-zero winding) over the outline, with 1 px AA from
-// the distance to the nearest edge.
+// the distance to the nearest edge. A point with pressure < 0 marks a join
+// between two contours (a letter's hole or second part): its edge counts for
+// the winding (the joins cancel out) but is not an edge you can see.
 fn fill_coverage(in: VsOut) -> f32 {
     let s = stroke_at(in.ids.x);
     let o = in.xform.xy;
@@ -247,8 +250,11 @@ fn fill_coverage(in: VsOut) -> f32 {
     var dmin = 1e30;
     var prev = o + point_at(s.start + n - 1u).xy * scale;
     for (var i = 0u; i < n; i = i + 1u) {
-        let cur = o + point_at(s.start + i).xy * scale;
-        dmin = min(dmin, seg_dist(in.px, prev, cur).x);
+        let q = point_at(s.start + i);
+        let cur = o + q.xy * scale;
+        if (q.z >= 0.0) {
+            dmin = min(dmin, seg_dist(in.px, prev, cur).x);
+        }
         let crosses = (prev.y <= in.px.y) != (cur.y <= in.px.y);
         if (crosses) {
             let x = prev.x + (in.px.y - prev.y) / (cur.y - prev.y) * (cur.x - prev.x);

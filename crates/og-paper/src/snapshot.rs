@@ -24,7 +24,7 @@
 use num_bigint::BigInt;
 use ogpaper_core::{Brush, Camera, CellAddr, Dash, Scene, Style};
 
-use crate::font::{Align, Font};
+use crate::font::{self, Align};
 use crate::objects::{Group, ObjData, Objects, TextStyle};
 use crate::shapes::{ArrowType, FillStyle, Geom, Head, ShapeKind, ShapeStyle, Sloppiness};
 use crate::timeline::{Bookmark, Event, Timeline};
@@ -45,8 +45,10 @@ pub struct Snapshot {
 /// - shape: kind, stroke u32, fill u32, fill style, dash, sloppiness, round,
 ///   sides, start head, end head, arrow type, opacity (u8 unless noted),
 ///   geometry, width f64, seed u32
-/// - text: text (u32 length + UTF-8), font u8, align u8, color u32,
-///   opacity u8, geometry, size f64, seed u32
+/// - text (kind 2): text (u32 length + UTF-8), font name (u32 length +
+///   UTF-8), align u8, color u32, opacity u8, geometry, size f64, seed u32.
+///   Kind 1 (older) had a font number u8 (0 single-line, 1 single-line
+///   hand, 2 single-line mono) instead of the name.
 ///
 /// Geometry: centre f64 x2, half size f64 x2, rotation f64, point count u32,
 /// points f64 x2. All lengths in the group cell's units.
@@ -94,10 +96,12 @@ pub fn put_data(b: &mut Vec<u8>, d: &ObjData) {
             size,
             seed,
         } => {
-            b.push(1);
+            b.push(2);
             b.extend_from_slice(&(text.len() as u32).to_le_bytes());
             b.extend_from_slice(text.as_bytes());
-            b.push(style.font as u8);
+            let name = font::name_of(style.font);
+            b.extend_from_slice(&(name.len() as u32).to_le_bytes());
+            b.extend_from_slice(name.as_bytes());
             b.push(style.align as u8);
             b.extend_from_slice(&style.color.to_le_bytes());
             b.push(style.opacity);
@@ -382,10 +386,16 @@ impl<'a> Reader<'a> {
                     seed,
                 })
             }
-            1 => {
+            1 | 2 => {
                 let n = self.u32()? as usize;
                 let text = String::from_utf8_lossy(self.take(n)?).into_owned();
-                let font = Font::from_u8(self.u8()?);
+                let font = if kind == 1 {
+                    // Ids 0-2 are the single-line fonts in every registry.
+                    (self.u8()?).min(2) as font::FontId
+                } else {
+                    let n = self.u32()? as usize;
+                    font::id_of(&String::from_utf8_lossy(self.take(n)?))
+                };
                 let align = Align::from_u8(self.u8()?);
                 let color = self.u32()?;
                 let opacity = self.u8()?;
@@ -461,7 +471,10 @@ mod tests {
             cell: deep.clone(),
             data: ObjData::Text {
                 text: "Hi ✨".into(),
-                style: TextStyle::default(),
+                style: TextStyle {
+                    font: font::id_of("Lora"),
+                    ..TextStyle::default()
+                },
                 geom: Geom {
                     center: [0.5, 0.5],
                     half: [0.2, 0.1],

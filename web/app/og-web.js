@@ -5,7 +5,7 @@
 // Used by /app/ and /try/; the canvas itself is the Rust app in ./pkg/.
 
 import init, {
-  og_load, og_demo, og_blank, og_status, og_requests, og_set_menu, og_text_request, og_text_done,
+  og_load, og_demo, og_blank, og_status, og_requests, og_set_menu, og_text_request, og_text_done, og_font_add,
   og_bookmark_add, og_bookmark_go, og_bookmark_remove, og_bookmark_rename,
   og_timeline, og_timeline_restore, og_snapshot_request, og_snapshot_take,
 } from './pkg/og_paper.js';
@@ -91,34 +91,79 @@ const TOUR = [
 
 function idb() {
   return new Promise((ok, fail) => {
-    const r = indexedDB.open('og-paper', 1);
-    r.onupgradeneeded = () => r.result.createObjectStore('canvases');
+    // v2 adds the fonts you loaded.
+    const r = indexedDB.open('og-paper', 2);
+    r.onupgradeneeded = () => {
+      const db = r.result;
+      if (!db.objectStoreNames.contains('canvases')) db.createObjectStore('canvases');
+      if (!db.objectStoreNames.contains('fonts')) db.createObjectStore('fonts');
+    };
     r.onsuccess = () => ok(r.result);
     r.onerror = () => fail(r.error);
   });
 }
-async function idbGet(key) {
+async function idbGet(key, store = 'canvases') {
   try {
     const db = await idb();
     return await new Promise((ok, fail) => {
-      const q = db.transaction('canvases').objectStore('canvases').get(key);
+      const q = db.transaction(store).objectStore(store).get(key);
       q.onsuccess = () => ok(q.result || null);
       q.onerror = () => fail(q.error);
     });
   } catch (e) { console.warn('storage', e); return null; }
 }
-async function idbPut(key, value) {
+async function idbPut(key, value, store = 'canvases') {
   try {
     const db = await idb();
     await new Promise((ok, fail) => {
-      const t = db.transaction('canvases', 'readwrite');
-      t.objectStore('canvases').put(value, key);
+      const t = db.transaction(store, 'readwrite');
+      t.objectStore(store).put(value, key);
       t.oncomplete = ok;
       t.onerror = () => fail(t.error);
     });
     return true;
   } catch (e) { console.warn('storage', e); return false; }
 }
+async function idbAll(store) {
+  try {
+    const db = await idb();
+    return await new Promise((ok, fail) => {
+      const q = db.transaction(store).objectStore(store).getAll();
+      q.onsuccess = () => ok(q.result || []);
+      q.onerror = () => fail(q.error);
+    });
+  } catch (e) { console.warn('storage', e); return []; }
+}
+
+// ---- fonts -------------------------------------------------------------------
+
+/** Let the page use a font too (the text box shows what you type in it). */
+async function pageFont(name, bytes) {
+  try {
+    const face = new FontFace(name, bytes);
+    await face.load();
+    document.fonts.add(face);
+  } catch (e) { console.warn('font', name, e); }
+}
+
+/** The bundled fonts (in the background), then the ones you added. */
+async function loadFonts() {
+  try {
+    const list = await (await fetch(new URL('./fonts/fonts.json', import.meta.url))).json();
+    await Promise.all(list.map(async f => {
+      const bytes = new Uint8Array(await (await fetch(new URL(`./fonts/${f.file}`, import.meta.url))).arrayBuffer());
+      const r = og_font_add(f.name, f.category, bytes, false, false);
+      if (r.startsWith('!')) console.warn(f.name, r);
+      else pageFont(f.name, bytes);
+    }));
+  } catch (e) { console.warn('fonts', e); }
+  for (const f of await idbAll('fonts')) {
+    if (!f || !f.bytes) continue;
+    const r = og_font_add(undefined, 'Yours', f.bytes, true, false);
+    if (!r.startsWith('!')) pageFont(r, f.bytes);
+  }
+}
+
 const lsGet = k => { try { return JSON.parse(localStorage.getItem(k)); } catch { return null; } };
 const lsSet = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* private mode */ } };
 
@@ -342,6 +387,9 @@ export async function start({ mode = 'app' } = {}) {
     area.value = req.text || '';
     // Cap height ~ 0.7 em.
     area.style.fontSize = `${Math.max(10, req.size / 0.7)}px`;
+    area.style.fontFamily = req.single
+      ? 'ui-monospace, monospace'
+      : `"${(req.font || '').replace(/"/g, '')}", system-ui, sans-serif`;
     area.style.left = `${req.x}px`;
     area.style.top = `${req.y}px`;
     area.style.color = req.color || '#1c1c24';
@@ -361,6 +409,23 @@ export async function start({ mode = 'app' } = {}) {
     grow();
     area.focus();
   }
+
+  // ---- your own fonts ----
+  const fontPicker = el('input', { type: 'file', accept: '.ttf,.otf,font/ttf,font/otf', hidden: '' });
+  root.append(fontPicker);
+  function pickFont() {
+    fontPicker.value = '';
+    fontPicker.click();
+  }
+  fontPicker.onchange = async () => {
+    const f = fontPicker.files[0];
+    if (!f) return;
+    const bytes = new Uint8Array(await f.arrayBuffer());
+    const r = og_font_add(undefined, 'Yours', bytes, true, true);
+    if (r.startsWith('!')) { say(`Could not add ${f.name}: ${r.slice(1)}`); return; }
+    pageFont(r, bytes);
+    await idbPut(r, { name: r, bytes }, 'fonts');
+  };
 
   function newCanvas() {
     if (status().strokes > 0 && !confirm('Start a new, blank canvas? The current one is replaced (save a copy first to keep it).')) return;
@@ -388,6 +453,7 @@ export async function start({ mode = 'app' } = {}) {
     if (c && e.target === c) { c.tabIndex = 0; c.focus(); }
   });
   syncMenu();
+  loadFonts();
   const saved = await idbGet(key);
   og_load(saved, isTry);
   if (isTry && !saved) {
@@ -428,6 +494,7 @@ export async function start({ mode = 'app' } = {}) {
       else if (r === 'fullscreen') fullScreen();
       else if (r === 'tour' && cards.tour) show('tour');
       else if (r === 'text') openTextEditor();
+      else if (r === 'font') pickFont();
     }
     if (s.ready) {
       // Bookmarks list (only rebuilt when it changes).

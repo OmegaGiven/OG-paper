@@ -13,7 +13,7 @@ use std::f32::consts::{FRAC_PI_2, PI};
 use egui::{pos2, vec2, Align2, Color32, Id, Order, Pos2, Rect, Sense, Shape, Stroke, Vec2};
 use ogpaper_core::{Brush, Dash};
 
-use crate::font::{Align, Font, ALIGNS, FONTS};
+use crate::font::{self, Align, ALIGNS};
 use crate::objects::TextStyle;
 use crate::shapes::{
     self, ArrowType, FillStyle, Head, ShapeKind, ShapeStyle, Sloppiness, ARROW_TYPES, FILLS, HEADS,
@@ -244,6 +244,8 @@ pub struct UiState {
     pub text_size: f32,
     /// The selection, for the panel (app fills it; panel edits it).
     pub sel: SelStyle,
+    /// Font names egui can draw (the picker shows each name in its font).
+    pub egui_fonts: std::collections::HashSet<String>,
     /// Text being typed (native editor): the screen point and the text.
     pub text_edit: Option<(Pos2, String)>,
     pub overlay: Overlay,
@@ -294,6 +296,7 @@ impl Default for UiState {
             text: TextStyle::default(),
             text_size: 24.0,
             sel: SelStyle::default(),
+            egui_fonts: Default::default(),
             text_edit: None,
             overlay: Overlay::default(),
         }
@@ -336,6 +339,8 @@ pub enum Action {
     FlipH,
     FlipV,
     EditText,
+    /// Load a font file of your own.
+    AddFont,
     TextDone,
     TextCancel,
     // Web page panels.
@@ -705,6 +710,8 @@ fn tool_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) 
                                 Some(&mut st.text_size),
                                 touch,
                                 &mut dial_hue,
+                                &st.egui_fonts,
+                                actions,
                             ),
                             Tool::Select => {
                                 select_actions(ui, st.sel.kind, actions);
@@ -734,6 +741,8 @@ fn tool_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) 
                                         None,
                                         touch,
                                         &mut dial_hue,
+                                        &st.egui_fonts,
+                                        actions,
                                     ),
                                     _ => false,
                                 }
@@ -1045,27 +1054,12 @@ fn text_section(
     size: Option<&mut f32>,
     touch: bool,
     dial_hue: &mut f32,
+    egui_fonts: &std::collections::HashSet<String>,
+    actions: &mut Vec<Action>,
 ) -> bool {
     let sz = if touch { 34.0 } else { 28.0 };
     heading(ui, "Font");
-    chips(
-        ui,
-        &FONTS,
-        &mut tx.font,
-        sz * 1.9,
-        |f| f.name().into(),
-        |p, c, _, f| {
-            text_chip(
-                p,
-                c,
-                match f {
-                    Font::Normal => "Normal",
-                    Font::Hand => "Hand",
-                    Font::Code => "Code",
-                },
-            )
-        },
-    );
+    font_picker(ui, tx, touch, egui_fonts, actions);
     if let Some(size) = size {
         heading(ui, "Size");
         let mut pick = [16.0f32, 24.0, 36.0, 56.0]
@@ -1116,6 +1110,83 @@ fn text_section(
     let pick = color_dial(ui, &mut c, false, dial_hue, touch);
     tx.color = u32c(c);
     pick
+}
+
+/// Fonts by style, each name shown in its own font, plus "Add your own".
+fn font_picker(
+    ui: &mut egui::Ui,
+    tx: &mut TextStyle,
+    touch: bool,
+    egui_fonts: &std::collections::HashSet<String>,
+    actions: &mut Vec<Action>,
+) {
+    const ORDER: [&str; 8] = [
+        "Hand-drawn",
+        "Marker",
+        "Sans",
+        "Serif",
+        "Mono",
+        "Display",
+        "Yours",
+        "Single-line",
+    ];
+    let rank = |c: &str| ORDER.iter().position(|o| *o == c).unwrap_or(ORDER.len());
+    let mut fonts = font::list();
+    fonts.sort_by_key(|f| (rank(&f.category), f.id));
+    let row = if touch { 26.0 } else { 20.0 };
+    egui::Frame::new()
+        .fill(Color32::WHITE)
+        .stroke(Stroke::new(1.0, EDGE))
+        .corner_radius(8.0)
+        .inner_margin(4.0)
+        .show(ui, |ui| {
+            egui::ScrollArea::vertical()
+                .id_salt("fonts")
+                .max_height(row * 7.5)
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    let mut cat = String::new();
+                    for f in fonts {
+                        if f.category != cat {
+                            cat = f.category.clone();
+                            ui.label(egui::RichText::new(&cat).small().weak());
+                        }
+                        let mut text =
+                            egui::RichText::new(&f.name).size(if touch { 18.0 } else { 15.0 });
+                        if egui_fonts.contains(&f.name) {
+                            text = text.family(egui::FontFamily::Name(f.name.as_str().into()));
+                        }
+                        if !f.available {
+                            text = text.weak();
+                        }
+                        let resp = ui
+                            .add_sized(
+                                vec2(ui.available_width(), row),
+                                egui::Button::selectable(tx.font == f.id, text),
+                            )
+                            .on_hover_text(if f.available {
+                                f.name.clone()
+                            } else if f.category == "Not on this device" {
+                                format!(
+                                    "{}: not on this device (add it with \"Add your own font\")",
+                                    f.name
+                                )
+                            } else {
+                                format!("{}: loading…", f.name)
+                            });
+                        if resp.clicked() {
+                            tx.font = f.id;
+                        }
+                    }
+                });
+        });
+    if ui
+        .button("+ Add your own font…")
+        .on_hover_text("A TrueType (.ttf) or OpenType (.otf) file")
+        .clicked()
+    {
+        actions.push(Action::AddFont);
+    }
 }
 
 /// Buttons for what can be done with a selection.

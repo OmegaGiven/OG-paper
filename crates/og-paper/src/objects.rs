@@ -13,13 +13,14 @@ use std::collections::HashMap;
 
 use ogpaper_core::{Brush, Camera, CellAddr, Dash, Scene, Style};
 
-use crate::font::{self, Align, Font};
+use crate::font::{self, Align, FontId, Mark};
 use crate::shapes::{self, Geom, Piece, ShapeStyle};
 
 /// How text looks.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct TextStyle {
-    pub font: Font,
+    /// A font in the registry (stored by name in files).
+    pub font: FontId,
     pub align: Align,
     pub color: u32,
     /// 0..=255.
@@ -29,7 +30,7 @@ pub struct TextStyle {
 impl Default for TextStyle {
     fn default() -> Self {
         Self {
-            font: Font::Hand,
+            font: font::default_font(),
             align: Align::Left,
             color: shapes::rgba(28, 28, 36, 255),
             opacity: 255,
@@ -326,31 +327,36 @@ pub fn text_box(text: &str, style: &TextStyle, size: f64) -> [f64; 2] {
 }
 
 fn text_pieces(text: &str, style: &TextStyle, g: &Geom, size: f64, seed: u32) -> Vec<Piece> {
-    let (strokes, b) = font::layout(text, style.font, style.align, seed);
+    let (marks, b) = font::layout(text, style.font, style.align, seed);
     let u = size / 6.0;
     let (s, c) = g.rot.sin_cos();
     let [r, gg, bb, a] = style.color.to_le_bytes();
     let color = u32::from_le_bytes([r, gg, bb, ((a as u32 * style.opacity as u32) / 255) as u8]);
-    let width = size
-        * if style.font == Font::Code {
-            0.07
-        } else {
-            0.085
-        };
-    strokes
+    // Single-line fonts: pen width from the size (thinner for mono).
+    let width = size * if style.font == 2 { 0.07 } else { 0.085 };
+    let place = |p: &[f64; 2]| {
+        let (x, y) = ((p[0] - b[0] * 0.5) * u, (p[1] - b[1] * 0.5) * u);
+        [g.center[0] + x * c - y * s, g.center[1] + x * s + y * c]
+    };
+    marks
         .into_iter()
-        .map(|st| Piece {
-            pts: st
-                .iter()
-                .map(|p| {
-                    let (x, y) = ((p[0] - b[0] * 0.5) * u, (p[1] - b[1] * 0.5) * u);
-                    [g.center[0] + x * c - y * s, g.center[1] + x * s + y * c]
-                })
-                .collect(),
-            width,
-            brush: Brush::Marker,
-            dash: Dash::Solid,
-            color,
+        .map(|m| match m {
+            Mark::Line(pts) => Piece {
+                pts: pts.iter().map(place).collect(),
+                width,
+                brush: Brush::Marker,
+                dash: Dash::Solid,
+                color,
+                bridges: vec![],
+            },
+            Mark::Fill(pts, bridges) => Piece {
+                pts: pts.iter().map(place).collect(),
+                width: 0.0,
+                brush: Brush::Fill,
+                dash: Dash::Solid,
+                color,
+                bridges,
+            },
         })
         .collect()
 }
@@ -386,7 +392,13 @@ pub fn emit(scene: &mut Scene, cell: &CellAddr, data: &ObjData, z: (f64, f64)) -
             p.width.max(1e-12)
         };
         let (anchor, local, side) = Scene::anchor_for_min(cell, &p.pts, min);
-        let pts: Vec<[f32; 4]> = local.iter().map(|l| [l[0], l[1], 1.0, 0.0]).collect();
+        // Fill polygons mark their contour joins with pressure -1.
+        let mut pts: Vec<[f32; 4]> = local.iter().map(|l| [l[0], l[1], 1.0, 0.0]).collect();
+        for &j in &p.bridges {
+            if let Some(q) = pts.get_mut(j as usize) {
+                q[2] = -1.0;
+            }
+        }
         let style = Style {
             width: (p.width / side) as f32,
             color: p.color,

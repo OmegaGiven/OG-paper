@@ -33,6 +33,8 @@ pub enum Cmd {
     TimelineRestore,
     /// The page's text editor finished (Some: the text) or was cancelled.
     Text(Option<String>),
+    /// A font of the user's was added: use it.
+    FontAdded(crate::font::FontId, String),
 }
 
 /// Counters the try-mode tour checks off.
@@ -250,6 +252,36 @@ pub fn og_text_request() -> String {
 #[wasm_bindgen]
 pub fn og_text_done(text: Option<String>) {
     push(Cmd::Text(text));
+}
+
+/// Register a font (bytes of a .ttf / .otf file). `name`: the name to list
+/// it under (bundled fonts); without it, the file's family name. `user`:
+/// added by the user (listed under "Yours"). `select`: make it the text
+/// font now. Returns the font's name, or "!" and the reason it could not be
+/// added.
+#[wasm_bindgen]
+pub fn og_font_add(
+    name: Option<String>,
+    category: String,
+    bytes: Vec<u8>,
+    user: bool,
+    select: bool,
+) -> String {
+    match crate::font::register(name.as_deref(), &category, bytes, user) {
+        Ok((id, name)) => {
+            if select {
+                push(Cmd::FontAdded(id, name.clone()));
+            } else {
+                WINDOW.with(|w| {
+                    if let Some(w) = &*w.borrow() {
+                        w.request_redraw();
+                    }
+                });
+            }
+            name
+        }
+        Err(e) => format!("!{e}"),
+    }
 }
 
 /// Ask for a snapshot of the canvas; pick it up with `og_snapshot_take`.

@@ -1,0 +1,13 @@
+[
+  { "name": "Architects Daughter", "file": "ArchitectsDaughter.ttf", "category": "Hand-drawn" },
+  { "name": "Patrick Hand", "file": "PatrickHand.ttf", "category": "Hand-drawn" },
+  { "name": "Indie Flower", "file": "IndieFlower.ttf", "category": "Hand-drawn" },
+  { "name": "Permanent Marker", "file": "PermanentMarker.ttf", "category": "Marker" },
+  { "name": "Nunito", "file": "Nunito.ttf", "category": "Sans" },
+  { "name": "Comic Neue", "file": "ComicNeue.ttf", "category": "Sans" },
+  { "name": "Lora", "file": "Lora.ttf", "category": "Serif" },
+  { "name": "JetBrains Mono", "file": "JetBrainsMono.ttf", "category": "Mono" },
+  { "name": "Courier Prime", "file": "CourierPrime.ttf", "category": "Mono" },
+  { "name": "Bangers", "file": "Bangers.ttf", "category": "Display" },
+  { "name": "Pacifico", "file": "Pacifico.ttf", "category": "Display" }
+]

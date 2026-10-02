@@ -311,13 +311,15 @@ impl App {
         {
             let [r, g, b, _] = t.style.color.to_le_bytes();
             crate::web::text_request(format!(
-                "{{\"x\":{:.1},\"y\":{:.1},\"size\":{:.1},\"color\":\"#{:02x}{:02x}{:02x}\",\"text\":{}}}",
+                "{{\"x\":{:.1},\"y\":{:.1},\"size\":{:.1},\"color\":\"#{:02x}{:02x}{:02x}\",\"font\":{},\"single\":{},\"text\":{}}}",
                 px[0] / ppp,
                 px[1] / ppp,
                 t.size * self.cam.ppc() / ppp,
                 r,
                 g,
                 b,
+                crate::web::json_str(&crate::font::name_of(t.style.font)),
+                crate::font::is_single_line(t.style.font),
                 crate::web::json_str(&t.text)
             ));
         }
