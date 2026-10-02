@@ -202,6 +202,8 @@ pub enum AppItem {
     Export,
     /// Paste from the clipboard (for touch screens, with no Ctrl+V).
     Paste,
+    /// Saved drawings to place copies of.
+    Library,
     /// Background grid: off, lines, dots.
     Grid,
     New,
@@ -222,6 +224,7 @@ impl AppItem {
             AppItem::Search => "Search text",
             AppItem::Export => "Export",
             AppItem::Paste => "Paste",
+            AppItem::Library => "Library",
             AppItem::Grid => "Grid",
             AppItem::New => "New canvas",
             AppItem::Open => "Open",
@@ -240,6 +243,7 @@ impl AppItem {
             AppItem::Search => Action::Search,
             AppItem::Export => Action::Export,
             AppItem::Paste => Action::Paste,
+            AppItem::Library => Action::Library,
             AppItem::Grid => Action::Grid,
             AppItem::New => Action::New,
             AppItem::Open => Action::Open,
@@ -252,6 +256,14 @@ impl AppItem {
             AppItem::Tour => Action::Tour,
         }
     }
+}
+
+/// A sticker in the desktop library panel.
+pub struct LibEntry {
+    pub name: String,
+    /// Thumbnail (RGBA, square), until it is a texture.
+    pub thumb: Option<(usize, Vec<u8>)>,
+    pub tex: Option<egui::TextureHandle>,
 }
 
 /// The background grid.
@@ -340,6 +352,10 @@ pub struct UiState {
     pub sel: SelStyle,
     /// A picture is being cropped.
     pub cropping: bool,
+    /// Desktop library: open, and its stickers (name, thumbnail pixels,
+    /// texture once made).
+    pub lib_open: bool,
+    pub lib: Vec<LibEntry>,
     /// Font names egui can draw (the picker shows each name in its font).
     pub egui_fonts: std::collections::HashSet<String>,
     /// Text being typed (native editor): the screen point and the text.
@@ -413,12 +429,15 @@ impl Default for UiState {
                 AppItem::Save,
                 AppItem::Export,
                 AppItem::Paste,
+                AppItem::Library,
                 AppItem::Picture,
                 AppItem::Home,
                 AppItem::Search,
                 AppItem::Grid,
             ],
             cropping: false,
+            lib_open: false,
+            lib: Vec::new(),
             search_open: false,
             search_focus: false,
             search_query: String::new(),
@@ -585,6 +604,13 @@ pub enum Action {
     ToBack,
     FlipH,
     FlipV,
+    /// Save the selection to the library.
+    SaveSticker,
+    /// Open the library.
+    Library,
+    /// Library (desktop): place sticker i, delete it.
+    LibPlace(usize),
+    LibDelete(usize),
     /// Crop the selected picture; finish; give up.
     Crop,
     CropDone,
@@ -839,6 +865,9 @@ pub fn draw(ctx: &egui::Context, st: &mut UiState) -> Vec<Action> {
 
     if st.search_open {
         search_panel(ctx, st);
+    }
+    if st.lib_open {
+        library_panel(ctx, st, &mut actions);
     }
 
     if let Some(msg) = &st.message {
@@ -2156,6 +2185,13 @@ fn select_actions(
         if kind == SelKind::Text && ui.button("Edit text").clicked() {
             actions.push(Action::EditText);
         }
+        if ui
+            .button("Add to library")
+            .on_hover_text("Save it to place copies anywhere (Settings > Library)")
+            .clicked()
+        {
+            actions.push(Action::SaveSticker);
+        }
         if kind == SelKind::Images
             && count == 1
             && ui
@@ -2449,6 +2485,23 @@ fn app_icon(p: &egui::Painter, c: Pos2, r: f32, item: AppItem, grid: GridMode) {
         p.add(Shape::line(pts.iter().map(|v| c + *v * s).collect(), st));
     };
     match item {
+        AppItem::Library => {
+            // Two books on a shelf, one leaning.
+            line(&[vec2(-0.9, 0.95), vec2(0.95, 0.95)]);
+            line(&[
+                vec2(-0.75, 0.95),
+                vec2(-0.75, -0.75),
+                vec2(-0.3, -0.75),
+                vec2(-0.3, 0.95),
+            ]);
+            line(&[vec2(-0.75, -0.35), vec2(-0.3, -0.35)]);
+            line(&[
+                vec2(-0.1, 0.95),
+                vec2(0.35, -0.8),
+                vec2(0.8, -0.65),
+                vec2(0.4, 0.95),
+            ]);
+        }
         AppItem::Paste => {
             // A clipboard.
             line(&[
@@ -3323,6 +3376,78 @@ fn search_panel(ctx: &egui::Context, st: &mut UiState) {
                     if close {
                         st.search_open = false;
                     }
+                });
+        });
+}
+
+/// Desktop library: thumbnails of saved stickers; click one to place a copy
+/// in the middle of the screen.
+fn library_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) {
+    let screen = ctx.content_rect();
+    let w = 340.0f32.min(screen.width() - 24.0);
+    egui::Area::new(Id::new("library"))
+        .order(Order::Foreground)
+        .pivot(Align2::RIGHT_TOP)
+        .fixed_pos(pos2(screen.right() - 12.0, screen.top() + 96.0))
+        .show(ctx, |ui| {
+            ui.style_mut().visuals = egui::Visuals::light();
+            egui::Frame::new()
+                .fill(FACE)
+                .stroke(Stroke::new(1.0, EDGE))
+                .corner_radius(12.0)
+                .inner_margin(10.0)
+                .show(ui, |ui| {
+                    ui.set_width(w);
+                    ui.horizontal(|ui| {
+                        ui.strong("Library");
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button("Close").clicked() {
+                                st.lib_open = false;
+                            }
+                        });
+                    });
+                    if st.lib.is_empty() {
+                        ui.label(
+                            egui::RichText::new(
+                                "Empty. Select something and press Add to library in the selection panel.",
+                            )
+                            .weak(),
+                        );
+                        return;
+                    }
+                    ui.label(egui::RichText::new("Click to place a copy").small().weak());
+                    let cell = 96.0;
+                    egui::ScrollArea::vertical().max_height(screen.height() * 0.6).show(ui, |ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            for (i, e) in st.lib.iter_mut().enumerate() {
+                                if e.tex.is_none() {
+                                    if let Some((side, px)) = e.thumb.take() {
+                                        let img = egui::ColorImage::from_rgba_unmultiplied([side, side], &px);
+                                        e.tex = Some(ctx.load_texture(format!("lib{i}"), img, Default::default()));
+                                    }
+                                }
+                                ui.vertical(|ui| {
+                                    ui.set_width(cell);
+                                    let resp = match &e.tex {
+                                        Some(t) => ui.add(
+                                            egui::Button::image(egui::Image::new(t).fit_to_exact_size(vec2(cell - 8.0, cell - 8.0)))
+                                                .fill(Color32::WHITE),
+                                        ),
+                                        None => ui.add_sized([cell, cell], egui::Button::new("…")),
+                                    };
+                                    if resp.on_hover_text(&e.name).clicked() {
+                                        actions.push(Action::LibPlace(i));
+                                    }
+                                    ui.horizontal(|ui| {
+                                        ui.label(egui::RichText::new(&e.name).small());
+                                        if ui.small_button("×").on_hover_text("Remove from the library").clicked() {
+                                            actions.push(Action::LibDelete(i));
+                                        }
+                                    });
+                                });
+                            }
+                        });
+                    });
                 });
         });
 }

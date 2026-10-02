@@ -36,6 +36,8 @@ pub enum Cmd {
     Search,
     /// Fly to search result group `g`.
     SearchGo(u32),
+    /// Place a library sticker (its bytes) at a point (CSS px) or the middle.
+    Sticker(Vec<u8>, Option<[f64; 2]>),
     /// Export: format, only the selection, paper background.
     Export(String, bool, bool),
     /// Make the moment shown in the timeline the current canvas (undoable).
@@ -78,6 +80,7 @@ thread_local! {
     static OUTBOX: RefCell<Vec<&'static str>> = RefCell::default();
     static TEXT_REQ: RefCell<String> = RefCell::default();
     static SEARCH: RefCell<String> = RefCell::default();
+    static STICKER: RefCell<Option<Vec<u8>>> = RefCell::default();
     static EXPORT: RefCell<Option<Result<Vec<u8>, String>>> = RefCell::default();
     static SEARCH_OUT: RefCell<String> = RefCell::new("[]".into());
     static HAS_SELECTION: Cell<bool> = const { Cell::new(false) };
@@ -205,6 +208,7 @@ pub fn og_set_menu(items: &str) {
                 "search" => AppItem::Search,
                 "export" => AppItem::Export,
                 "paste" => AppItem::Paste,
+                "library" => AppItem::Library,
                 "picture" => AppItem::Picture,
                 "bookmarks" => AppItem::Bookmarks,
                 "timeline" => AppItem::Timeline,
@@ -302,6 +306,31 @@ pub fn og_export_take() -> Result<Option<Vec<u8>>, JsValue> {
 
 pub fn set_export(r: Result<Vec<u8>, String>) {
     EXPORT.with(|e| *e.borrow_mut() = Some(r));
+}
+
+/// A sticker just made from the selection (see "sticker" requests).
+pub fn set_sticker(b: Vec<u8>) {
+    STICKER.with(|s| *s.borrow_mut() = Some(b));
+}
+
+/// Take the sticker made for an "Add to library".
+#[wasm_bindgen]
+pub fn og_sticker_take() -> Option<Vec<u8>> {
+    STICKER.with(|s| s.borrow_mut().take())
+}
+
+/// A sticker's thumbnail as SVG, `px` CSS pixels square ("" if unreadable).
+#[wasm_bindgen]
+pub fn og_sticker_svg(bytes: Vec<u8>, px: f64) -> String {
+    crate::library::Sticker::decode(&bytes)
+        .map(|s| crate::export::sticker_svg(&s, px))
+        .unwrap_or_default()
+}
+
+/// Place a copy of a sticker at (x, y) CSS px, or the middle of the screen.
+#[wasm_bindgen]
+pub fn og_sticker_place(bytes: Vec<u8>, x: Option<f64>, y: Option<f64>) {
+    push(Cmd::Sticker(bytes, at(x, y)));
 }
 
 /// Fly to a search result.

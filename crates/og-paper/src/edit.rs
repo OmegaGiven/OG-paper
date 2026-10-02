@@ -978,6 +978,10 @@ impl App {
     }
 
     /// Strokes of the selection in draw order, with the objects they belong to.
+    pub(crate) fn sel_sorted_pub(&self) -> Vec<ObjRef> {
+        self.sel_sorted()
+    }
+
     fn sel_sorted(&self) -> Vec<ObjRef> {
         let mut v = self.edit.selection.clone();
         v.sort_by(|a, b| {

@@ -723,6 +723,100 @@ impl Page {
     }
 }
 
+/// A sticker's picture as SVG, `px` CSS pixels square, for the library.
+pub fn sticker_svg(s: &crate::library::Sticker, px: f64) -> String {
+    use crate::library::Item as S;
+    let pad = px * 0.06;
+    let k = px - 2.0 * pad;
+    let map = |p: [f64; 2]| [px * 0.5 + p[0] * k, px * 0.5 + p[1] * k];
+    let mut items = Vec::new();
+    let mut ink =
+        |style: ogpaper_core::Style, pts: Vec<[f64; 3]>, crop: Option<(u64, f64, [f64; 4])>| {
+            let (rgb, alpha) = rgb_of(style.color);
+            if style.brush == Brush::Fill {
+                if let Some((id, opacity, crop)) = crop {
+                    if pts.len() == 4 {
+                        items.push(Item::Image {
+                            id,
+                            corners: std::array::from_fn(|i| [pts[i][0], pts[i][1]]),
+                            opacity,
+                            crop,
+                        });
+                    }
+                } else if style.color != 0 {
+                    items.push(Item::Fill {
+                        rgb,
+                        alpha,
+                        pts: pts.iter().map(|q| [q[0], q[1]]).collect(),
+                    });
+                }
+                return;
+            }
+            let width = (style.width as f64 * k).max(0.3);
+            let hl = style.brush == Brush::Highlighter;
+            items.push(Item::Ink {
+                rgb: if hl {
+                    rgb.map(|c| (255.0 + (c as f64 - 255.0) * 0.55).round() as u8)
+                } else {
+                    rgb
+                },
+                alpha: if hl { 1.0 } else { alpha },
+                darken: hl,
+                dash: if hl { Dash::Solid } else { style.dash },
+                unit: width.max(1.0),
+                runs: runs_of(&pts, style.brush, width),
+            });
+        };
+    for it in &s.items {
+        match it {
+            S::Ink { style, pts } => {
+                let p = pts
+                    .iter()
+                    .map(|q| {
+                        let m = map([q[0] as f64, q[1] as f64]);
+                        [m[0], m[1], q[2] as f64]
+                    })
+                    .collect();
+                ink(*style, p, None);
+            }
+            S::Obj(d) => {
+                let pic = match d {
+                    crate::objects::ObjData::Image {
+                        id, opacity, crop, ..
+                    } => Some((*id, *opacity as f64 / 255.0, crop.map(|v| v as f64))),
+                    _ => None,
+                };
+                for pc in d.pieces() {
+                    let p = pc
+                        .pts
+                        .iter()
+                        .map(|&q| {
+                            let m = map(q);
+                            [m[0], m[1], 1.0]
+                        })
+                        .collect();
+                    let style = ogpaper_core::Style {
+                        width: (pc.width) as f32,
+                        color: pc.color,
+                        brush: pc.brush,
+                        dash: pc.dash,
+                    };
+                    ink(style, p, pic);
+                }
+            }
+        }
+    }
+    let images: Images = s.images.iter().cloned().collect();
+    Page {
+        items,
+        origin: [0.0, 0.0],
+        size: [px, px],
+        ppp: 1.0,
+        background: false,
+    }
+    .svg(&images)
+}
+
 /// More digits, for transforms of very small pictures.
 fn num6(v: f64) -> String {
     let s = format!("{:.6}", v);

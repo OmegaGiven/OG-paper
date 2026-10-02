@@ -9,6 +9,7 @@ import init, {
   og_copy, og_paste_own, og_paste_image, og_paste_text, og_pdf_page,
   og_bookmark_add, og_bookmark_go, og_bookmark_remove, og_bookmark_rename,
   og_search, og_search_results, og_search_go, og_export, og_export_take, og_has_selection,
+  og_sticker_take, og_sticker_svg, og_sticker_place,
   og_timeline, og_timeline_range, og_timeline_restore, og_snapshot_request, og_snapshot_take,
 } from './pkg/og_paper.js';
 
@@ -47,6 +48,13 @@ const CSS = `
 .og-list .go small { color: var(--muted); display: block; font-size: 12px; }
 .og-list .mini { border: 0; background: none; color: var(--muted); padding: 6px; font-size: 13px; }
 .og-fmt { flex-wrap: wrap; gap: 6px; }
+.og-lib { display: grid; grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); gap: 8px; margin-top: 8px; max-height: 60vh; overflow: auto; }
+.og-sticker { position: relative; border: 1px solid var(--edge); border-radius: 10px; background: #fff; padding: 4px; cursor: pointer; display: flex; flex-direction: column; align-items: center; }
+.og-sticker img { width: 100%; aspect-ratio: 1; object-fit: contain; pointer-events: none; }
+.og-sticker span { font-size: 12px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.og-sticker .mini { position: absolute; top: 2px; padding: 2px 5px; }
+.og-sticker [data-act=rename] { left: 2px; }
+.og-sticker [data-act=remove] { right: 2px; }
 .og-opt { display: flex; align-items: center; gap: 8px; margin: 8px 0 0; font-size: 14px; }
 .og-opt select { padding: 4px 6px; border-radius: 7px; border: 1px solid var(--edge); }
 .og-found { color: var(--muted); font-size: 13px; margin: 6px 0 0; }
@@ -110,12 +118,13 @@ const TOUR = [
 
 function idb() {
   return new Promise((ok, fail) => {
-    // v2 adds the fonts you loaded.
-    const r = indexedDB.open('og-paper', 2);
+    // v2 adds the fonts you loaded, v3 the library.
+    const r = indexedDB.open('og-paper', 3);
     r.onupgradeneeded = () => {
       const db = r.result;
       if (!db.objectStoreNames.contains('canvases')) db.createObjectStore('canvases');
       if (!db.objectStoreNames.contains('fonts')) db.createObjectStore('fonts');
+      if (!db.objectStoreNames.contains('library')) db.createObjectStore('library');
     };
     r.onsuccess = () => ok(r.result);
     r.onerror = () => fail(r.error);
@@ -142,6 +151,17 @@ async function idbPut(key, value, store = 'canvases') {
     });
     return true;
   } catch (e) { console.warn('storage', e); return false; }
+}
+async function idbDel(key, store) {
+  try {
+    const db = await idb();
+    await new Promise((ok, fail) => {
+      const t = db.transaction(store, 'readwrite');
+      t.objectStore(store).delete(key);
+      t.oncomplete = ok;
+      t.onerror = () => fail(t.error);
+    });
+  } catch (e) { console.warn('storage', e); }
 }
 async function idbAll(store) {
   try {
@@ -367,11 +387,78 @@ export async function start({ mode = 'app' } = {}) {
     if (open !== 'export') show('export');
   };
 
+  // ---- library (sticker book) ----
+  cards.library = card('Library');
+  cards.library.append(
+    el('p', { class: 'og-found' }, ''),
+    el('div', { class: 'og-lib' }));
+  const libGrid = cards.library.querySelector('.og-lib');
+  const libNote = cards.library.querySelector('.og-found');
+  const STICKER = 'application/x-og-sticker';
+  let lib = [];
+  const thumbs = new Map();
+  async function libLoad() {
+    lib = (await idbAll('library')).sort((a, b) => b.t - a.t);
+    libNote.textContent = lib.length
+      ? 'Tap to place a copy, or drag one onto the canvas.'
+      : 'Empty. Select something, then press “Add to library” in the selection panel.';
+    libGrid.replaceChildren(...lib.map(it => {
+      let url = thumbs.get(it.id);
+      if (!url) {
+        url = URL.createObjectURL(new Blob([og_sticker_svg(it.bytes, 160)], { type: 'image/svg+xml' }));
+        thumbs.set(it.id, url);
+      }
+      const d = el('div', { class: 'og-sticker', draggable: 'true', 'data-id': it.id, title: it.name });
+      d.append(el('img', { src: url, alt: it.name, draggable: 'false' }),
+        el('span', {}, ''),
+        el('button', { class: 'mini', 'data-act': 'rename', 'aria-label': 'Rename', title: 'Rename' }, '✎'),
+        el('button', { class: 'mini', 'data-act': 'remove', 'aria-label': 'Remove', title: 'Remove' }, '×'));
+      d.querySelector('span').textContent = it.name;
+      return d;
+    }));
+  }
+  libGrid.onclick = async e => {
+    const d = e.target.closest('.og-sticker');
+    if (!d) return;
+    const it = lib.find(x => x.id === d.dataset.id);
+    if (!it) return;
+    const act = e.target.closest('button')?.dataset.act;
+    if (act === 'remove') {
+      if (!confirm(`Remove “${it.name}” from the library?`)) return;
+      await idbDel(it.id, 'library');
+      URL.revokeObjectURL(thumbs.get(it.id) || '');
+      thumbs.delete(it.id);
+      return libLoad();
+    }
+    if (act === 'rename') {
+      const name = prompt('Name', it.name);
+      if (name) { it.name = name; await idbPut(it.id, it, 'library'); libLoad(); }
+      return;
+    }
+    og_sticker_place(it.bytes);
+    if (matchMedia('(max-width: 700px)').matches) show(null);
+  };
+  libGrid.addEventListener('dragstart', e => {
+    const d = e.target.closest('.og-sticker');
+    if (d) { e.dataTransfer.setData(STICKER, d.dataset.id); e.dataTransfer.effectAllowed = 'copy'; }
+  });
+  async function stickerSave() {
+    const bytes = og_sticker_take();
+    if (!bytes) return;
+    const name = prompt('Name it for the library', `Sticker ${lib.length + 1}`);
+    if (name === null) return;
+    const id = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
+    if (await idbPut(id, { id, name: name || 'Sticker', bytes, t: Date.now() }, 'library')) {
+      say('Added to the library');
+      await libLoad();
+    } else say('Could not save it — is site storage blocked?');
+  }
+
   // ---- the settings fan's items (drawn by the app) ----
   const standalone = matchMedia('(display-mode: fullscreen), (display-mode: standalone)').matches;
   const canFs = document.documentElement.requestFullscreen && !standalone;
   const syncMenu = () => {
-    const items = ['new', 'open', 'save', 'export', 'paste', 'picture', 'search', 'bookmarks', 'timeline', 'home', 'grid'];
+    const items = ['new', 'open', 'save', 'export', 'paste', 'library', 'picture', 'search', 'bookmarks', 'timeline', 'home', 'grid'];
     if (canFs && !document.fullscreenElement) items.push('fullscreen');
     if (isTry) items.push('tour');
     og_set_menu(items.join(','));
@@ -687,6 +774,12 @@ export async function start({ mode = 'app' } = {}) {
     return rows.length ? rows.join('\n') : null;
   }
   async function pasteFrom(dt, at) {
+    const sid = dt.getData?.(STICKER);
+    if (sid) {
+      const it = lib.find(x => x.id === sid);
+      if (it) og_sticker_place(it.bytes, at?.[0], at?.[1]);
+      return;
+    }
     const text = dt.getData('text/plain');
     if (text === CLIP_MARK) { og_paste_own(); return; }
     // Spreadsheets also put a picture of the cells on the clipboard: the table wins.
@@ -824,6 +917,8 @@ export async function start({ mode = 'app' } = {}) {
       else if (r === 'new') newCanvas();
       else if (r === 'bookmarks') show('bookmarks');
       else if (r === 'export') openExport();
+      else if (r === 'library') { if (open !== 'library') { libLoad(); show('library'); } else show(null); }
+      else if (r === 'sticker') stickerSave();
       else if (r === 'paste') pasteButton();
       else if (r === 'search') { if (open !== 'search') show('search'); sForm.q.focus(); sForm.q.select(); }
       else if (r === 'timeline') openTimeline(!tlOpen);

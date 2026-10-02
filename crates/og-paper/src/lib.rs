@@ -15,6 +15,7 @@ mod export;
 mod font;
 mod hotbar;
 mod images;
+mod library;
 mod objects;
 mod pdf;
 mod prefs;
@@ -810,6 +811,35 @@ impl App {
             | Action::FlipH
             | Action::FlipV
             | Action::EditText => self.sel_action(a),
+            Action::SaveSticker => self.save_sticker(),
+            #[cfg(target_arch = "wasm32")]
+            Action::Library => web::emit("library"),
+            #[cfg(not(target_arch = "wasm32"))]
+            Action::Library => {
+                self.ui.lib_open = !self.ui.lib_open;
+                if self.ui.lib_open {
+                    self.lib_refresh();
+                }
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            Action::LibPlace(i) => {
+                if let Some((p, _)) = library::store::list().get(i) {
+                    match std::fs::read(p)
+                        .map_err(|e| e.to_string())
+                        .and_then(|b| library::Sticker::decode(&b))
+                    {
+                        Ok(s) => self.place_sticker(&s, None),
+                        Err(e) => self.say(format!("Could not place it: {e}")),
+                    }
+                }
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            Action::LibDelete(i) => {
+                if let Some((p, _)) = library::store::list().get(i) {
+                    let _ = std::fs::remove_file(p);
+                }
+                self.lib_refresh();
+            }
             Action::Crop => self.crop_start(),
             Action::CropDone => self.crop_done(),
             Action::CropCancel => self.crop_cancel(),
@@ -933,6 +963,64 @@ impl App {
             #[allow(unreachable_patterns)]
             _ => self.say("Not available on this platform yet"),
         }
+    }
+
+    /// Save the selection to the library: a file on desktop, the page's
+    /// storage on the web.
+    fn save_sticker(&mut self) {
+        let Some(s) = self.sticker_from_selection() else {
+            return self.say("Select something to add it to the library");
+        };
+        let bytes = s.encode();
+        #[cfg(target_arch = "wasm32")]
+        {
+            web::set_sticker(bytes);
+            web::emit("sticker");
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        match library::store::save("Sticker", &bytes) {
+            Ok(_) => {
+                self.say("Added to the library (Settings > Library)");
+                if self.ui.lib_open {
+                    self.lib_refresh();
+                }
+            }
+            Err(e) => self.say(format!("Could not save it: {e}")),
+        }
+    }
+
+    /// Reload the desktop library panel, with thumbnails.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn lib_refresh(&mut self) {
+        const SIDE: u32 = 176;
+        self.ui.lib = library::store::list()
+            .into_iter()
+            .map(|(p, name)| {
+                let thumb = std::fs::read(&p)
+                    .ok()
+                    .and_then(|b| library::Sticker::decode(&b).ok())
+                    .and_then(|s| {
+                        let svg = export::sticker_svg(&s, SIDE as f64);
+                        let tree = resvg::usvg::Tree::from_str(&svg, &Default::default()).ok()?;
+                        let mut pix = resvg::tiny_skia::Pixmap::new(SIDE, SIDE)?;
+                        resvg::render(&tree, Default::default(), &mut pix.as_mut());
+                        let px: Vec<u8> = pix
+                            .pixels()
+                            .iter()
+                            .flat_map(|c| {
+                                let c = c.demultiply();
+                                [c.red(), c.green(), c.blue(), c.alpha()]
+                            })
+                            .collect();
+                        Some((SIDE as usize, px))
+                    });
+                ui::LibEntry {
+                    name,
+                    thumb,
+                    tex: None,
+                }
+            })
+            .collect();
     }
 
     /// Save the selection (if any) or the view as PNG, JPEG, SVG or PDF; the
@@ -1475,6 +1563,7 @@ impl App {
             Cmd::Timeline(_)
                 | Cmd::TimelineRange(_)
                 | Cmd::Search
+                | Cmd::Sticker(..)
                 | Cmd::SearchGo(_)
                 | Cmd::Export(..)
                 | Cmd::BookmarkGo(_)
@@ -1582,6 +1671,13 @@ impl App {
                 web::set_search_results(format!("[{}]", json.join(",")));
             }
             Cmd::SearchGo(g) => self.search_go(g),
+            Cmd::Sticker(bytes, at) => match library::Sticker::decode(&bytes) {
+                Ok(s) => {
+                    let k = web_dpr() as f64;
+                    self.place_sticker(&s, at.map(|p| [p[0] * k, p[1] * k]))
+                }
+                Err(e) => self.say(format!("Could not place it: {e}")),
+            },
             Cmd::Export(fmt, selection, background) => {
                 let r = match export::Format::from_key(&fmt) {
                     Some(f) => self.export(
