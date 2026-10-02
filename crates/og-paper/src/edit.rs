@@ -263,6 +263,12 @@ impl App {
             self.text_commit();
             return;
         }
+        // Tapping an existing text (or table) edits it instead of starting a
+        // new one on top.
+        if let Some(g) = self.text_at(p) {
+            self.text_edit_group(g);
+            return;
+        }
         let ppc = self.cam.ppc();
         self.edit.text = Some(TextEdit {
             at: self.px_to_cam(p),
@@ -300,6 +306,10 @@ impl App {
             let d = rot2([-geom.half[0], -geom.half[1]], geom.rot);
             [geom.center[0] + d[0], geom.center[1] + d[1]]
         };
+        // The text panel shows this text's settings, so new texts continue
+        // in the same style.
+        self.ui.text = style;
+        self.ui.text_size = (size * self.cam.ppc() / self.ppp()) as f32;
         self.edit.text = Some(TextEdit {
             at: tl,
             rot: geom.rot,
@@ -420,6 +430,37 @@ impl App {
     // ---- selection -------------------------------------------------------
 
     /// The object under screen point `p`, topmost first.
+    /// The topmost text or table whose box contains screen point `p` (px),
+    /// with a little slack, so a tap between letters still finds it.
+    pub(crate) fn text_at(&self, p: [f64; 2]) -> Option<u32> {
+        let q = self.px_to_cam(p);
+        let slack = crate::PICK_PT * self.ppp() / self.cam.ppc();
+        let mut best: Option<(f64, u32)> = None;
+        for (g, grp) in self.objs.groups.iter().enumerate() {
+            if !matches!(grp.data, ObjData::Text { .. } | ObjData::Table { .. }) {
+                continue;
+            }
+            if !self.objs.alive(&self.scene, &ObjRef::Group(g as u32)) {
+                continue;
+            }
+            let geom = to_cam(&grp.cell, &grp.data, &self.cam).geom().clone();
+            let d = rot2([q[0] - geom.center[0], q[1] - geom.center[1]], -geom.rot);
+            if d[0].abs() > geom.half[0] + slack || d[1].abs() > geom.half[1] + slack {
+                continue;
+            }
+            // Topmost: the highest z among its strokes.
+            let z = grp
+                .strokes
+                .iter()
+                .map(|&id| self.scene.strokes[id as usize].z as f64)
+                .fold(f64::MIN, f64::max);
+            if best.is_none_or(|(bz, _)| z >= bz) {
+                best = Some((z, g as u32));
+            }
+        }
+        best.map(|(_, g)| g)
+    }
+
     fn obj_at(&self, p: [f64; 2]) -> Option<ObjRef> {
         let ids = hit::strokes_near(
             &self.scene,
@@ -497,14 +538,9 @@ impl App {
         });
         self.edit.last_tap = Some((Instant::now(), p));
         if double {
-            if let Some(ObjRef::Group(g)) = self.obj_at(p) {
-                if matches!(
-                    self.objs.groups[g as usize].data,
-                    ObjData::Text { .. } | ObjData::Table { .. }
-                ) {
-                    self.text_edit_group(g);
-                    return;
-                }
+            if let Some(g) = self.text_at(p) {
+                self.text_edit_group(g);
+                return;
             }
         }
         // Handles of the current selection.

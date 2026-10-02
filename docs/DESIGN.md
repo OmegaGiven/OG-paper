@@ -34,6 +34,7 @@ Phase 0 is done ([`PHASE0.md`](PHASE0.md)); Phase 1 milestone M1 is done, plus s
 | Canvas | Unbounded pan and zoom (tested past 10^45 in the app, 10^48 in the spike); content of any size at any depth |
 | Files | Desktop and Android: autosave to `.ogp` (SQLite), New / Open / Save As. Web: autosave in browser storage, download / open `.ogpt` offline copies |
 | Bookmarks (web) | Save the current view; rename, delete; tap to fly there (animated zoom + pan across any depth, framed for the screen size) |
+| Editing text | With the **Text** tool, tap an existing text (anywhere in its box) to edit it; with **Select**, double-tap it, press Enter, or use *Edit text* in the panel. Editing loads the text's font, size and color into the text panel; restyle a selected text from the panel |
 | Timeline (web) | Every stroke appearing or disappearing is time-stamped. Two handles set a window: the right one is the moment shown, the left one hides ink first drawn before it, so one stretch of work can be viewed on its own. Play runs the right handle from the left one; "Restore" makes the right-hand moment current (undoable; the left handle only filters the view) |
 | Try mode (web) | `/try/` opens the app on a demo canvas: 15 worlds nested 1024x each inside dots, down to 10^45, plus a guided checklist |
 

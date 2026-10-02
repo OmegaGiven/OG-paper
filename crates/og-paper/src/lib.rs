@@ -974,6 +974,11 @@ impl App {
                 self.sel_action(Action::Delete);
                 return true;
             }
+            // Enter on a selected text (or table) opens it for editing.
+            Key::Named(NamedKey::Enter) if selecting && self.edit.text.is_none() => {
+                self.sel_action(Action::EditText);
+                return true;
+            }
             Key::Named(NamedKey::Escape) => {
                 self.edit.selection.clear();
                 self.redraw();
