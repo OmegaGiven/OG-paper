@@ -8,7 +8,7 @@
 //! panel bottom-left (width, pressure, color dial) and a settings button
 //! top-right whose fan holds the canvas commands. Icons are drawn, not taken from a font.
 
-use std::f32::consts::{FRAC_PI_2, PI};
+use std::f32::consts::{FRAC_PI_2, PI, TAU};
 
 use egui::{pos2, vec2, Align2, Color32, Id, Order, Pos2, Rect, Sense, Shape, Stroke, Vec2};
 use ogpaper_core::{Brush, Dash};
@@ -35,15 +35,18 @@ pub enum Tool {
     Text,
     /// Select, move, resize, rotate, restyle and reorder what is drawn.
     Select,
+    /// Select by drawing a loop around things; then like Select.
+    Lasso,
 }
 
 /// The tool fan, inner ring first.
-const TOOLS: [Tool; 9] = [
+const TOOLS: [Tool; 10] = [
     Tool::Pen,
     Tool::Marker,
     Tool::Highlighter,
     Tool::Eraser,
     Tool::Select,
+    Tool::Lasso,
     Tool::Shapes,
     Tool::Text,
     Tool::Picker,
@@ -71,12 +74,19 @@ impl Tool {
             Tool::Shapes => "Shapes",
             Tool::Text => "Text",
             Tool::Select => "Select",
+            Tool::Lasso => "Lasso",
         }
+    }
+
+    /// Select or Lasso: tools that pick things to edit.
+    pub fn selects(self) -> bool {
+        matches!(self, Tool::Select | Tool::Lasso)
     }
 
     /// Tools with settings in the tool panel.
     fn has_panel(self) -> bool {
-        self.brush().is_some() || matches!(self, Tool::Shapes | Tool::Text | Tool::Select)
+        self.brush().is_some()
+            || matches!(self, Tool::Shapes | Tool::Text | Tool::Select | Tool::Lasso)
     }
 }
 
@@ -146,6 +156,8 @@ pub struct Overlay {
     pub sel_box: Option<([Pos2; 4], bool)>,
     /// Marquee rectangle.
     pub marquee: Option<Rect>,
+    /// Lasso loop being drawn (points).
+    pub lasso: Option<Vec<Pos2>>,
 }
 
 impl PartialEq for InkSettings {
@@ -1413,7 +1425,7 @@ fn bag_icon(p: &egui::Painter, c: Pos2, r: f32) {
 /// sections.
 fn tool_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) {
     let tool = st.tool;
-    if !tool.has_panel() || (tool == Tool::Select && st.sel.count == 0) {
+    if !tool.has_panel() || (tool.selects() && st.sel.count == 0) {
         return;
     }
     let touch = st.touch_ui;
@@ -1480,7 +1492,7 @@ fn tool_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) 
                 } else {
                     ui.style_mut().spacing.slider_width = w - 64.0;
                 }
-                let title = if tool == Tool::Select {
+                let title = if tool.selects() {
                     format!("Selection ({})", st.sel.count)
                 } else {
                     tool.name().to_string()
@@ -1534,7 +1546,7 @@ fn tool_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) 
                                 &st.egui_fonts,
                                 actions,
                             ),
-                            Tool::Select => {
+                            Tool::Select | Tool::Lasso => {
                                 select_actions(ui, st.sel.kind, actions);
                                 match st.sel.kind {
                                     SelKind::Ink => match st.sel.ink.as_mut() {
@@ -2053,6 +2065,16 @@ fn paint_overlay(ctx: &egui::Context, ov: &Overlay, touch: bool) {
     if let Some(r) = ov.marquee {
         p.rect_filled(r, 0.0, Color32::from_rgba_unmultiplied(70, 110, 230, 24));
         p.rect_stroke(r, 0.0, Stroke::new(1.0, blue), egui::StrokeKind::Middle);
+    }
+    if let Some(l) = &ov.lasso {
+        if l.len() > 1 {
+            // Closing edge faint, the drawn loop dashed.
+            p.line_segment(
+                [l[l.len() - 1], l[0]],
+                Stroke::new(1.0, blue.gamma_multiply(0.4)),
+            );
+            p.extend(Shape::dashed_line(l, Stroke::new(1.5, blue), 6.0, 4.0));
+        }
     }
     if let Some((c, handles)) = ov.sel_box {
         p.add(Shape::closed_line(c.to_vec(), Stroke::new(1.2, blue)));
@@ -2619,6 +2641,27 @@ fn tool_icon(p: &egui::Painter, c: Pos2, r: f32, tool: Tool, ink: Color32) {
                 [c + vec2(-s * 0.35, s * 0.85), c + vec2(s * 0.35, s * 0.85)],
                 st,
             );
+        }
+        Tool::Lasso => {
+            // A dashed loop with a tail.
+            let s = r * 0.5;
+            let o = c + vec2(0.05 * s, -0.2 * s);
+            let n = 14;
+            for i in (0..n).step_by(2) {
+                let a0 = i as f32 / n as f32 * TAU;
+                let a1 = (i + 1) as f32 / n as f32 * TAU;
+                let q = |a: f32| o + vec2(a.cos() * s * 0.85, a.sin() * s * 0.55);
+                p.line_segment([q(a0), q(a1)], line);
+            }
+            let t0 = o + vec2(-0.55 * s, 0.42 * s);
+            p.add(Shape::line(
+                vec![
+                    t0,
+                    t0 + vec2(-0.1 * s, 0.4 * s),
+                    t0 + vec2(-0.45 * s, 0.6 * s),
+                ],
+                line,
+            ));
         }
         Tool::Select => {
             // A pointer arrow.

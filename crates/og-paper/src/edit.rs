@@ -63,6 +63,8 @@ pub struct EditState {
     /// Shape being dragged out: start and current (px).
     pub shape_drag: Option<([f64; 2], [f64; 2])>,
     pub marquee: Option<([f64; 2], [f64; 2])>,
+    /// Lasso loop being drawn (px).
+    pub lasso: Option<Vec<[f64; 2]>>,
     pub text: Option<TextEdit>,
     pub clipboard: Vec<ObjRef>,
     pub last_tap: Option<(Instant, [f64; 2])>,
@@ -73,6 +75,24 @@ pub struct EditState {
 }
 
 const HANDLE_PT: f64 = 12.0;
+/// Share of an object's points that must be inside a lasso loop.
+const LASSO_SHARE: f64 = 0.6;
+
+/// Whether `p` is inside the closed polygon `poly` (even-odd rule).
+pub(crate) fn in_poly(p: [f64; 2], poly: &[[f64; 2]]) -> bool {
+    let mut inside = false;
+    let mut j = poly.len() - 1;
+    for i in 0..poly.len() {
+        let (a, b) = (poly[i], poly[j]);
+        if (a[1] > p[1]) != (b[1] > p[1])
+            && p[0] < (b[0] - a[0]) * (p[1] - a[1]) / (b[1] - a[1]) + a[0]
+        {
+            inside = !inside;
+        }
+        j = i;
+    }
+    inside
+}
 
 fn rot2(p: [f64; 2], a: f64) -> [f64; 2] {
     let (s, c) = a.sin_cos();
@@ -563,6 +583,14 @@ impl App {
                 return;
             }
         }
+        if self.ui.tool == Tool::Lasso {
+            if !self.mods.shift_key() {
+                self.edit.selection.clear();
+            }
+            self.edit.lasso = Some(vec![p]);
+            self.redraw();
+            return;
+        }
         match self.obj_at(p) {
             Some(o) if self.mods.shift_key() || self.mods.control_key() => {
                 if let Some(i) = self.edit.selection.iter().position(|r| *r == o) {
@@ -702,6 +730,11 @@ impl App {
         } else if let Some(m) = self.edit.marquee.as_mut() {
             m.1 = p;
             self.redraw();
+        } else if let Some(l) = self.edit.lasso.as_mut() {
+            if l.last().is_none_or(|&q| crate::dist(q, p) > 2.0) {
+                l.push(p);
+                self.redraw();
+            }
         }
     }
 
@@ -725,6 +758,11 @@ impl App {
         if let Some((a, b)) = self.edit.marquee.take() {
             if !cancel {
                 self.marquee_select(a, b);
+            }
+        }
+        if let Some(poly) = self.edit.lasso.take() {
+            if !cancel {
+                self.lasso_select(&poly);
             }
         }
         self.redraw();
@@ -757,6 +795,64 @@ impl App {
         }
         for (r, inside) in seen {
             if inside && !self.edit.selection.contains(&r) {
+                self.edit.selection.push(r);
+            }
+        }
+    }
+
+    /// Select what is mostly inside the loop `poly` (px): an object counts
+    /// when at least `LASSO_SHARE` of its points are inside, so a loose loop
+    /// still catches strokes that poke out a little. A tap selects what is
+    /// under it.
+    fn lasso_select(&mut self, poly: &[[f64; 2]]) {
+        let len: f64 = poly.windows(2).map(|w| crate::dist(w[0], w[1])).sum();
+        if poly.len() < 3 || len < 12.0 * self.ppp() {
+            if let Some(o) = self.obj_at(poly[0]) {
+                if !self.edit.selection.contains(&o) {
+                    self.edit.selection.push(o);
+                }
+            }
+            return;
+        }
+        let (mut lo, mut hi) = ([f64::MAX; 2], [f64::MIN; 2]);
+        for q in poly {
+            lo = [lo[0].min(q[0]), lo[1].min(q[1])];
+            hi = [hi[0].max(q[0]), hi[1].max(q[1])];
+        }
+        // (object, points inside, points)
+        let mut seen: Vec<(ObjRef, usize, usize)> = Vec::new();
+        for inst in &self.draw.strokes {
+            let id = inst.stroke;
+            if self.scene.strokes[id as usize].deleted {
+                continue;
+            }
+            let r = self.objs.obj_of(id);
+            let pts = self.scene.stroke_points(id);
+            let inside = pts
+                .iter()
+                .filter(|p| {
+                    let q = [
+                        inst.ox as f64 + p[0] as f64 * inst.scale as f64,
+                        inst.oy as f64 + p[1] as f64 * inst.scale as f64,
+                    ];
+                    q[0] >= lo[0]
+                        && q[0] <= hi[0]
+                        && q[1] >= lo[1]
+                        && q[1] <= hi[1]
+                        && in_poly(q, poly)
+                })
+                .count();
+            match seen.iter_mut().find(|s| s.0 == r) {
+                Some(s) => {
+                    s.1 += inside;
+                    s.2 += pts.len();
+                }
+                None => seen.push((r, inside, pts.len())),
+            }
+        }
+        for (r, inside, n) in seen {
+            if n > 0 && inside as f64 >= LASSO_SHARE * n as f64 && !self.edit.selection.contains(&r)
+            {
                 self.edit.selection.push(r);
             }
         }
@@ -978,7 +1074,9 @@ impl App {
         let at = self.px_to_cam(self.cursor);
         let off = [at[0] - (lo[0] + hi[0]) * 0.5, at[1] - (lo[1] + hi[1]) * 0.5];
         self.duplicate(&clip, off);
-        self.ui.tool = Tool::Select;
+        if !self.ui.tool.selects() {
+            self.ui.tool = Tool::Select;
+        }
     }
 
     pub(crate) fn select_all_visible(&mut self) {
@@ -993,7 +1091,9 @@ impl App {
             }
         }
         self.edit.selection = sel;
-        self.ui.tool = Tool::Select;
+        if !self.ui.tool.selects() {
+            self.ui.tool = Tool::Select;
+        }
         self.redraw();
     }
 
@@ -1018,7 +1118,9 @@ impl App {
         let (g, ids) = self.add_group(&data, None);
         self.record_edit(vec![], ids);
         self.edit.selection = vec![ObjRef::Group(g)];
-        self.ui.tool = Tool::Select;
+        if !self.ui.tool.selects() {
+            self.ui.tool = Tool::Select;
+        }
     }
 
     /// Put a picture on the canvas at its own size (at most 60% of the screen).
@@ -1094,7 +1196,7 @@ impl App {
     /// it (and the pointer is up), restyle the selection.
     pub(crate) fn sync_sel_panel(&mut self, pointer_down: bool) {
         self.sel_alive();
-        if self.ui.tool != Tool::Select {
+        if !self.ui.tool.selects() {
             self.edit.selection.clear();
         }
         let sel = self.edit.selection.clone();
@@ -1307,7 +1409,10 @@ impl App {
         if let Some((a, b)) = self.edit.marquee {
             ov.marquee = Some(egui::Rect::from_two_pos(to_pt(a), to_pt(b)));
         }
-        if self.ui.tool == Tool::Select && self.edit.text.is_none() {
+        if let Some(l) = &self.edit.lasso {
+            ov.lasso = Some(l.iter().map(|&q| to_pt(q)).collect());
+        }
+        if self.ui.tool.selects() && self.edit.text.is_none() {
             let boxed = match self.edit.sel_drag.as_ref() {
                 Some(d) => {
                     let op = self.drag_op(d);
@@ -1356,4 +1461,26 @@ fn merge_shape(st: &mut shapes::ShapeStyle, b: &shapes::ShapeStyle, a: &shapes::
         ($($f:ident),*) => { $( if a.$f != b.$f { st.$f = a.$f; } )* };
     }
     take!(stroke, fill, fill_style, dash, sloppiness, round, sides, start, end, arrow, opacity);
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn point_in_loop() {
+        // A U shape: the notch is outside.
+        let u = [
+            [0.0, 0.0],
+            [3.0, 0.0],
+            [3.0, 3.0],
+            [2.0, 3.0],
+            [2.0, 1.0],
+            [1.0, 1.0],
+            [1.0, 3.0],
+            [0.0, 3.0],
+        ];
+        assert!(super::in_poly([0.5, 2.0], &u));
+        assert!(super::in_poly([2.5, 2.0], &u));
+        assert!(!super::in_poly([1.5, 2.0], &u));
+        assert!(!super::in_poly([4.0, 1.0], &u));
+    }
 }

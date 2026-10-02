@@ -361,7 +361,7 @@ impl App {
             Tool::Eraser => Gesture::Erase,
             Tool::Picker => Gesture::Pick,
             Tool::Shapes => Gesture::Shape,
-            Tool::Select => Gesture::Select,
+            Tool::Select | Tool::Lasso => Gesture::Select,
             Tool::Text => Gesture::None,
             _ => Gesture::Ink,
         };
@@ -750,7 +750,7 @@ impl App {
     /// Use a font that was just added.
     fn font_added(&mut self, id: font::FontId, name: &str) {
         self.ui.text.font = id;
-        if self.ui.tool == Tool::Select && self.ui.sel.kind == ui::SelKind::Text {
+        if self.ui.tool.selects() && self.ui.sel.kind == ui::SelKind::Text {
             self.ui.sel.text.font = id;
         }
         self.say(format!("Added the font {name}"));
@@ -986,7 +986,7 @@ impl App {
     fn shortcut(&mut self, key: &Key) -> bool {
         let ctrl = self.mods.control_key() || self.mods.super_key();
         let shift = self.mods.shift_key();
-        let selecting = self.ui.tool == Tool::Select && !self.edit.selection.is_empty();
+        let selecting = self.ui.tool.selects() && !self.edit.selection.is_empty();
         let step = if shift { 10.0 } else { 1.0 };
         let k = match key {
             Key::Character(c) => c.to_lowercase(),
@@ -1051,7 +1051,14 @@ impl App {
             (true, _, "a") => self.select_all_visible(),
             (true, _, "]") if selecting => self.sel_action(Action::ToFront),
             (true, _, "[") if selecting => self.sel_action(Action::ToBack),
-            (false, _, "v") => self.ui.tool = Tool::Select,
+            // V: Select, again for Lasso.
+            (false, _, "v") => {
+                self.ui.tool = if self.ui.tool == Tool::Select {
+                    Tool::Lasso
+                } else {
+                    Tool::Select
+                }
+            }
             (false, _, "s") => self.ui.tool = Tool::Shapes,
             (false, _, "t") => self.ui.tool = Tool::Text,
             (false, _, "r") => {
@@ -1087,7 +1094,7 @@ impl App {
             (false, _, "i") => {
                 if !matches!(
                     self.ui.tool,
-                    Tool::Picker | Tool::Eraser | Tool::Hand | Tool::Select
+                    Tool::Picker | Tool::Eraser | Tool::Hand | Tool::Select | Tool::Lasso
                 ) {
                     self.ui.last_ink = self.ui.tool;
                 }
@@ -1465,7 +1472,7 @@ impl App {
     /// Hand the page our status (and a snapshot, if it asked for one).
     #[cfg(target_arch = "wasm32")]
     fn web_publish(&mut self) {
-        web::set_has_selection(self.ui.tool == Tool::Select && !self.edit.selection.is_empty());
+        web::set_has_selection(self.ui.tool.selects() && !self.edit.selection.is_empty());
         if web::snapshot_wanted() {
             // Saved as it is now, not as the timeline is showing it.
             let mut scene_flags = None;

@@ -207,6 +207,7 @@ fn tool_key(t: Tool) -> &'static str {
         Tool::Shapes => "shapes",
         Tool::Text => "text",
         Tool::Select => "select",
+        Tool::Lasso => "lasso",
     }
 }
 
@@ -221,6 +222,7 @@ fn tool_from(k: &str) -> Option<Tool> {
         "shapes" => Tool::Shapes,
         "text" => Tool::Text,
         "select" => Tool::Select,
+        "lasso" => Tool::Lasso,
         _ => return None,
     })
 }
