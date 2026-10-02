@@ -8,7 +8,7 @@ import init, {
   og_load, og_demo, og_blank, og_status, og_requests, og_set_menu, og_text_request, og_text_done, og_font_add,
   og_copy, og_paste_own, og_paste_image, og_paste_text,
   og_bookmark_add, og_bookmark_go, og_bookmark_remove, og_bookmark_rename,
-  og_search, og_search_results, og_search_go,
+  og_search, og_search_results, og_search_go, og_export, og_export_take, og_has_selection,
   og_timeline, og_timeline_range, og_timeline_restore, og_snapshot_request, og_snapshot_take,
 } from './pkg/og_paper.js';
 
@@ -46,6 +46,9 @@ const CSS = `
 .og-list .go { flex: 1; text-align: left; border: 0; background: none; padding: 9px 4px; min-width: 0; }
 .og-list .go small { color: var(--muted); display: block; font-size: 12px; }
 .og-list .mini { border: 0; background: none; color: var(--muted); padding: 6px; font-size: 13px; }
+.og-fmt { flex-wrap: wrap; gap: 6px; }
+.og-opt { display: flex; align-items: center; gap: 8px; margin: 8px 0 0; font-size: 14px; }
+.og-opt select { padding: 4px 6px; border-radius: 7px; border: 1px solid var(--edge); }
 .og-found { color: var(--muted); font-size: 13px; margin: 6px 0 0; }
 .og-found:empty { display: none; }
 .og-empty { color: var(--muted); font-size: 13px; padding: 6px 0; }
@@ -302,11 +305,73 @@ export async function start({ mode = 'app' } = {}) {
     if (b) goHit(+b.dataset.i);
   };
 
+  // ---- export ----
+  cards.export = card('Export');
+  cards.export.append(
+    el('p', {}, 'Save what is on screen — or just the selection — as a picture or a document.'),
+    el('div', { class: 'og-row og-fmt' },
+      '<button class="og-btn primary" data-f="png">PNG</button><button class="og-btn" data-f="jpg">JPEG</button><button class="og-btn" data-f="svg">SVG</button><button class="og-btn" data-f="pdf">PDF</button>'),
+    el('label', { class: 'og-opt' }, '<input type="checkbox" name="sel"> Only the selection'),
+    el('label', { class: 'og-opt' }, '<input type="checkbox" name="bg" checked> Paper background (off = transparent PNG/SVG)'),
+    el('label', { class: 'og-opt' }, 'Picture size <select name="scale"><option value="1">1×</option><option value="2" selected>2×</option><option value="4">4×</option></select>'));
+  const xSel = cards.export.querySelector('[name=sel]');
+  const xBg = cards.export.querySelector('[name=bg]');
+  const xScale = cards.export.querySelector('[name=scale]');
+  async function exportAs(f) {
+    og_export(f, xSel.checked, xBg.checked);
+    let bytes = null;
+    try {
+      for (let i = 0; i < 120 && !bytes; i++) {
+        bytes = og_export_take();
+        if (!bytes) await new Promise(r => requestAnimationFrame(r));
+      }
+    } catch (e) { return say(`Export failed: ${e}`); }
+    if (!bytes) return say('Export failed — try again');
+    let blob;
+    if (f === 'png' || f === 'jpg') {
+      // The app hands over an SVG; the browser rasterises it.
+      const url = URL.createObjectURL(new Blob([bytes], { type: 'image/svg+xml' }));
+      try {
+        const img = new Image();
+        img.src = url;
+        await img.decode();
+        const k = +xScale.value;
+        const c = document.createElement('canvas');
+        c.width = Math.max(1, Math.round(img.width * k));
+        c.height = Math.max(1, Math.round(img.height * k));
+        if (c.width * c.height > 16000 * 16000) return say('Too big for a picture; try a smaller size');
+        c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+        blob = await new Promise(r => c.toBlob(r, f === 'png' ? 'image/png' : 'image/jpeg', 0.92));
+      } finally { URL.revokeObjectURL(url); }
+      if (!blob) return say('Export failed — the picture may be too big');
+    } else {
+      blob = new Blob([bytes], { type: f === 'svg' ? 'image/svg+xml' : 'application/pdf' });
+    }
+    const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-');
+    const a = el('a', { download: `og-paper-${xSel.checked ? 'selection' : 'view'}-${stamp}.${f}` });
+    a.href = URL.createObjectURL(blob);
+    document.body.append(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+    say(`Exported ${f.toUpperCase()}`);
+  }
+  cards.export.querySelector('.og-fmt').onclick = e => {
+    const b = e.target.closest('button');
+    if (b) exportAs(b.dataset.f);
+  };
+  const openExport = () => {
+    const has = og_has_selection();
+    xSel.disabled = !has;
+    xSel.checked = has;
+    if (open !== 'export') show('export');
+  };
+
   // ---- the settings fan's items (drawn by the app) ----
   const standalone = matchMedia('(display-mode: fullscreen), (display-mode: standalone)').matches;
   const canFs = document.documentElement.requestFullscreen && !standalone;
   const syncMenu = () => {
-    const items = ['new', 'open', 'save', 'picture', 'search', 'bookmarks', 'timeline', 'home', 'grid'];
+    const items = ['new', 'open', 'save', 'export', 'picture', 'search', 'bookmarks', 'timeline', 'home', 'grid'];
     if (canFs && !document.fullscreenElement) items.push('fullscreen');
     if (isTry) items.push('tour');
     og_set_menu(items.join(','));
@@ -686,6 +751,7 @@ export async function start({ mode = 'app' } = {}) {
       else if (r === 'open') openCopy();
       else if (r === 'new') newCanvas();
       else if (r === 'bookmarks') show('bookmarks');
+      else if (r === 'export') openExport();
       else if (r === 'search') { if (open !== 'search') show('search'); sForm.q.focus(); sForm.q.select(); }
       else if (r === 'timeline') openTimeline(!tlOpen);
       else if (r === 'fullscreen') fullScreen();

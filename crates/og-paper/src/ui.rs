@@ -191,6 +191,8 @@ pub enum Menu {
 pub enum AppItem {
     /// Find text anywhere on the canvas.
     Search,
+    /// Save the view or the selection as PNG, JPEG, SVG or PDF.
+    Export,
     /// Background grid: off, lines, dots.
     Grid,
     New,
@@ -209,6 +211,7 @@ impl AppItem {
     fn name(self) -> &'static str {
         match self {
             AppItem::Search => "Search text",
+            AppItem::Export => "Export",
             AppItem::Grid => "Grid",
             AppItem::New => "New canvas",
             AppItem::Open => "Open",
@@ -225,6 +228,7 @@ impl AppItem {
     fn action(self) -> Action {
         match self {
             AppItem::Search => Action::Search,
+            AppItem::Export => Action::Export,
             AppItem::Grid => Action::Grid,
             AppItem::New => Action::New,
             AppItem::Open => Action::Open,
@@ -382,6 +386,7 @@ impl Default for UiState {
                 AppItem::New,
                 AppItem::Open,
                 AppItem::Save,
+                AppItem::Export,
                 AppItem::Picture,
                 AppItem::Home,
                 AppItem::Search,
@@ -563,6 +568,8 @@ pub enum Action {
     Grid,
     /// Open the text search.
     Search,
+    /// Export the view or selection as a picture or PDF.
+    Export,
     // Web page panels.
     Bookmarks,
     Timeline,
@@ -2332,6 +2339,17 @@ fn app_icon(p: &egui::Painter, c: Pos2, r: f32, item: AppItem, grid: GridMode) {
         p.add(Shape::line(pts.iter().map(|v| c + *v * s).collect(), st));
     };
     match item {
+        AppItem::Export => {
+            // A tray with an arrow leaving it.
+            line(&[vec2(0.0, 0.35), vec2(0.0, -1.0)]);
+            line(&[vec2(-0.45, -0.55), vec2(0.0, -1.0), vec2(0.45, -0.55)]);
+            line(&[
+                vec2(-0.9, 0.1),
+                vec2(-0.9, 0.9),
+                vec2(0.9, 0.9),
+                vec2(0.9, 0.1),
+            ]);
+        }
         AppItem::Search => {
             // A magnifying glass.
             p.circle_stroke(c + vec2(-0.2, -0.2) * s, s * 0.62, st);

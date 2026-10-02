@@ -9,6 +9,7 @@
 mod demo;
 mod edit;
 mod egui_io;
+mod export;
 mod font;
 mod hotbar;
 mod images;
@@ -879,8 +880,49 @@ impl App {
                     }
                 }
             }
+            #[cfg(target_arch = "wasm32")]
+            Action::Export => web::emit("export"),
+            #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+            Action::Export => self.export_dialog(),
             #[allow(unreachable_patterns)]
             _ => self.say("Not available on this platform yet"),
+        }
+    }
+
+    /// Save the selection (if any) or the view as PNG, JPEG, SVG or PDF; the
+    /// format follows the file name's extension.
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+    fn export_dialog(&mut self) {
+        let sel = self.ui.tool.selects() && !self.edit.selection.is_empty();
+        let name = if sel { "Selection.png" } else { "View.png" };
+        let Some(mut p) = rfd::FileDialog::new()
+            .add_filter("PNG picture", &["png"])
+            .add_filter("JPEG picture", &["jpg", "jpeg"])
+            .add_filter("SVG drawing", &["svg"])
+            .add_filter("PDF document", &["pdf"])
+            .set_file_name(name)
+            .save_file()
+        else {
+            return;
+        };
+        let fmt = p
+            .extension()
+            .and_then(|e| export::Format::from_key(&e.to_string_lossy()))
+            .unwrap_or(export::Format::Png);
+        if p.extension().is_none() {
+            p.set_extension(fmt.ext());
+        }
+        let opts = export::Opts {
+            selection: sel,
+            background: true,
+            scale: 2.0,
+        };
+        match self
+            .export(fmt, &opts)
+            .and_then(|b| std::fs::write(&p, b).map_err(|e| e.to_string()))
+        {
+            Ok(()) => self.say(format!("Exported {}", p.display())),
+            Err(e) => self.say(format!("Export failed: {e}")),
         }
     }
 
@@ -1360,6 +1402,7 @@ impl App {
                 | Cmd::TimelineRange(_)
                 | Cmd::Search
                 | Cmd::SearchGo(_)
+                | Cmd::Export(..)
                 | Cmd::BookmarkGo(_)
                 | Cmd::Home
                 | Cmd::Menu(_)
@@ -1461,6 +1504,20 @@ impl App {
                 web::set_search_results(format!("[{}]", json.join(",")));
             }
             Cmd::SearchGo(g) => self.search_go(g),
+            Cmd::Export(fmt, selection, background) => {
+                let r = match export::Format::from_key(&fmt) {
+                    Some(f) => self.export(
+                        f,
+                        &export::Opts {
+                            selection: selection && !self.edit.selection.is_empty(),
+                            background,
+                            scale: 1.0,
+                        },
+                    ),
+                    None => Err(format!("unknown format {fmt}")),
+                };
+                web::set_export(r);
+            }
             Cmd::TimelineRestore => self.timeline_restore(),
         }
         if changes {

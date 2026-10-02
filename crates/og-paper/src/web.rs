@@ -12,7 +12,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-use wasm_bindgen::prelude::wasm_bindgen;
+use wasm_bindgen::prelude::{wasm_bindgen, JsValue};
 use winit::window::Window;
 
 pub enum Cmd {
@@ -36,6 +36,8 @@ pub enum Cmd {
     Search,
     /// Fly to search result group `g`.
     SearchGo(u32),
+    /// Export: format, only the selection, paper background.
+    Export(String, bool, bool),
     /// Make the moment shown in the timeline the current canvas (undoable).
     TimelineRestore,
     /// The page's text editor finished (Some: the text) or was cancelled.
@@ -73,6 +75,7 @@ thread_local! {
     static OUTBOX: RefCell<Vec<&'static str>> = RefCell::default();
     static TEXT_REQ: RefCell<String> = RefCell::default();
     static SEARCH: RefCell<String> = RefCell::default();
+    static EXPORT: RefCell<Option<Result<Vec<u8>, String>>> = RefCell::default();
     static SEARCH_OUT: RefCell<String> = RefCell::new("[]".into());
     static HAS_SELECTION: Cell<bool> = const { Cell::new(false) };
 }
@@ -197,6 +200,7 @@ pub fn og_set_menu(items: &str) {
                 "home" => AppItem::Home,
                 "grid" => AppItem::Grid,
                 "search" => AppItem::Search,
+                "export" => AppItem::Export,
                 "picture" => AppItem::Picture,
                 "bookmarks" => AppItem::Bookmarks,
                 "timeline" => AppItem::Timeline,
@@ -274,6 +278,28 @@ pub fn og_search_results() -> String {
     SEARCH_OUT.with(|s| s.borrow().clone())
 }
 
+/// Export as `fmt` (png, jpg, svg, pdf); fetch the bytes with
+/// `og_export_take`. PNG/JPEG come back as SVG for the page to rasterise.
+#[wasm_bindgen]
+pub fn og_export(fmt: String, selection: bool, background: bool) {
+    EXPORT.with(|e| *e.borrow_mut() = None);
+    push(Cmd::Export(fmt, selection, background));
+}
+
+/// The export's bytes once ready; throws with the reason if it failed.
+#[wasm_bindgen]
+pub fn og_export_take() -> Result<Option<Vec<u8>>, JsValue> {
+    match EXPORT.with(|e| e.borrow_mut().take()) {
+        None => Ok(None),
+        Some(Ok(b)) => Ok(Some(b)),
+        Some(Err(e)) => Err(JsValue::from_str(&e)),
+    }
+}
+
+pub fn set_export(r: Result<Vec<u8>, String>) {
+    EXPORT.with(|e| *e.borrow_mut() = Some(r));
+}
+
 /// Fly to a search result.
 #[wasm_bindgen]
 pub fn og_search_go(g: u32) {
@@ -347,6 +373,12 @@ pub fn og_font_add(
         }
         Err(e) => format!("!{e}"),
     }
+}
+
+/// Whether something is selected.
+#[wasm_bindgen]
+pub fn og_has_selection() -> bool {
+    HAS_SELECTION.with(|h| h.get())
 }
 
 /// Copy (or cut) the selection. Returns false when nothing is selected,

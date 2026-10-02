@@ -26,11 +26,13 @@ egui-wgpu = "0.36"
 bytemuck = { version = "1", features = ["derive"] }
 log = "0.4"
 web-time = "1"
+miniz_oxide = "0.8"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 pollster = "0.4"
 egui-winit = { version = "0.36", default-features = false, features = ["links"] }
 ogpaper-file = { path = "../ogpaper-file" }
+resvg = { version = "0.45", default-features = false, features = ["raster-images"] }
 
 [target.'cfg(not(any(target_os = "android", target_arch = "wasm32")))'.dependencies]
 env_logger = "0.11"
