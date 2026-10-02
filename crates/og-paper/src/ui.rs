@@ -574,7 +574,7 @@ impl UiState {
         self.hotbar = self.toolbars[k].slots.clone();
         self.bar_rename = None;
         self.presets_dirty = true;
-        self.message = Some(format!("Toolbar {}: {}", k + 1, self.toolbars[k].name));
+        self.message = Some(format!("Toolbar {}", k + 1));
     }
 
     /// Next (`+1`) or previous (`-1`) toolbar, wrapping around.
@@ -967,9 +967,10 @@ pub fn draw(ctx: &egui::Context, st: &mut UiState) -> Vec<Action> {
 }
 
 /// Which set of slots.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 enum Slots {
-    Bar,
+    /// Toolbar k (the active one is `hotbar`).
+    Row(usize),
     Inventory,
 }
 
@@ -1037,68 +1038,61 @@ fn quick_bar(ctx: &egui::Context, st: &mut UiState, g: &Geo) {
     let row = (n + 2) as f32 * (s + gap) - gap;
     let x0 = cx - row * 0.5;
     let current = st.preset();
-    let mut switch_pos = Rect::NOTHING;
     let mut fx = SlotFx {
         current,
         changed: false,
         say: None,
     };
+    // The other toolbars ticked "shown" stack on the active one, away from
+    // the screen edge the bar sits on.
+    let up = y > screen.center().y;
+    let others: Vec<usize> = (0..st.toolbars.len())
+        .filter(|&k| k != st.active_bar && st.toolbars[k].shown)
+        .collect();
+    let rows = others.len() + 1;
+    let step = if up { -(s + gap) } else { s + gap };
+    let top = if up {
+        y - s * 0.5 - (rows - 1) as f32 * (s + gap)
+    } else {
+        y - s * 0.5
+    };
+    let stack = Rect::from_min_size(pos2(x0, top), vec2(row, rows as f32 * (s + gap) - gap));
 
     egui::Area::new(Id::new("quick_bar"))
         .order(Order::Middle)
-        .fixed_pos(pos2(x0, y - s * 0.5))
+        .fixed_pos(stack.min)
         .show(ctx, |ui| {
             ui.set_clip_rect(screen);
-            let (all, _) = ui.allocate_exact_size(vec2(row, s), Sense::hover());
-            // The toolbar switcher: shows which toolbar this is; opens the list.
-            let r = Rect::from_min_size(all.min, Vec2::splat(s));
-            let resp = ui.interact(r, Id::new("bar_switch"), Sense::click());
-            let p = ui.painter();
-            p.rect_filled(
-                r,
-                8.0,
-                if resp.hovered() || st.bar_menu {
-                    Color32::WHITE
-                } else {
-                    FACE
-                },
-            );
-            p.rect_stroke(
-                r,
-                8.0,
-                Stroke::new(
-                    if st.bar_menu { 2.5 } else { 1.0 },
-                    if st.bar_menu { ACCENT } else { EDGE },
-                ),
-                egui::StrokeKind::Inside,
-            );
-            toolbars_icon(p, r.center(), s * 0.5, st.active_bar + 1);
-            if resp.clicked() {
-                st.bar_menu = !st.bar_menu;
-                st.bar_rename = None;
-                if st.bar_menu {
-                    st.bag_open = false;
+            ui.allocate_exact_size(stack.size(), Sense::hover());
+            // Row 0 is the active toolbar; the others follow it.
+            for (ri, k) in std::iter::once(st.active_bar)
+                .chain(others.iter().copied())
+                .enumerate()
+            {
+                let ry = y - s * 0.5 + ri as f32 * step;
+                let r = Rect::from_min_size(pos2(x0, ry), Vec2::splat(s));
+                let active = k == st.active_bar;
+                if number_button(ui, st, r, k, active && st.bar_menu, active) {
+                    if active {
+                        st.bar_menu = !st.bar_menu;
+                        if st.bar_menu {
+                            st.bag_open = false;
+                        }
+                    } else {
+                        st.switch_bar(k);
+                    }
                 }
-            }
-            switch_pos = r;
-            resp.on_hover_text(format!(
-                "Toolbar {} of {}: {} — tap to switch ([ and ] cycle, Alt+1–9 jump)",
-                st.active_bar + 1,
-                st.toolbars.len(),
-                st.toolbars
-                    .get(st.active_bar)
-                    .map_or("", |b| b.name.as_str())
-            ));
-            for i in 0..n {
-                let r = Rect::from_min_size(
-                    all.min + vec2((i + 1) as f32 * (s + gap), 0.0),
-                    Vec2::splat(s),
-                );
-                slot(ui, st, r, Slots::Bar, i, &mut fx);
+                for i in 0..n {
+                    let r = Rect::from_min_size(
+                        pos2(x0 + (i + 1) as f32 * (s + gap), ry),
+                        Vec2::splat(s),
+                    );
+                    slot(ui, st, r, Slots::Row(k), i, &mut fx);
+                }
             }
             // The bag: opens the inventory.
             let r = Rect::from_min_size(
-                all.min + vec2((n + 1) as f32 * (s + gap), 0.0),
+                pos2(x0 + (n + 1) as f32 * (s + gap), y - s * 0.5),
                 Vec2::splat(s),
             );
             let resp = ui.interact(r, Id::new("bag"), Sense::click());
@@ -1136,81 +1130,7 @@ fn quick_bar(ctx: &egui::Context, st: &mut UiState, g: &Geo) {
         });
 
     if st.bag_open {
-        let cols = n.max(6);
-        let rows = st.inventory.len().div_ceil(cols);
-        let w = cols as f32 * (s + gap) - gap;
-        egui::Area::new(Id::new("inventory"))
-            .order(Order::Foreground)
-            .pivot(Align2::CENTER_BOTTOM)
-            .fixed_pos(pos2(cx.clamp(screen.left() + w * 0.5 + m, screen.right() - w * 0.5 - m), y - s * 0.5 - 10.0))
-            .show(ctx, |ui| {
-                ui.style_mut().visuals = egui::Visuals::light();
-                egui::Frame::new()
-                    .fill(FACE)
-                    .stroke(Stroke::new(1.0, EDGE))
-                    .corner_radius(12.0)
-                    .inner_margin(10.0)
-                    .shadow(egui::Shadow {
-                        offset: [0, 2],
-                        blur: 10,
-                        spread: 0,
-                        color: Color32::from_black_alpha(40),
-                    })
-                    .show(ui, |ui| {
-                        ui.set_width(w);
-                        ui.horizontal(|ui| {
-                            ui.strong("Saved tools");
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                if ui.button("Close").clicked() {
-                                    st.bag_open = false;
-                                }
-                                if ui
-                                    .button("+ Save current")
-                                    .on_hover_text("Keep the current tool and its settings")
-                                    .clicked()
-                                {
-                                    match st.inventory.iter().position(|x| x.is_none()) {
-                                        Some(k) => {
-                                            st.inventory[k] = Some(current);
-                                            fx.changed = true;
-                                        }
-                                        None => fx.say = Some("The inventory is full".into()),
-                                    }
-                                }
-                            });
-                        });
-                        ui.label(
-                            egui::RichText::new(
-                                "Tap a tool to pick it up, then a slot (here or in the bar) to put it down.",
-                            )
-                            .small()
-                            .weak(),
-                        );
-                        ui.add_space(4.0);
-                        // As many rows as it holds (always one free); scrolls past four.
-                        let max_h = 4.0 * (s + gap) - gap;
-                        egui::ScrollArea::vertical().max_height(max_h).auto_shrink([false, true]).show(ui, |ui| {
-                            let (all, _) = ui.allocate_exact_size(vec2(w, rows as f32 * (s + gap) - gap), Sense::hover());
-                            for i in 0..st.inventory.len() {
-                                let (cx, cy) = (i % cols, i / cols);
-                                let r = Rect::from_min_size(
-                                    all.min + vec2(cx as f32 * (s + gap), cy as f32 * (s + gap)),
-                                    Vec2::splat(s),
-                                );
-                                slot(ui, st, r, Slots::Inventory, i, &mut fx);
-                            }
-                        });
-                        // Bin: drop the held tool.
-                        ui.add_space(6.0);
-                        ui.horizontal(|ui| {
-                            let bin = ui.add_enabled(st.held.is_some(), egui::Button::new("🗑 Throw away"));
-                            if bin.clicked() {
-                                st.held = None;
-                                fx.changed = true;
-                            }
-                        });
-                    });
-            });
+        inventory(ctx, st, stack, up, s, gap, &mut fx);
     } else if let Some(h) = st.held.take() {
         // Closed while holding a tool: put it back in the first free slot.
         if let Some(k) = st.inventory.iter().position(|x| x.is_none()) {
@@ -1230,7 +1150,7 @@ fn quick_bar(ctx: &egui::Context, st: &mut UiState, g: &Geo) {
         preset_icon(&p, c, s * 0.45, &h, &st.egui_fonts);
     }
     if st.bar_menu {
-        toolbar_menu(ctx, st, switch_pos, &mut fx);
+        toolbar_menu(ctx, st, stack, up, s, gap, &mut fx);
     }
     if fx.changed {
         hotbar::grow_inventory(&mut st.inventory);
@@ -1241,22 +1161,193 @@ fn quick_bar(ctx: &egui::Context, st: &mut UiState, g: &Geo) {
     }
 }
 
-/// The toolbar list: switch, add, duplicate, rename, delete.
-fn toolbar_menu(ctx: &egui::Context, st: &mut UiState, anchor: Rect, fx: &mut SlotFx) {
+/// A toolbar's number button. True when tapped.
+fn number_button(
+    ui: &mut egui::Ui,
+    st: &UiState,
+    r: Rect,
+    k: usize,
+    open: bool,
+    active: bool,
+) -> bool {
+    let resp = ui.interact(r, Id::new(("bar_num", k)), Sense::click());
+    let p = ui.painter();
+    p.rect_filled(
+        r,
+        8.0,
+        if resp.hovered() || open {
+            Color32::WHITE
+        } else {
+            FACE
+        },
+    );
+    p.rect_stroke(
+        r,
+        8.0,
+        Stroke::new(
+            if open || active { 2.0 } else { 1.0 },
+            if open || active { ACCENT } else { EDGE },
+        ),
+        egui::StrokeKind::Inside,
+    );
+    if active {
+        toolbars_icon(p, r.center(), r.width() * 0.5, k + 1);
+    } else {
+        p.text(
+            r.center(),
+            Align2::CENTER_CENTER,
+            format!("{}", k + 1),
+            egui::FontId::proportional(r.width() * 0.4),
+            INKY,
+        );
+    }
+    let tip = if active {
+        format!(
+            "Toolbar {} — tap to see all toolbars ([ and ] cycle, Alt+1–9 jump)",
+            k + 1
+        )
+    } else {
+        format!(
+            "Toolbar {} — tap to make it the active one (keys 1–9)",
+            k + 1
+        )
+    };
+    let clicked = resp.clicked();
+    let _ = st;
+    resp.on_hover_text(tip);
+    clicked
+}
+
+/// The inventory: a big grid over most of the screen (not over the bars,
+/// so tools can be carried to them).
+fn inventory(
+    ctx: &egui::Context,
+    st: &mut UiState,
+    bars: Rect,
+    up: bool,
+    s: f32,
+    gap: f32,
+    fx: &mut SlotFx,
+) {
     let screen = ctx.content_rect();
-    let w = 250.0f32.min(screen.width() - 24.0);
-    let x = anchor
-        .left()
-        .clamp(screen.left() + 12.0, screen.right() - w - 12.0);
-    egui::Area::new(Id::new("toolbar_menu"))
+    let m = 12.0;
+    let area = if up {
+        Rect::from_min_max(
+            screen.min + vec2(m, m),
+            pos2(screen.right() - m, bars.top() - 10.0),
+        )
+    } else {
+        Rect::from_min_max(
+            pos2(screen.left() + m, bars.bottom() + 10.0),
+            screen.max - vec2(m, m),
+        )
+    };
+    if area.height() < 3.0 * s {
+        return;
+    }
+    let inner = area.width() - 24.0;
+    let cols = ((inner + gap) / (s + gap)).floor().max(3.0) as usize;
+    // Fill the panel with empty slots, like a game's inventory grid.
+    let fit = (((area.height() - 90.0) + gap) / (s + gap))
+        .floor()
+        .max(1.0) as usize;
+    let want = (cols * fit).max(st.inventory.len().div_ceil(cols) * cols);
+    if st.inventory.len() < want {
+        st.inventory.resize(want, None);
+    }
+    let rows = st.inventory.len().div_ceil(cols);
+    egui::Area::new(Id::new("inventory"))
         .order(Order::Foreground)
-        .pivot(Align2::LEFT_BOTTOM)
-        .fixed_pos(pos2(x, anchor.top() - 10.0))
+        .fixed_pos(area.min)
         .show(ctx, |ui| {
             ui.style_mut().visuals = egui::Visuals::light();
-            if st.touch_ui {
-                ui.style_mut().spacing.interact_size.y = 36.0;
-            }
+            egui::Frame::new()
+                .fill(FACE)
+                .stroke(Stroke::new(1.0, EDGE))
+                .corner_radius(12.0)
+                .inner_margin(12.0)
+                .shadow(egui::Shadow { offset: [0, 2], blur: 10, spread: 0, color: Color32::from_black_alpha(40) })
+                .show(ui, |ui| {
+                    ui.set_width(inner);
+                    ui.set_height(area.height() - 24.0);
+                    ui.horizontal(|ui| {
+                        ui.strong("Inventory");
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button("Close").clicked() {
+                                st.bag_open = false;
+                            }
+                            let bin = ui.add_enabled(st.held.is_some(), egui::Button::new("🗑 Throw away"));
+                            if bin.clicked() {
+                                st.held = None;
+                                fx.changed = true;
+                            }
+                            if ui.button("+ Save current").on_hover_text("Keep the current tool and its settings").clicked() {
+                                match st.inventory.iter().position(|x| x.is_none()) {
+                                    Some(k) => {
+                                        st.inventory[k] = Some(fx.current);
+                                        fx.changed = true;
+                                    }
+                                    None => fx.say = Some("The inventory is full".into()),
+                                }
+                            }
+                        });
+                    });
+                    ui.label(
+                        egui::RichText::new("Tap a tool to pick it up, then tap a slot — here or in a toolbar — to put it there.")
+                            .small()
+                            .weak(),
+                    );
+                    ui.add_space(6.0);
+                    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                        let (all, _) = ui.allocate_exact_size(vec2(inner, rows as f32 * (s + gap) - gap), Sense::hover());
+                        for i in 0..st.inventory.len() {
+                            let r = Rect::from_min_size(
+                                all.min + vec2((i % cols) as f32 * (s + gap), (i / cols) as f32 * (s + gap)),
+                                Vec2::splat(s),
+                            );
+                            slot(ui, st, r, Slots::Inventory, i, fx);
+                        }
+                    });
+                });
+        });
+}
+
+/// Every toolbar, Factorio style: a row of slots each, newest on top. Tick
+/// one to keep it showing in the quick bar, tap its number to make it the
+/// active one, 🗑 to delete it, + to add one.
+fn toolbar_menu(
+    ctx: &egui::Context,
+    st: &mut UiState,
+    bars: Rect,
+    up: bool,
+    s: f32,
+    gap: f32,
+    fx: &mut SlotFx,
+) {
+    let screen = ctx.content_rect();
+    let n = hotbar::BAR;
+    let check = if st.touch_ui { 30.0 } else { 24.0 };
+    let w = check + 6.0 + (n + 1) as f32 * (s + gap) + s;
+    let x = (bars.left() - check - 6.0).clamp(
+        screen.left() + 8.0,
+        (screen.right() - w - 32.0).max(screen.left() + 8.0),
+    );
+    let room = if up {
+        bars.top() - screen.top() - 24.0
+    } else {
+        screen.bottom() - bars.bottom() - 24.0
+    };
+    let (pivot, at) = if up {
+        (Align2::LEFT_BOTTOM, pos2(x, bars.top() - 10.0))
+    } else {
+        (Align2::LEFT_TOP, pos2(x, bars.bottom() + 10.0))
+    };
+    egui::Area::new(Id::new("toolbar_menu"))
+        .order(Order::Foreground)
+        .pivot(pivot)
+        .fixed_pos(at)
+        .show(ctx, |ui| {
+            ui.style_mut().visuals = egui::Visuals::light();
             egui::Frame::new()
                 .fill(FACE)
                 .stroke(Stroke::new(1.0, EDGE))
@@ -1269,118 +1360,184 @@ fn toolbar_menu(ctx: &egui::Context, st: &mut UiState, anchor: Rect, fx: &mut Sl
                     color: Color32::from_black_alpha(40),
                 })
                 .show(ui, |ui| {
-                    ui.set_width(w);
                     ui.horizontal(|ui| {
-                        ui.strong("Toolbars");
+                        if ui
+                            .button("+ Add toolbar")
+                            .on_hover_text("A new, empty toolbar on top")
+                            .clicked()
+                        {
+                            let k = st.toolbars.len();
+                            st.toolbars
+                                .push(hotbar::empty_bar(format!("Toolbar {}", k + 1)));
+                            st.switch_bar(k);
+                            fx.changed = true;
+                        }
+                        ui.label(
+                            egui::RichText::new("Tick to keep showing · tap a number to use it")
+                                .small()
+                                .weak(),
+                        );
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui.button("Close").clicked() {
                                 st.bar_menu = false;
-                                st.bar_rename = None;
                             }
                         });
                     });
-                    ui.label(
-                        egui::RichText::new("[ and ] cycle · Alt+1–9 jump")
-                            .small()
-                            .weak(),
-                    );
                     ui.add_space(4.0);
-                    let mut pick = None;
+                    let mut gone = None;
+                    let total = st.toolbars.len();
                     egui::ScrollArea::vertical()
-                        .max_height(260.0)
+                        .max_height((room - 60.0).max(s + gap))
                         .show(ui, |ui| {
-                            for (k, b) in st.toolbars.iter().enumerate() {
-                                let used = if k == st.active_bar {
-                                    st.hotbar.iter().flatten().count()
-                                } else {
-                                    b.slots.iter().flatten().count()
-                                };
-                                let label = format!("{}. {}   ({used} tools)", k + 1, b.name);
-                                if ui
-                                    .add_sized(
-                                        [w, 0.0],
-                                        egui::Button::selectable(k == st.active_bar, label),
-                                    )
-                                    .clicked()
-                                {
-                                    pick = Some(k);
+                            let (all, _) = ui.allocate_exact_size(
+                                vec2(w, total as f32 * (s + gap) - gap),
+                                Sense::hover(),
+                            );
+                            // Newest on top.
+                            for (row, k) in (0..total).rev().enumerate() {
+                                let ry = all.top() + row as f32 * (s + gap);
+                                let active = k == st.active_bar;
+                                // Shown tick (the active one always shows).
+                                let cr = Rect::from_center_size(
+                                    pos2(all.left() + check * 0.5, ry + s * 0.5),
+                                    Vec2::splat(check),
+                                );
+                                let resp =
+                                    ui.interact(cr, Id::new(("bar_shown", k)), Sense::click());
+                                let on = active || st.toolbars[k].shown;
+                                let p = ui.painter();
+                                p.rect_filled(
+                                    cr.shrink(3.0),
+                                    5.0,
+                                    if on { ACCENT } else { Color32::WHITE },
+                                );
+                                p.rect_stroke(
+                                    cr.shrink(3.0),
+                                    5.0,
+                                    Stroke::new(1.2, if on { ACCENT } else { EDGE }),
+                                    egui::StrokeKind::Inside,
+                                );
+                                if on {
+                                    let c = cr.center();
+                                    let d = check * 0.18;
+                                    p.add(Shape::line(
+                                        vec![
+                                            c + vec2(-d * 1.2, 0.0),
+                                            c + vec2(-d * 0.2, d),
+                                            c + vec2(d * 1.4, -d),
+                                        ],
+                                        Stroke::new(2.0, Color32::WHITE),
+                                    ));
                                 }
+                                if resp.clicked() && !active {
+                                    st.toolbars[k].shown = !st.toolbars[k].shown;
+                                    fx.changed = true;
+                                }
+                                resp.on_hover_text(if active {
+                                    "The active toolbar always shows"
+                                } else {
+                                    "Show this toolbar in the quick bar"
+                                });
+                                let x0 = all.left() + check + 6.0;
+                                let nr = Rect::from_min_size(pos2(x0, ry), Vec2::splat(s));
+                                if number_button(ui, st, nr, k, false, active) && !active {
+                                    st.switch_bar(k);
+                                }
+                                for i in 0..n {
+                                    let r = Rect::from_min_size(
+                                        pos2(x0 + (i + 1) as f32 * (s + gap), ry),
+                                        Vec2::splat(s),
+                                    );
+                                    slot(ui, st, r, Slots::Row(k), i, fx);
+                                }
+                                // Delete.
+                                let dr = Rect::from_min_size(
+                                    pos2(x0 + (n + 1) as f32 * (s + gap), ry),
+                                    Vec2::splat(s),
+                                );
+                                let resp = ui.interact(dr, Id::new(("bar_del", k)), Sense::click());
+                                let can = total > 1;
+                                let p = ui.painter();
+                                p.rect_filled(
+                                    dr,
+                                    8.0,
+                                    if resp.hovered() && can {
+                                        Color32::from_rgb(255, 235, 238)
+                                    } else {
+                                        FACE
+                                    },
+                                );
+                                p.rect_stroke(
+                                    dr,
+                                    8.0,
+                                    Stroke::new(1.0, EDGE),
+                                    egui::StrokeKind::Inside,
+                                );
+                                bin_icon(
+                                    p,
+                                    dr.center(),
+                                    s * 0.5,
+                                    if can { INKY } else { Color32::from_gray(190) },
+                                );
+                                if resp.clicked() && can {
+                                    gone = Some(k);
+                                }
+                                resp.on_hover_text(if can {
+                                    "Delete this toolbar (its tools are not kept)"
+                                } else {
+                                    "The last toolbar stays"
+                                });
                             }
                         });
-                    if let Some(k) = pick {
-                        st.switch_bar(k);
-                        st.bar_menu = false;
-                    }
-                    ui.separator();
-                    // Rename the active toolbar.
-                    if let Some(name) = st.bar_rename.as_mut() {
-                        let mut done = false;
-                        ui.horizontal(|ui| {
-                            let r =
-                                ui.add(egui::TextEdit::singleline(name).desired_width(w - 70.0));
-                            r.request_focus();
-                            done = ui.button("OK").clicked()
-                                || (r.lost_focus()
-                                    && ui.input(|i| i.key_pressed(egui::Key::Enter)));
-                        });
-                        if done {
-                            let n = name.trim().to_string();
-                            if !n.is_empty() {
-                                st.toolbars[st.active_bar].name = n;
-                                fx.changed = true;
-                            }
-                            st.bar_rename = None;
-                        }
-                    }
-                    ui.horizontal_wrapped(|ui| {
-                        if ui
-                            .button("+ New")
-                            .on_hover_text("An empty toolbar to fill")
-                            .clicked()
-                        {
-                            let n = st.toolbars.len() + 1;
-                            st.toolbars.push(hotbar::empty_bar(format!("Toolbar {n}")));
-                            st.switch_bar(st.toolbars.len() - 1);
-                            fx.changed = true;
-                        }
-                        if ui
-                            .button("Duplicate")
-                            .on_hover_text("A copy of this toolbar to tweak")
-                            .clicked()
-                        {
-                            let name = format!("{} copy", st.toolbars[st.active_bar].name);
-                            st.toolbars.push(hotbar::Toolbar {
-                                name,
-                                slots: st.hotbar.clone(),
-                            });
-                            st.switch_bar(st.toolbars.len() - 1);
-                            fx.changed = true;
-                        }
-                        if ui.button("Rename").clicked() {
-                            st.bar_rename = Some(st.toolbars[st.active_bar].name.clone());
-                        }
-                        let can_delete = st.toolbars.len() > 1;
-                        if ui
-                            .add_enabled(can_delete, egui::Button::new("Delete"))
-                            .on_hover_text("Remove this toolbar (its tools are not kept)")
-                            .clicked()
-                        {
-                            let gone = st.active_bar;
-                            let next = if gone + 1 < st.toolbars.len() {
-                                gone + 1
+                    if let Some(k) = gone {
+                        if k == st.active_bar {
+                            st.switch_bar(if k + 1 < st.toolbars.len() {
+                                k + 1
                             } else {
-                                gone - 1
-                            };
-                            st.switch_bar(next);
-                            st.toolbars.remove(gone);
-                            if st.active_bar > gone {
-                                st.active_bar -= 1;
-                            }
-                            fx.changed = true;
+                                k - 1
+                            });
                         }
-                    });
+                        st.toolbars.remove(k);
+                        if st.active_bar > k {
+                            st.active_bar -= 1;
+                        }
+                        fx.changed = true;
+                    }
                 });
         });
+}
+
+/// A bin.
+fn bin_icon(p: &egui::Painter, c: Pos2, r: f32, col: Color32) {
+    let st = Stroke::new((r * 0.09).max(1.2), col);
+    let s = r * 0.55;
+    p.line_segment([c + vec2(-s, -s * 0.6), c + vec2(s, -s * 0.6)], st);
+    p.add(Shape::line(
+        vec![
+            c + vec2(-s * 0.35, -s * 0.6),
+            c + vec2(-s * 0.25, -s * 0.9),
+            c + vec2(s * 0.25, -s * 0.9),
+            c + vec2(s * 0.35, -s * 0.6),
+        ],
+        st,
+    ));
+    p.add(Shape::line(
+        vec![
+            c + vec2(-s * 0.75, -s * 0.6),
+            c + vec2(-s * 0.6, s),
+            c + vec2(s * 0.6, s),
+            c + vec2(s * 0.75, -s * 0.6),
+        ],
+        st,
+    ));
+    p.line_segment(
+        [c + vec2(-s * 0.2, -s * 0.2), c + vec2(-s * 0.15, s * 0.65)],
+        st,
+    );
+    p.line_segment(
+        [c + vec2(s * 0.2, -s * 0.2), c + vec2(s * 0.15, s * 0.65)],
+        st,
+    );
 }
 
 /// Stacked bars with the active toolbar's number: the toolbar switcher.
@@ -1418,7 +1575,8 @@ struct SlotFx {
 
 fn slot_mut(st: &mut UiState, which: Slots, i: usize) -> &mut Option<Preset> {
     match which {
-        Slots::Bar => &mut st.hotbar[i],
+        Slots::Row(k) if k == st.active_bar => &mut st.hotbar[i],
+        Slots::Row(k) => &mut st.toolbars[k].slots[i],
         Slots::Inventory => &mut st.inventory[i],
     }
 }
@@ -1426,7 +1584,7 @@ fn slot_mut(st: &mut UiState, which: Slots, i: usize) -> &mut Option<Preset> {
 /// One slot: draws it and handles taps.
 fn slot(ui: &mut egui::Ui, st: &mut UiState, rect: Rect, which: Slots, i: usize, fx: &mut SlotFx) {
     let current = fx.current;
-    let resp = ui.interact(rect, Id::new(("slot", which as u8, i)), Sense::click());
+    let resp = ui.interact(rect, Id::new(("slot", which, i)), Sense::click());
     let item = *slot_mut(st, which, i);
     let p = ui.painter();
     let on = !st.bag_open && item.is_some_and(|it| it == current);
@@ -1441,7 +1599,7 @@ fn slot(ui: &mut egui::Ui, st: &mut UiState, rect: Rect, which: Slots, i: usize,
         Stroke::new(if on { 2.5 } else { 1.0 }, if on { ACCENT } else { EDGE }),
         egui::StrokeKind::Inside,
     );
-    if which == Slots::Bar {
+    if matches!(which, Slots::Row(_)) {
         p.text(
             rect.left_top() + vec2(5.0, 3.0),
             Align2::LEFT_TOP,

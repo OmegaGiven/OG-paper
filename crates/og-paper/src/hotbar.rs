@@ -36,6 +36,8 @@ pub const INV_ROW: usize = 9;
 pub struct Toolbar {
     pub name: String,
     pub slots: Vec<Option<Preset>>,
+    /// Shown as a row in the quick bar even when it isn't the active one.
+    pub shown: bool,
 }
 
 /// Everything saved: the toolbars, which one is showing, and the inventory.
@@ -177,10 +179,12 @@ pub fn defaults() -> Saved {
             Toolbar {
                 name: "Everyday".into(),
                 slots: bar,
+                shown: false,
             },
             Toolbar {
                 name: "Diagram".into(),
                 slots: diagram,
+                shown: false,
             },
         ],
         active: 0,
@@ -193,6 +197,7 @@ pub fn empty_bar(name: impl Into<String>) -> Toolbar {
     Toolbar {
         name: name.into(),
         slots: vec![None; BAR],
+        shown: false,
     }
 }
 
@@ -319,6 +324,9 @@ pub fn encode(saved: &Saved) -> String {
     for (b, bar) in saved.bars.iter().enumerate() {
         // Names are one line; anything after the number is the name.
         out += &format!("b {b} {}\n", bar.name.replace(['\n', '\r'], " "));
+        if bar.shown {
+            out += &format!("s {b} 1\n");
+        }
         for (i, s) in bar.slots.iter().enumerate() {
             if let Some(p) = s {
                 out += &format!("h {b} {i} {}\n", put(p));
@@ -367,6 +375,13 @@ pub fn decode(text: &str) -> Option<Saved> {
                 if let (Some(Ok(b)), name) = (w.next().map(str::parse::<usize>), w.next()) {
                     if bar(&mut bars, b).is_some() {
                         bars[b].name = name.unwrap_or("").trim().to_string();
+                    }
+                }
+            }
+            (2, "s") => {
+                if let Some(Ok(b)) = rest.split(' ').next().map(str::parse::<usize>) {
+                    if bar(&mut bars, b).is_some() {
+                        bars[b].shown = true;
                     }
                 }
             }
@@ -485,10 +500,12 @@ mod tests {
             ..empty_bar("")
         });
         saved.bars[2].slots[8] = Some(Preset::tool(Tool::Picker));
+        saved.bars[1].shown = true;
         saved.active = 2;
         let back = decode(&encode(&saved)).unwrap();
         assert_eq!(back.bars[2].name, "Ink & wash: blues");
         assert_eq!(back.active, 2);
+        assert!(back.bars[1].shown && !back.bars[0].shown);
         assert_eq!(back.bars[2].slots[8], Some(Preset::tool(Tool::Picker)));
     }
 
