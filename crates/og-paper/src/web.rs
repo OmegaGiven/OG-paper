@@ -32,6 +32,10 @@ pub enum Cmd {
     /// Show only the ink drawn between events `from` and `to` (inclusive)
     /// that is still there at `to`; `None` leaves.
     TimelineRange(Option<(usize, usize)>),
+    /// Run the text search in `SEARCH`; results go to `SEARCH_OUT`.
+    Search,
+    /// Fly to search result group `g`.
+    SearchGo(u32),
     /// Make the moment shown in the timeline the current canvas (undoable).
     TimelineRestore,
     /// The page's text editor finished (Some: the text) or was cancelled.
@@ -68,6 +72,8 @@ thread_local! {
     static STATS: Cell<Stats> = Cell::new(Stats { deep_draw: f64::NEG_INFINITY, ..Default::default() });
     static OUTBOX: RefCell<Vec<&'static str>> = RefCell::default();
     static TEXT_REQ: RefCell<String> = RefCell::default();
+    static SEARCH: RefCell<String> = RefCell::default();
+    static SEARCH_OUT: RefCell<String> = RefCell::new("[]".into());
     static HAS_SELECTION: Cell<bool> = const { Cell::new(false) };
 }
 
@@ -190,6 +196,7 @@ pub fn og_set_menu(items: &str) {
                 "save" => AppItem::Save,
                 "home" => AppItem::Home,
                 "grid" => AppItem::Grid,
+                "search" => AppItem::Search,
                 "picture" => AppItem::Picture,
                 "bookmarks" => AppItem::Bookmarks,
                 "timeline" => AppItem::Timeline,
@@ -242,6 +249,35 @@ pub fn og_timeline_range(from: i32, to: i32) {
     push(Cmd::TimelineRange(
         (to >= 0).then_some((from.max(0) as usize, to as usize)),
     ));
+}
+
+/// Text search results for `q` as JSON: `[{"g":group,"text":excerpt,"zoom":log10}]`.
+#[wasm_bindgen]
+pub fn og_search(q: String) {
+    SEARCH.with(|s| *s.borrow_mut() = q);
+    push(Cmd::Search);
+}
+
+/// The query set by `og_search`.
+pub fn search_query() -> String {
+    SEARCH.with(|s| s.borrow().clone())
+}
+
+/// Store search results for the page.
+pub fn set_search_results(json: String) {
+    SEARCH_OUT.with(|s| *s.borrow_mut() = json);
+}
+
+/// The latest search results (see `og_search`).
+#[wasm_bindgen]
+pub fn og_search_results() -> String {
+    SEARCH_OUT.with(|s| s.borrow().clone())
+}
+
+/// Fly to a search result.
+#[wasm_bindgen]
+pub fn og_search_go(g: u32) {
+    push(Cmd::SearchGo(g));
 }
 
 /// Make the moment shown in the timeline the current canvas.

@@ -8,6 +8,7 @@ import init, {
   og_load, og_demo, og_blank, og_status, og_requests, og_set_menu, og_text_request, og_text_done, og_font_add,
   og_copy, og_paste_own, og_paste_image, og_paste_text,
   og_bookmark_add, og_bookmark_go, og_bookmark_remove, og_bookmark_rename,
+  og_search, og_search_results, og_search_go,
   og_timeline, og_timeline_range, og_timeline_restore, og_snapshot_request, og_snapshot_take,
 } from './pkg/og_paper.js';
 
@@ -45,6 +46,8 @@ const CSS = `
 .og-list .go { flex: 1; text-align: left; border: 0; background: none; padding: 9px 4px; min-width: 0; }
 .og-list .go small { color: var(--muted); display: block; font-size: 12px; }
 .og-list .mini { border: 0; background: none; color: var(--muted); padding: 6px; font-size: 13px; }
+.og-found { color: var(--muted); font-size: 13px; margin: 6px 0 0; }
+.og-found:empty { display: none; }
 .og-empty { color: var(--muted); font-size: 13px; padding: 6px 0; }
 .og-tour li { display: flex; gap: 8px; padding: 6px 0; border-top: 1px solid var(--edge); align-items: flex-start; }
 .og-tour li:first-child { border-top: 0; }
@@ -258,11 +261,52 @@ export async function start({ mode = 'app' } = {}) {
     el('form', { class: 'og-row' }, '<input name="name" placeholder="Name this view" maxlength="60" autocomplete="off"><button class="og-btn primary">Save view</button>'),
     el('ul', { class: 'og-list' }));
 
+  // ---- search ----
+  cards.search = card('Search text');
+  cards.search.append(
+    el('form', { class: 'og-row' }, '<input name="q" type="search" placeholder="Find text anywhere on the canvas" autocomplete="off" enterkeyhint="search">'),
+    el('p', { class: 'og-found' }, ''),
+    el('ul', { class: 'og-list' }));
+  const sForm = cards.search.querySelector('form');
+  const sList = cards.search.querySelector('.og-list');
+  const sFound = cards.search.querySelector('.og-found');
+  let sHits = [];
+  const runSearch = () => {
+    og_search(sForm.q.value);
+    // The app runs the search on its next frame.
+    setTimeout(() => {
+      sHits = JSON.parse(og_search_results() || '[]');
+      const q = sForm.q.value.trim();
+      sFound.textContent = !q ? '' : sHits.length ? `${sHits.length} found — tap one to go there` : 'No text matches';
+      sList.replaceChildren(...sHits.map((h, i) => {
+        const li = el('li');
+        const b = el('button', { class: 'go', 'data-i': i });
+        b.textContent = h.text;
+        b.append(el('small', {}, `zoom 10^${h.zoom}`));
+        li.append(b);
+        return li;
+      }));
+    }, 50);
+  };
+  sForm.q.oninput = runSearch;
+  sForm.onsubmit = e => {
+    e.preventDefault();
+    if (sHits[0]) goHit(0);
+  };
+  const goHit = i => {
+    og_search_go(sHits[i].g);
+    if (matchMedia('(max-width: 700px)').matches) show(null);
+  };
+  sList.onclick = e => {
+    const b = e.target.closest('button');
+    if (b) goHit(+b.dataset.i);
+  };
+
   // ---- the settings fan's items (drawn by the app) ----
   const standalone = matchMedia('(display-mode: fullscreen), (display-mode: standalone)').matches;
   const canFs = document.documentElement.requestFullscreen && !standalone;
   const syncMenu = () => {
-    const items = ['new', 'open', 'save', 'picture', 'bookmarks', 'timeline', 'home', 'grid'];
+    const items = ['new', 'open', 'save', 'picture', 'search', 'bookmarks', 'timeline', 'home', 'grid'];
     if (canFs && !document.fullscreenElement) items.push('fullscreen');
     if (isTry) items.push('tour');
     og_set_menu(items.join(','));
@@ -642,6 +686,7 @@ export async function start({ mode = 'app' } = {}) {
       else if (r === 'open') openCopy();
       else if (r === 'new') newCanvas();
       else if (r === 'bookmarks') show('bookmarks');
+      else if (r === 'search') { if (open !== 'search') show('search'); sForm.q.focus(); sForm.q.select(); }
       else if (r === 'timeline') openTimeline(!tlOpen);
       else if (r === 'fullscreen') fullScreen();
       else if (r === 'tour' && cards.tour) show('tour');

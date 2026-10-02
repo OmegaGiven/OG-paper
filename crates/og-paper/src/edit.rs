@@ -1320,6 +1320,13 @@ impl App {
                 ov.sel_box = Some((c.map(to_pt), handles));
             }
         }
+        // A searched-for text, outlined for a moment.
+        if let Some(c) = self.flash_corners() {
+            let mut pts: Vec<Pos2> = c.iter().map(|&q| to_pt(q)).collect();
+            pts.push(pts[0]);
+            ov.lines
+                .push((pts, 2.5, egui::Color32::from_rgb(200, 40, 90), false));
+        }
         self.ui.overlay = ov;
     }
 }

@@ -177,6 +177,8 @@ pub enum Menu {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 pub enum AppItem {
+    /// Find text anywhere on the canvas.
+    Search,
     /// Background grid: off, lines, dots.
     Grid,
     New,
@@ -194,6 +196,7 @@ pub enum AppItem {
 impl AppItem {
     fn name(self) -> &'static str {
         match self {
+            AppItem::Search => "Search text",
             AppItem::Grid => "Grid",
             AppItem::New => "New canvas",
             AppItem::Open => "Open",
@@ -209,6 +212,7 @@ impl AppItem {
 
     fn action(self) -> Action {
         match self {
+            AppItem::Search => Action::Search,
             AppItem::Grid => Action::Grid,
             AppItem::New => Action::New,
             AppItem::Open => Action::Open,
@@ -261,6 +265,14 @@ impl GridMode {
 pub struct UiState {
     pub tool: Tool,
     pub grid: GridMode,
+    /// Desktop text search: open, focus it next frame, the query, the query
+    /// the results are for, the results, and a result picked to fly to.
+    pub search_open: bool,
+    pub search_focus: bool,
+    pub search_query: String,
+    pub search_ran: String,
+    pub search_hits: Vec<crate::search::Hit>,
+    pub search_pick: Option<u32>,
     /// The ink tool the picker hands its color to (the last one used).
     pub last_ink: Tool,
     /// Picker loupe while dragging: position (points) and the color under it.
@@ -360,8 +372,15 @@ impl Default for UiState {
                 AppItem::Save,
                 AppItem::Picture,
                 AppItem::Home,
+                AppItem::Search,
                 AppItem::Grid,
             ],
+            search_open: false,
+            search_focus: false,
+            search_query: String::new(),
+            search_ran: String::new(),
+            search_hits: Vec::new(),
+            search_pick: None,
             grid: GridMode::Off,
             timeline_on: false,
             panel_open: None,
@@ -530,6 +549,8 @@ pub enum Action {
     TextCancel,
     /// Cycle the background grid: off, lines, dots.
     Grid,
+    /// Open the text search.
+    Search,
     // Web page panels.
     Bookmarks,
     Timeline,
@@ -761,6 +782,10 @@ pub fn draw(ctx: &egui::Context, st: &mut UiState) -> Vec<Action> {
             }
         }
         p.circle_stroke(at, 6.0, Stroke::new(2.0, INKY));
+    }
+
+    if st.search_open {
+        search_panel(ctx, st);
     }
 
     if let Some(msg) = &st.message {
@@ -2285,6 +2310,11 @@ fn app_icon(p: &egui::Painter, c: Pos2, r: f32, item: AppItem, grid: GridMode) {
         p.add(Shape::line(pts.iter().map(|v| c + *v * s).collect(), st));
     };
     match item {
+        AppItem::Search => {
+            // A magnifying glass.
+            p.circle_stroke(c + vec2(-0.2, -0.2) * s, s * 0.62, st);
+            line(&[vec2(0.25, 0.25), vec2(0.95, 0.95)]);
+        }
         AppItem::Grid => {
             // A 3x3 grid of lines or dots (whichever the next tap gives).
             if grid == GridMode::Lines {
@@ -2987,4 +3017,88 @@ fn eyedropper(p: &egui::Painter, c: Pos2, r: f32, tip: Color32) {
     b.quad(p, (0.35, 0.3), (0.48, 0.3), INKY, Stroke::NONE);
     p.circle_filled(b.at(0.72, 0.0), r * 0.17, INKY);
     p.circle_filled(b.at(-0.98, 0.2), r * 0.07, tip);
+}
+
+/// Desktop text search: a box at the top, results below; Enter flies to the
+/// first result, clicking flies to that one, Esc closes.
+fn search_panel(ctx: &egui::Context, st: &mut UiState) {
+    let screen = ctx.content_rect();
+    let w = 360.0f32.min(screen.width() - 24.0);
+    egui::Area::new(Id::new("search"))
+        .order(Order::Foreground)
+        .pivot(Align2::CENTER_TOP)
+        .fixed_pos(pos2(screen.center().x, screen.top() + 14.0))
+        .show(ctx, |ui| {
+            ui.style_mut().visuals = egui::Visuals::light();
+            egui::Frame::new()
+                .fill(FACE)
+                .stroke(Stroke::new(1.0, EDGE))
+                .corner_radius(12.0)
+                .inner_margin(10.0)
+                .shadow(egui::Shadow {
+                    offset: [0, 2],
+                    blur: 10,
+                    spread: 0,
+                    color: Color32::from_black_alpha(40),
+                })
+                .show(ui, |ui| {
+                    ui.set_width(w);
+                    let mut close = false;
+                    ui.horizontal(|ui| {
+                        let r = ui.add(
+                            egui::TextEdit::singleline(&mut st.search_query)
+                                .hint_text("Search text on the canvas")
+                                .desired_width(w - 70.0),
+                        );
+                        if std::mem::take(&mut st.search_focus) {
+                            r.request_focus();
+                        }
+                        if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                            st.search_pick = st.search_hits.first().map(|h| h.group);
+                            r.request_focus();
+                        }
+                        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                            close = true;
+                        }
+                        if ui.button("Close").clicked() {
+                            close = true;
+                        }
+                    });
+                    if !st.search_query.trim().is_empty() {
+                        ui.add_space(4.0);
+                        if st.search_hits.is_empty() {
+                            ui.label(egui::RichText::new("No text matches").weak());
+                        } else {
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "{} found · click to go there",
+                                    st.search_hits.len()
+                                ))
+                                .small()
+                                .weak(),
+                            );
+                            egui::ScrollArea::vertical()
+                                .max_height(240.0)
+                                .show(ui, |ui| {
+                                    for h in &st.search_hits {
+                                        let label =
+                                            format!("{}   (zoom 10^{:.1})", h.snippet, h.zoom);
+                                        if ui
+                                            .add_sized(
+                                                [w, 0.0],
+                                                egui::Button::selectable(false, label).wrap(),
+                                            )
+                                            .clicked()
+                                        {
+                                            st.search_pick = Some(h.group);
+                                        }
+                                    }
+                                });
+                        }
+                    }
+                    if close {
+                        st.search_open = false;
+                    }
+                });
+        });
 }

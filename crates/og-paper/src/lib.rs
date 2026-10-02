@@ -15,6 +15,7 @@ mod images;
 mod objects;
 mod prefs;
 mod render;
+mod search;
 mod shapes;
 mod snapshot;
 mod timeline;
@@ -108,6 +109,8 @@ pub struct App {
     tl_from: usize,
     /// Animated flight to a view (bookmarks); any input cancels it.
     fly: Option<Camera>,
+    /// A searched-for text being outlined: its group and when it started.
+    flash: Option<(u32, Instant)>,
     fly_last: Instant,
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -169,6 +172,7 @@ impl App {
             tl_view: None,
             tl_from: 0,
             fly: None,
+            flash: None,
             fly_last: Instant::now(),
             #[cfg(not(target_arch = "wasm32"))]
             file: None,
@@ -803,6 +807,16 @@ impl App {
             Action::SaveAs => web::emit("save"),
             #[cfg(target_arch = "wasm32")]
             Action::Bookmarks => web::emit("bookmarks"),
+            Action::Search => {
+                #[cfg(target_arch = "wasm32")]
+                web::emit("search");
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    self.ui.search_open = !self.ui.search_open;
+                    self.ui.search_focus = true;
+                }
+                self.redraw();
+            }
             Action::Grid => {
                 self.ui.grid = self.ui.grid.next();
                 let mut p = prefs::load();
@@ -1016,6 +1030,7 @@ impl App {
             (true, false, "z") => self.action(Action::Undo),
             (true, true, "z") | (true, _, "y") => self.action(Action::Redo),
             (true, _, "n") => self.action(Action::New),
+            (true, _, "f") => self.action(Action::Search),
             (true, _, "o") => self.action(Action::Open),
             (true, true, "s") | (true, false, "s") => self.action(Action::SaveAs),
             (true, _, "d") if selecting => self.sel_action(Action::Duplicate),
@@ -1336,6 +1351,8 @@ impl App {
             c,
             Cmd::Timeline(_)
                 | Cmd::TimelineRange(_)
+                | Cmd::Search
+                | Cmd::SearchGo(_)
                 | Cmd::BookmarkGo(_)
                 | Cmd::Home
                 | Cmd::Menu(_)
@@ -1421,6 +1438,22 @@ impl App {
             }
             Cmd::Timeline(i) => self.timeline_show(i),
             Cmd::TimelineRange(r) => self.timeline_range(r),
+            Cmd::Search => {
+                let hits = self.search(&web::search_query());
+                let json: Vec<String> = hits
+                    .iter()
+                    .map(|h| {
+                        format!(
+                            "{{\"g\":{},\"text\":{},\"zoom\":{:.1}}}",
+                            h.group,
+                            web::json_str(&h.snippet),
+                            h.zoom
+                        )
+                    })
+                    .collect();
+                web::set_search_results(format!("[{}]", json.join(",")));
+            }
+            Cmd::SearchGo(g) => self.search_go(g),
             Cmd::TimelineRestore => self.timeline_restore(),
         }
         if changes {
@@ -1616,6 +1649,20 @@ impl App {
         #[cfg(target_arch = "wasm32")]
         self.web_publish();
 
+        // Search (desktop panel): refresh results as the query changes, and
+        // fly to a picked one.
+        if self.ui.search_open && self.ui.search_ran != self.ui.search_query {
+            self.ui.search_ran = self.ui.search_query.clone();
+            self.ui.search_hits = self.search(&self.ui.search_query);
+        }
+        if let Some(g) = self.ui.search_pick.take() {
+            self.search_go(g);
+        }
+        if self.flash.is_some_and(|(_, t)| t.elapsed() < search::FLASH) {
+            window.request_redraw();
+        } else {
+            self.flash = None;
+        }
         // Canvas
         let [w, h] = self.size();
         query(&self.scene, &self.cam, w, h, VIEW, &mut self.draw);
