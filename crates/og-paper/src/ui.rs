@@ -4146,57 +4146,55 @@ fn brush_section(
     );
     opacity_slider(ui, &mut ink.opacity);
     let p = &mut ink.params;
-    egui::CollapsingHeader::new("Tip")
-        .default_open(texture)
-        .show(ui, |ui| {
+    egui::CollapsingHeader::new("Tip").show(ui, |ui| {
+        ui.horizontal_wrapped(|ui| {
+            for t in ogpaper_core::Tip::ALL {
+                if ui.selectable_label(p.tip == t, t.name()).clicked() {
+                    p.tip = t;
+                }
+            }
+        });
+        if p.tip == ogpaper_core::Tip::Pattern {
             ui.horizontal_wrapped(|ui| {
-                for t in ogpaper_core::Tip::ALL {
-                    if ui.selectable_label(p.tip == t, t.name()).clicked() {
-                        p.tip = t;
+                for pt in ogpaper_core::Pattern::ALL {
+                    if ui.selectable_label(p.pattern == pt, pt.name()).clicked() {
+                        p.pattern = pt;
                     }
                 }
             });
-            if p.tip == ogpaper_core::Tip::Pattern {
-                ui.horizontal_wrapped(|ui| {
-                    for pt in ogpaper_core::Pattern::ALL {
-                        if ui.selectable_label(p.pattern == pt, pt.name()).clicked() {
-                            p.pattern = pt;
-                        }
-                    }
-                });
-                ui.add(
-                    egui::Slider::new(&mut p.pattern_scale, 0.05..=4.0)
-                        .logarithmic(true)
-                        .text("pattern size"),
-                );
-            }
-            ui.add(egui::Slider::new(&mut p.hardness, 0.0..=1.0).text("hardness"));
-            let mut sp = p.spacing * 100.0;
-            if ui
-                .add(
-                    egui::Slider::new(&mut sp, 1.0..=300.0)
-                        .logarithmic(true)
-                        .suffix(" %")
-                        .text("spacing"),
-                )
-                .changed()
-            {
-                p.spacing = sp / 100.0;
-            }
-            let mut deg = p.angle.to_degrees();
-            if ui
-                .add(
-                    egui::Slider::new(&mut deg, -180.0..=180.0)
-                        .suffix("°")
-                        .text("angle"),
-                )
-                .changed()
-            {
-                p.angle = deg.to_radians();
-            }
-            ui.add(egui::Slider::new(&mut p.aspect, 0.05..=1.0).text("roundness"));
-            ui.checkbox(&mut p.follow, "Turn with the stroke");
-        });
+            ui.add(
+                egui::Slider::new(&mut p.pattern_scale, 0.05..=4.0)
+                    .logarithmic(true)
+                    .text("pattern size"),
+            );
+        }
+        ui.add(egui::Slider::new(&mut p.hardness, 0.0..=1.0).text("hardness"));
+        let mut sp = p.spacing * 100.0;
+        if ui
+            .add(
+                egui::Slider::new(&mut sp, 1.0..=300.0)
+                    .logarithmic(true)
+                    .suffix(" %")
+                    .text("spacing"),
+            )
+            .changed()
+        {
+            p.spacing = sp / 100.0;
+        }
+        let mut deg = p.angle.to_degrees();
+        if ui
+            .add(
+                egui::Slider::new(&mut deg, -180.0..=180.0)
+                    .suffix("°")
+                    .text("angle"),
+            )
+            .changed()
+        {
+            p.angle = deg.to_radians();
+        }
+        ui.add(egui::Slider::new(&mut p.aspect, 0.05..=1.0).text("roundness"));
+        ui.checkbox(&mut p.follow, "Turn with the stroke");
+    });
     egui::CollapsingHeader::new("Dynamics").show(ui, |ui| {
         ui.add(egui::Slider::new(&mut p.p_size, 0.0..=1.0).text("pressure → size"));
         ui.add(egui::Slider::new(&mut p.p_opacity, 0.0..=1.0).text("pressure → opacity"));

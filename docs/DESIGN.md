@@ -185,20 +185,21 @@ A canvas is one `.ogp` file: a SQLite database with a published, openly licensed
 
 **Migrating off Endless Paper:** their vector PDF export → our PDF import. Depth and layers will not survive.
 
-### Implemented today: `.ogp` format 0.3
+### Implemented today: `.ogp` format 0.4
 
-The v1 schema above is the target. What the app writes now (`crates/ogpaper-file`, `meta.format_version = "0.3"`) is a subset. Each version only adds to the last: older files open and are upgraded in place (new columns and tables), and older readers can still read newer files (they ignore what they do not know; a 0.2 reader shows pictures as nothing).
+The v1 schema above is the target. What the app writes now (`crates/ogpaper-file`, `meta.format_version = "0.4"`) is a subset. Each version only adds to the last: older files open and are upgraded in place (new columns and tables), and older readers can still read newer files (they ignore what they do not know; a 0.2 reader shows pictures as nothing).
 
 | Table | Columns | Notes |
 | --- | --- | --- |
-| `meta` | `key` TEXT PK, `value` TEXT | Keys: `format` = `ogp`, `format_version` = `0.3`, `README` (plain-English description of the format), `created` (Unix ms), `app` (`og-paper <version>`), `view` (last camera, see below) |
-| `objects` | `id` BLOB PK (UUIDv7, 16 bytes big-endian), `level` INTEGER, `ix` TEXT, `iy` TEXT, `kind` TEXT, `brush` INTEGER, `color` INTEGER, `width` REAL, `points` BLOB, `deleted` INTEGER, `created` INTEGER, *0.2:* `dash` INTEGER, `z` REAL | Index `objects_cell (level, ix, iy)`. Only `kind = 'stroke'` so far |
+| `meta` | `key` TEXT PK, `value` TEXT | Keys: `format` = `ogp`, `format_version` = `0.4`, `README` (plain-English description of the format), `created` (Unix ms), `app` (`og-paper <version>`), `view` (last camera, see below) |
+| `objects` | `id` BLOB PK (UUIDv7, 16 bytes big-endian), `level` INTEGER, `ix` TEXT, `iy` TEXT, `kind` TEXT, `brush` INTEGER, `color` INTEGER, `width` REAL, `points` BLOB, `deleted` INTEGER, `created` INTEGER, *0.2:* `dash` INTEGER, `z` REAL, *0.4:* `params` BLOB | Index `objects_cell (level, ix, iy)`. Only `kind = 'stroke'` so far |
 | `groups` *(0.2)* | `id` BLOB PK, `level` INTEGER, `ix` TEXT, `iy` TEXT, `kind` TEXT (`shape` / `text` / *0.3:* `image` / `table`), `data` BLOB, `strokes` BLOB, `created` INTEGER | Shapes, texts, pictures and tables: the strokes they were drawn as, and the settings to edit them again |
 | `images` *(0.3)* | `id` BLOB PK (8 bytes big-endian), `data` BLOB, `created` INTEGER | Picture files (PNG, JPEG, GIF or WebP), each stored once; the id is a 64-bit FNV-1a hash of the bytes |
 
 - **Cell address:** `level` plus `ix`, `iy` as decimal text (arbitrarily large integers).
 - **Stroke points:** little-endian f32 triples (x, y, pressure) in the anchor cell's local space, where [0,1]² is the cell. Strokes may overflow their cell by up to one cell side. In a fill stroke (brush 3), pressure -1 marks a *bridge* point: the edge into it joins two contours of one letter, counts for the fill's winding but is never drawn.
 - **`width`:** in the same cell-local units. **`color`:** RGBA8 packed R | G<<8 | B<<16 | A<<24; A is the opacity. **`brush`:** 0 pen, 1 marker, 2 highlighter, 3 fill (*0.2*: the points outline a polygon filled with `color`, used for solid shape fills and arrowheads).
+- **Brush engine** *(0.4)*: `brush` 4 = a stroke stamped by the brush engine (`crates/ogpaper-core/src/brush.rs`): `params` holds its settings (`BrushParams::encode`: version u8 = 1, then look u8, tip u8, hardness, spacing, angle, aspect f32, follow u8, pressure→size, pressure→opacity, speed→size, speed→opacity, taper in, taper out, fade, jitter, size jitter, angle jitter f32, count u8, flow, hue jitter f32, end color u32, grain, wobble f32, passes u8, pattern u8, pattern scale f32, seed u32, dab size, hue cycle f32; all little-endian). The look is the stamps the engine makes from the points, `width`, `color` and these settings, deterministically (the seed fixes the randomness). A reader without the engine can draw it as a constant-width line of `width`.
 - **`dash`** *(0.2)*: 0 solid, 1 dashed, 2 dotted (pieces sized from the stroke width).
 - **`z`** *(0.2)*: draw order, low to high, ties by rowid; NULL (0.1 rows) means rowid order. "Send to back" writes strokes below everything else.
 - **`deleted`:** 1 = erased (kept as a tombstone for undo and sync).
@@ -208,7 +209,7 @@ The v1 schema above is the target. What the app writes now (`crates/ogpaper-file
 
 - **Pictures** *(0.3)*: a picture group has one stroke, a fill polygon with `color` 0 (fully transparent, so it draws nothing) through the picture's corners in order top-left, top-right, bottom-right, bottom-left. The picture is drawn on that quad at that stroke's `z`; the stroke also makes it selectable and erasable, and gives it undo and timeline entries like any other.
 
-Not yet in 0.3: `cells`, `layers`, `bookmarks`, `blobs`, `ops`, deletion time stamps, and the compact 6-byte point encoding.
+Not yet in 0.4: `cells`, `layers`, `bookmarks`, `blobs`, `ops`, deletion time stamps, and the compact 6-byte point encoding.
 
 ### Shapes, text and editing
 
@@ -247,7 +248,7 @@ All values little-endian.
 | --- | --- |
 | Header | `"OGPT"` (4 bytes), version u8 = 3 |
 | Camera | addr, `off_x` f64, `off_y` f64, `scale` f64 |
-| Strokes | count u32; each: addr, `width` f32, `color` u32, `brush` u8, `deleted` u8, `uid` u128, point count u32, points (f32 x, y, pressure, distance along the stroke), *v2:* `dash` u8, `z` f64 |
+| Strokes | count u32; each: addr, `width` f32, `color` u32, `brush` u8, `deleted` u8, `uid` u128, point count u32, points (f32 x, y, pressure, distance along the stroke), *v2:* `dash` u8, `z` f64, *v4:* brush engine params (byte count u16, then as `.ogp` `params`; 0 = none) |
 | Events | count u32; each: time i64 (Unix ms), stroke index u32, visible u8 |
 | Bookmarks | count u32; each: name (u32 byte length + UTF-8), camera, `view_px` f64 |
 | Groups *(v2)* | count u32; each: addr, stroke count u32, stroke indexes (u32 each), data |

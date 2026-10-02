@@ -136,6 +136,18 @@ fn pattern(kind: u32, p: vec2<f32>, aa: f32) -> f32 {
     }
 }
 
+// Signed distance to a heart, point at the origin, about 1.1 tall
+// (Inigo Quilez).
+fn sd_heart(p0: vec2<f32>) -> f32 {
+    let p = vec2<f32>(abs(p0.x), p0.y);
+    if (p.y + p.x > 1.0) {
+        return length(p - vec2<f32>(0.25, 0.75)) - 0.35355339;
+    }
+    let a = p - vec2<f32>(0.0, 1.0);
+    let b = p - 0.5 * max(p.x + p.y, 0.0);
+    return sqrt(min(dot(a, a), dot(b, b))) * sign(p.x - p.y);
+}
+
 @fragment
 fn fs_dab(in: VsOut) -> @location(0) vec4<f32> {
     let uv = in.uv;
@@ -201,11 +213,10 @@ fn fs_dab(in: VsOut) -> @location(0) vec4<f32> {
             let paa = fwidth(cells.x) + fwidth(cells.y);
             a = edge(r, hardness, aa) * pattern(u32(in.kind.y + 0.5), cells, max(paa, 0.001));
         }
-        case 12u: { // heart
-            let p = vec2<f32>(uv.x, -uv.y + 0.25) * 1.25;
-            let k = p.x * p.x + p.y * p.y - 1.0;
-            let f = k * k * k - p.x * p.x * p.y * p.y * p.y;
-            a = clamp(-f / max(aa * 3.0, 1.0 - hardness), 0.0, 1.0);
+        case 12u: { // heart (exact distance, point down)
+            let q = vec2<f32>(uv.x, -uv.y) * 0.6 + vec2<f32>(0.0, 0.6);
+            let d = sd_heart(q);
+            a = clamp(-d / max(aa * 0.6, (1.0 - hardness) * 0.3) + 0.5, 0.0, 1.0);
         }
         default: { // round
             a = edge(r, hardness, aa);

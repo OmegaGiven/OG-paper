@@ -29,7 +29,9 @@ Proprietary infinite-canvas apps such as Endless Paper keep your work in undocum
 
 ## What works today
 
-- **Ink:** pen with pressure, marker, highlighter; solid, dashed or dotted; any opacity; stroke eraser, eyedropper, color dial with custom colors, per-brush width, unlimited undo/redo.
+- **Brush:** a simple line (width, pressure, solid / dashed / dotted, opacity), or **Advanced**: a GIMP-style brush engine with 15 looks (pencil, charcoal, bristle brush, watercolor, airbrush, spray, calligraphy, sketchy, jagged, neon, chain, stitches, felt tip, rainbow, ink) and every setting behind them: 13 tip shapes, hardness, spacing, angle, roundness, pressure and speed dynamics, taper, fade, scatter, jitter, sketchy wobble, flow, paper grain, color jitter, hue cycle and fade-to color. Strokes stay vector and sharp at any zoom.
+- **Texture:** splotches, spatter, leaves, stars, hearts, patterns (dots, hatch, weave, grain, ...), paper grain and sponge, with the same engine settings.
+- **Ink tools:** highlighter, stroke eraser, eyedropper, color dial with custom colors, unlimited undo/redo.
 - **Bucket fill:** tap inside an outline to fill it with real vector ink tucked under the lines (sharp at any zoom), optionally closing small gaps in the outline.
 - **Shapes:** one Shapes tool with rectangle, ellipse, diamond, triangle, star, polygon, line and arrow, and Excalidraw-style options: hachure / cross-hatch / zigzag / solid fill, fill color (or one color for stroke and fill), stroke width and style, sloppiness (clean to cartoon), sharp or round edges, curved and elbow lines, nine arrowheads, opacity.
 - **Text:** 11 bundled open-licensed fonts (hand-drawn, marker, sans, serif, mono, display) plus three single-stroke fonts, or add your own `.ttf` / `.otf`; sizes, alignment, color, opacity. Text is ink (letters are filled outlines), so it stays sharp at any zoom.
