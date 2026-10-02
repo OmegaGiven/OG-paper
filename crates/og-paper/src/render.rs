@@ -175,7 +175,25 @@ impl DataTex {
     }
 }
 
+/// The background grid for one frame (see `grid.wgsl`).
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable, Default, Debug)]
+pub struct GridGpu {
+    pub origin: [f32; 2],
+    pub fine: f32,
+    pub target: f32,
+    pub mode: u32,
+    pub _a: f32,
+    pub ppp: f32,
+    pub _b: f32,
+}
+
 pub struct Renderer {
+    /// Background grid to draw under the ink this frame, if any.
+    pub grid: Option<GridGpu>,
+    grid_pipe: wgpu::RenderPipeline,
+    grid_buf: wgpu::Buffer,
+    grid_bind: wgpu::BindGroup,
     instance: wgpu::Instance,
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -525,8 +543,74 @@ impl Renderer {
 
         let (strokes, points) = upload_scene(&device, &queue, &Scene::new());
         let bind = make_bind(&device, &bgl, &globals, &strokes, &points);
+        // Background grid: its own tiny pipeline with one uniform.
+        let grid_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("grid"),
+            size: std::mem::size_of::<GridGpu>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let grid_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("grid"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+        let grid_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("grid"),
+            layout: &grid_bgl,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: grid_buf.as_entire_binding(),
+            }],
+        });
+        let grid_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("grid"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("grid.wgsl").into()),
+        });
+        let grid_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("grid"),
+            bind_group_layouts: &[Some(&grid_bgl)],
+            immediate_size: 0,
+        });
+        let grid_pipe = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("grid"),
+            layout: Some(&grid_layout),
+            vertex: wgpu::VertexState {
+                module: &grid_shader,
+                entry_point: Some("vs_grid"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &grid_shader,
+                entry_point: Some("fs_grid"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
         let egui = egui_wgpu::Renderer::new(&device, format, egui_wgpu::RendererOptions::default());
         Ok(Self {
+            grid: None,
+            grid_pipe,
+            grid_buf,
+            grid_bind,
             instance,
             ink: Growable::new(&device, "ink", 1 << 16),
             hl: Growable::new(&device, "highlight", 1 << 14),
@@ -804,6 +888,13 @@ impl Renderer {
                     multiview_mask: None,
                 })
                 .forget_lifetime();
+            if let Some(grid) = self.grid {
+                self.queue
+                    .write_buffer(&self.grid_buf, 0, bytemuck::bytes_of(&grid));
+                pass.set_pipeline(&self.grid_pipe);
+                pass.set_bind_group(0, &self.grid_bind, &[]);
+                pass.draw(0..3, 0..1);
+            }
             pass.set_bind_group(0, &self.bind, &[]);
             if !draw.tiles.is_empty() {
                 pass.set_pipeline(&self.tile_pipe);

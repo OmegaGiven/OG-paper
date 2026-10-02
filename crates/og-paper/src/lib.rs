@@ -13,6 +13,7 @@ mod font;
 mod hotbar;
 mod images;
 mod objects;
+mod prefs;
 mod render;
 mod shapes;
 mod snapshot;
@@ -149,6 +150,8 @@ impl App {
         egui_ctx.set_theme(egui::Theme::Light);
         let mut ui = UiState::default();
         ui.load_saved(hotbar::load());
+        let prefs = prefs::load();
+        ui.grid = ui::GridMode::from_key(prefs.get("grid").map_or("off", |s| s.as_str()));
         Self {
             window: None,
             gpu: None,
@@ -800,6 +803,13 @@ impl App {
             Action::SaveAs => web::emit("save"),
             #[cfg(target_arch = "wasm32")]
             Action::Bookmarks => web::emit("bookmarks"),
+            Action::Grid => {
+                self.ui.grid = self.ui.grid.next();
+                let mut p = prefs::load();
+                p.insert("grid".into(), self.ui.grid.key().into());
+                prefs::save(&p);
+                self.redraw();
+            }
             #[cfg(target_arch = "wasm32")]
             Action::Timeline => web::emit("timeline"),
             #[cfg(target_arch = "wasm32")]
@@ -1624,6 +1634,31 @@ impl App {
             }),
             _ => None,
         };
+        // Background grid on the canvas's own cells (see grid.wgsl).
+        let grid = (self.ui.grid != ui::GridMode::Off).then(|| {
+            let ppp = self.ppp();
+            let ppc = self.cam.ppc();
+            let [w, h] = self.size();
+            let target = 22.0 * ppp;
+            // Finest power-of-two subdivision of a camera cell still >= target / 2.
+            let n = (ppc / (target * 0.5)).log2().floor().max(0.0);
+            render::GridGpu {
+                origin: [
+                    (w * 0.5 - self.cam.off[0] * ppc) as f32,
+                    (h * 0.5 - self.cam.off[1] * ppc) as f32,
+                ],
+                fine: (ppc / 2f64.powf(n)) as f32,
+                target: target as f32,
+                mode: if self.ui.grid == ui::GridMode::Lines {
+                    1
+                } else {
+                    2
+                },
+                ppp: ppp as f32,
+                ..Default::default()
+            }
+        });
+        self.gpu.as_mut().expect("gpu").grid = grid;
         let paint = UiPaint {
             prims,
             textures: out.textures_delta,

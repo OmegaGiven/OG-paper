@@ -262,7 +262,7 @@ export async function start({ mode = 'app' } = {}) {
   const standalone = matchMedia('(display-mode: fullscreen), (display-mode: standalone)').matches;
   const canFs = document.documentElement.requestFullscreen && !standalone;
   const syncMenu = () => {
-    const items = ['new', 'open', 'save', 'picture', 'bookmarks', 'timeline', 'home'];
+    const items = ['new', 'open', 'save', 'picture', 'bookmarks', 'timeline', 'home', 'grid'];
     if (canFs && !document.fullscreenElement) items.push('fullscreen');
     if (isTry) items.push('tour');
     og_set_menu(items.join(','));

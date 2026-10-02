@@ -177,6 +177,8 @@ pub enum Menu {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 pub enum AppItem {
+    /// Background grid: off, lines, dots.
+    Grid,
     New,
     Open,
     Save,
@@ -192,6 +194,7 @@ pub enum AppItem {
 impl AppItem {
     fn name(self) -> &'static str {
         match self {
+            AppItem::Grid => "Grid",
             AppItem::New => "New canvas",
             AppItem::Open => "Open",
             AppItem::Save => "Save copy",
@@ -206,6 +209,7 @@ impl AppItem {
 
     fn action(self) -> Action {
         match self {
+            AppItem::Grid => Action::Grid,
             AppItem::New => Action::New,
             AppItem::Open => Action::Open,
             AppItem::Save => Action::SaveAs,
@@ -219,8 +223,44 @@ impl AppItem {
     }
 }
 
+/// The background grid.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum GridMode {
+    #[default]
+    Off,
+    Lines,
+    Dots,
+}
+
+impl GridMode {
+    pub fn next(self) -> Self {
+        match self {
+            GridMode::Off => GridMode::Lines,
+            GridMode::Lines => GridMode::Dots,
+            GridMode::Dots => GridMode::Off,
+        }
+    }
+
+    pub fn key(self) -> &'static str {
+        match self {
+            GridMode::Off => "off",
+            GridMode::Lines => "lines",
+            GridMode::Dots => "dots",
+        }
+    }
+
+    pub fn from_key(k: &str) -> Self {
+        match k {
+            "lines" => GridMode::Lines,
+            "dots" => GridMode::Dots,
+            _ => GridMode::Off,
+        }
+    }
+}
+
 pub struct UiState {
     pub tool: Tool,
+    pub grid: GridMode,
     /// The ink tool the picker hands its color to (the last one used).
     pub last_ink: Tool,
     /// Picker loupe while dragging: position (points) and the color under it.
@@ -320,7 +360,9 @@ impl Default for UiState {
                 AppItem::Save,
                 AppItem::Picture,
                 AppItem::Home,
+                AppItem::Grid,
             ],
+            grid: GridMode::Off,
             timeline_on: false,
             panel_open: None,
             shape: ShapeStyle::default(),
@@ -486,6 +528,8 @@ pub enum Action {
     Picture,
     TextDone,
     TextCancel,
+    /// Cycle the background grid: off, lines, dots.
+    Grid,
     // Web page panels.
     Bookmarks,
     Timeline,
@@ -2169,7 +2213,8 @@ fn app_menu(ctx: &egui::Context, st: &mut UiState, g: &Geo, actions: &mut Vec<Ac
                         Id::new(("app_item", i)),
                         Sense::click(),
                     );
-                    let active = item == AppItem::Timeline && st.timeline_on;
+                    let active = (item == AppItem::Timeline && st.timeline_on)
+                        || (item == AppItem::Grid && st.grid != GridMode::Off);
                     disc(
                         &p,
                         pc,
@@ -2177,10 +2222,18 @@ fn app_menu(ctx: &egui::Context, st: &mut UiState, g: &Geo, actions: &mut Vec<Ac
                         if resp.hovered() { Color32::WHITE } else { FACE },
                         active,
                     );
-                    app_icon(&p, pc, rr, item);
+                    app_icon(&p, pc, rr, item, st.grid);
                     if open > 0.9 {
                         let out = Vec2::angled(a);
-                        label(&p, pc + out * (rr + 18.0) + vec2(0.0, 2.0), item.name());
+                        let name = match item {
+                            AppItem::Grid => match st.grid {
+                                GridMode::Off => "Grid: off",
+                                GridMode::Lines => "Grid: lines",
+                                GridMode::Dots => "Grid: dots",
+                            },
+                            _ => item.name(),
+                        };
+                        label(&p, pc + out * (rr + 18.0) + vec2(0.0, 2.0), name);
                     }
                     if resp.clicked() {
                         st.menu = Menu::None;
@@ -2225,13 +2278,28 @@ fn gear_icon(p: &egui::Painter, c: Pos2, r: f32) {
     p.circle_stroke(c, r * 0.13, st);
 }
 
-fn app_icon(p: &egui::Painter, c: Pos2, r: f32, item: AppItem) {
+fn app_icon(p: &egui::Painter, c: Pos2, r: f32, item: AppItem, grid: GridMode) {
     let s = r * 0.42;
     let st = Stroke::new(r * 0.09, INKY);
     let line = |pts: &[Vec2]| {
         p.add(Shape::line(pts.iter().map(|v| c + *v * s).collect(), st));
     };
     match item {
+        AppItem::Grid => {
+            // A 3x3 grid of lines or dots (whichever the next tap gives).
+            if grid == GridMode::Lines {
+                for k in [-1.0, 0.0, 1.0] {
+                    p.circle_filled(c + vec2(-0.75, k * 0.75) * s, r * 0.06, INKY);
+                    p.circle_filled(c + vec2(0.0, k * 0.75) * s, r * 0.06, INKY);
+                    p.circle_filled(c + vec2(0.75, k * 0.75) * s, r * 0.06, INKY);
+                }
+            } else {
+                for k in [-0.75, 0.0, 0.75] {
+                    line(&[vec2(-1.0, k), vec2(1.0, k)]);
+                    line(&[vec2(k, -1.0), vec2(k, 1.0)]);
+                }
+            }
+        }
         AppItem::New => {
             // A page with a folded corner and a plus.
             line(&[

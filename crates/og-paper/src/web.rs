@@ -189,6 +189,7 @@ pub fn og_set_menu(items: &str) {
                 "open" => AppItem::Open,
                 "save" => AppItem::Save,
                 "home" => AppItem::Home,
+                "grid" => AppItem::Grid,
                 "picture" => AppItem::Picture,
                 "bookmarks" => AppItem::Bookmarks,
                 "timeline" => AppItem::Timeline,
