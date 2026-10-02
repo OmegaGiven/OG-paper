@@ -8,7 +8,7 @@
 //! in browser storage and downloads it as an offline copy (`.ogpt`). It is
 //! not the `.ogp` format and holds no undo history.
 //!
-//! Layout (little endian): b"OGPT", version u8 (2; 1 is still read), camera,
+//! Layout (little endian): b"OGPT", version u8 (3; 1 and 2 are still read), camera,
 //! then
 //! - strokes: count u32; each: addr, width f32, color u32, brush u8,
 //!   deleted u8, uid u128, point count u32, points (f32 x4 each),
@@ -17,6 +17,8 @@
 //! - bookmarks: count u32; each: name (u32 length + UTF-8), camera, view_px f64
 //! - v2 groups (shapes and texts): count u32; each: addr, stroke count u32,
 //!   stroke indexes (u32 each), data (see [`put_data`])
+//! - v3 pictures: count u32; each: id u64, byte count u32, the file (PNG,
+//!   JPEG, GIF or WebP)
 //!
 //! A camera is addr, off f64 x2, scale f64. An addr is level i64 then x and y
 //! as (byte count u32, signed LE bytes).
@@ -24,13 +26,13 @@
 use num_bigint::BigInt;
 use ogpaper_core::{Brush, Camera, CellAddr, Dash, Scene, Style};
 
-use crate::font::{Align, Font};
+use crate::font::{self, Align};
 use crate::objects::{Group, ObjData, Objects, TextStyle};
 use crate::shapes::{ArrowType, FillStyle, Geom, Head, ShapeKind, ShapeStyle, Sloppiness};
 use crate::timeline::{Bookmark, Event, Timeline};
 
 const MAGIC: &[u8; 4] = b"OGPT";
-const VERSION: u8 = 2;
+const VERSION: u8 = 3;
 
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 pub struct Snapshot {
@@ -45,8 +47,14 @@ pub struct Snapshot {
 /// - shape: kind, stroke u32, fill u32, fill style, dash, sloppiness, round,
 ///   sides, start head, end head, arrow type, opacity (u8 unless noted),
 ///   geometry, width f64, seed u32
-/// - text: text (u32 length + UTF-8), font u8, align u8, color u32,
-///   opacity u8, geometry, size f64, seed u32
+/// - text (kind 2): text (u32 length + UTF-8), font name (u32 length +
+///   UTF-8), align u8, color u32, opacity u8, geometry, size f64, seed u32.
+///   Kind 1 (older) had a font number u8 (0 single-line, 1 single-line
+///   hand, 2 single-line mono) instead of the name.
+/// - picture (kind 3): picture id u64, opacity u8, geometry
+/// - table (kind 4): row count u32; each row: cell count u32, cells (u32
+///   length + UTF-8); then font name, align, color, opacity, geometry, size,
+///   seed as for text
 ///
 /// Geometry: centre f64 x2, half size f64 x2, rotation f64, point count u32,
 /// points f64 x2. All lengths in the group cell's units.
@@ -94,10 +102,49 @@ pub fn put_data(b: &mut Vec<u8>, d: &ObjData) {
             size,
             seed,
         } => {
-            b.push(1);
+            b.push(2);
             b.extend_from_slice(&(text.len() as u32).to_le_bytes());
             b.extend_from_slice(text.as_bytes());
-            b.push(style.font as u8);
+            let name = font::name_of(style.font);
+            b.extend_from_slice(&(name.len() as u32).to_le_bytes());
+            b.extend_from_slice(name.as_bytes());
+            b.push(style.align as u8);
+            b.extend_from_slice(&style.color.to_le_bytes());
+            b.push(style.opacity);
+            geom(b, g);
+            b.extend_from_slice(&size.to_le_bytes());
+            b.extend_from_slice(&seed.to_le_bytes());
+        }
+        ObjData::Image {
+            id,
+            geom: g,
+            opacity,
+        } => {
+            b.push(3);
+            b.extend_from_slice(&id.to_le_bytes());
+            b.push(*opacity);
+            geom(b, g);
+        }
+        ObjData::Table {
+            cells,
+            style,
+            geom: g,
+            size,
+            seed,
+        } => {
+            b.push(4);
+            let str = |b: &mut Vec<u8>, t: &str| {
+                b.extend_from_slice(&(t.len() as u32).to_le_bytes());
+                b.extend_from_slice(t.as_bytes());
+            };
+            b.extend_from_slice(&(cells.len() as u32).to_le_bytes());
+            for row in cells {
+                b.extend_from_slice(&(row.len() as u32).to_le_bytes());
+                for c in row {
+                    str(b, c);
+                }
+            }
+            str(b, &font::name_of(style.font));
             b.push(style.align as u8);
             b.extend_from_slice(&style.color.to_le_bytes());
             b.push(style.opacity);
@@ -174,6 +221,12 @@ pub fn encode(
         }
         put_data(&mut b, &g.data);
     }
+    b.extend_from_slice(&(objs.images.len() as u32).to_le_bytes());
+    for (id, a) in &objs.images {
+        b.extend_from_slice(&id.to_le_bytes());
+        b.extend_from_slice(&(a.bytes.len() as u32).to_le_bytes());
+        b.extend_from_slice(&a.bytes);
+    }
     b
 }
 
@@ -184,7 +237,7 @@ pub fn decode(bytes: &[u8], base_px: f64) -> Result<Snapshot, String> {
         return Err("not an OG Paper snapshot".into());
     }
     let v = r.u8()?;
-    if v != 1 && v != VERSION {
+    if !(1..=VERSION).contains(&v) {
         return Err(format!("unsupported snapshot version {v}"));
     }
     let cam = r.cam(base_px)?;
@@ -264,6 +317,18 @@ pub fn decode(bytes: &[u8], base_px: f64) -> Result<Snapshot, String> {
             });
         }
     }
+    if v >= 3 {
+        let n = r.u32()?;
+        for _ in 0..n {
+            let id = u64::from_le_bytes(r.take(8)?.try_into().expect("8 bytes"));
+            let len = r.u32()? as usize;
+            let bytes = r.take(len)?.to_vec();
+            // A picture that no longer decodes is skipped, not fatal.
+            if let Ok(a) = crate::images::load(bytes) {
+                objs.images.insert(id, a);
+            }
+        }
+    }
     Ok(Snapshot {
         scene,
         cam,
@@ -309,6 +374,10 @@ impl<'a> Reader<'a> {
         Ok(u32::from_le_bytes(
             self.take(4)?.try_into().expect("4 bytes"),
         ))
+    }
+    fn string(&mut self) -> Result<String, String> {
+        let n = self.u32()? as usize;
+        Ok(String::from_utf8_lossy(self.take(n)?).into_owned())
     }
     fn f32(&mut self) -> Result<f32, String> {
         Ok(f32::from_le_bytes(
@@ -382,10 +451,16 @@ impl<'a> Reader<'a> {
                     seed,
                 })
             }
-            1 => {
+            1 | 2 => {
                 let n = self.u32()? as usize;
                 let text = String::from_utf8_lossy(self.take(n)?).into_owned();
-                let font = Font::from_u8(self.u8()?);
+                let font = if kind == 1 {
+                    // Ids 0-2 are the single-line fonts in every registry.
+                    (self.u8()?).min(2) as font::FontId
+                } else {
+                    let n = self.u32()? as usize;
+                    font::id_of(&String::from_utf8_lossy(self.take(n)?))
+                };
                 let align = Align::from_u8(self.u8()?);
                 let color = self.u32()?;
                 let opacity = self.u8()?;
@@ -394,6 +469,49 @@ impl<'a> Reader<'a> {
                 let seed = self.u32()?;
                 Ok(ObjData::Text {
                     text,
+                    style: TextStyle {
+                        font,
+                        align,
+                        color,
+                        opacity,
+                    },
+                    geom,
+                    size,
+                    seed,
+                })
+            }
+            3 => {
+                let id = u64::from_le_bytes(self.take(8)?.try_into().expect("8 bytes"));
+                let opacity = self.u8()?;
+                let geom = geom(self)?;
+                Ok(ObjData::Image { id, geom, opacity })
+            }
+            4 => {
+                let rows = self.u32()? as usize;
+                if rows > self.b.len() - self.at {
+                    return Err("truncated snapshot".into());
+                }
+                let mut cells = Vec::with_capacity(rows);
+                for _ in 0..rows {
+                    let n = self.u32()? as usize;
+                    if n > self.b.len() - self.at {
+                        return Err("truncated snapshot".into());
+                    }
+                    let mut row = Vec::with_capacity(n);
+                    for _ in 0..n {
+                        row.push(self.string()?);
+                    }
+                    cells.push(row);
+                }
+                let font = font::id_of(&self.string()?);
+                let align = Align::from_u8(self.u8()?);
+                let color = self.u32()?;
+                let opacity = self.u8()?;
+                let geom = geom(self)?;
+                let size = self.f64()?;
+                let seed = self.u32()?;
+                Ok(ObjData::Table {
+                    cells,
                     style: TextStyle {
                         font,
                         align,
@@ -461,7 +579,10 @@ mod tests {
             cell: deep.clone(),
             data: ObjData::Text {
                 text: "Hi ✨".into(),
-                style: TextStyle::default(),
+                style: TextStyle {
+                    font: font::id_of("Lora"),
+                    ..TextStyle::default()
+                },
                 geom: Geom {
                     center: [0.5, 0.5],
                     half: [0.2, 0.1],
@@ -470,6 +591,34 @@ mod tests {
                 },
                 size: 0.1,
                 seed: 9,
+            },
+            strokes: vec![a],
+        });
+        objs.add(Group {
+            cell: deep.clone(),
+            data: ObjData::Table {
+                cells: vec![vec!["a".into(), "b ✨".into()], vec![]],
+                style: TextStyle::default(),
+                geom: Geom::default(),
+                size: 0.1,
+                seed: 2,
+            },
+            strokes: vec![a],
+        });
+        let png = {
+            let img = image::RgbaImage::from_pixel(3, 2, image::Rgba([1, 2, 3, 255]));
+            let mut out = std::io::Cursor::new(Vec::new());
+            img.write_to(&mut out, image::ImageFormat::Png).unwrap();
+            out.into_inner()
+        };
+        objs.images
+            .insert(77, crate::images::prepare(png.clone()).unwrap());
+        objs.add(Group {
+            cell: deep.clone(),
+            data: ObjData::Image {
+                id: 77,
+                geom: Geom::default(),
+                opacity: 128,
             },
             strokes: vec![a],
         });
@@ -485,9 +634,12 @@ mod tests {
         assert_eq!(s2.strokes[0].color, 0x11223344);
         assert_eq!(snap.timeline.events, tl.events);
         assert_eq!(snap.bookmarks[0].name, "deep ✨");
-        assert_eq!(snap.objs.groups.len(), 1);
-        assert_eq!(snap.objs.groups[0].data, objs.groups[0].data);
-        assert_eq!(snap.objs.obj_of(0), crate::objects::ObjRef::Group(0));
+        assert_eq!(snap.objs.groups.len(), 3);
+        for i in 0..3 {
+            assert_eq!(snap.objs.groups[i].data, objs.groups[i].data);
+        }
+        assert_eq!(snap.objs.images[&77].w, 3);
+        assert_eq!(snap.objs.image_of.get(&a), Some(&(77, 128)));
         assert_eq!(snap.scene.strokes[0].z, s.strokes[0].z);
         assert_eq!(snap.bookmarks[0].cam.cell, cam.cell);
         assert_eq!(snap.bookmarks[0].view_px, 640.0);

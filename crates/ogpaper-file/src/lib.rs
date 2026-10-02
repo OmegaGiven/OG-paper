@@ -18,7 +18,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 
 pub use rusqlite::Error;
 
-pub const FORMAT_VERSION: &str = "0.2";
+pub const FORMAT_VERSION: &str = "0.3";
 
 const README: &str = "This is an OG Paper canvas (https://github.com/OmegaGiven/OG-paper). \
 It is a SQLite database. Table `objects` holds one row per drawn object. Each object is \
@@ -29,10 +29,13 @@ cell's local space, where [0,1]x[0,1] is the cell; `width` is in the same units;
 RGBA8 packed as R | G<<8 | B<<16 | A<<24 (A is opacity); `brush` is 0 = pen, 1 = marker, \
 2 = highlighter, 3 = fill (the points outline a filled polygon); `dash` is 0 = solid, 1 = dashed, \
 2 = dotted. Rows with deleted = 1 are hidden (kept for undo). Draw objects in order of `z` \
-(then rowid); a missing z means rowid order. Table `groups` lists shapes and texts: each row names \
+(then rowid); a missing z means rowid order. Table `groups` lists shapes, texts, pictures and tables: each row names \
 its strokes (`strokes`, the 16-byte ids of its rows in `objects`, concatenated) and keeps the \
 settings they were drawn from (`data`, a small binary record described in the OG Paper spec) so \
-they can be edited again; the strokes alone are enough to draw them.";
+they can be edited again; the strokes alone are enough to draw them, except pictures, whose one \
+stroke is an invisible outline of the picture's corners (top-left, top-right, bottom-right, \
+bottom-left). Table `images` holds each picture file once (PNG, JPEG, GIF or WebP) under its \
+8-byte id, which the picture's `data` names.";
 
 pub struct OgpFile {
     conn: Connection,
@@ -88,6 +91,11 @@ impl OgpFile {
                  kind TEXT NOT NULL,
                  data BLOB NOT NULL,
                  strokes BLOB NOT NULL,
+                 created INTEGER NOT NULL
+             );
+             CREATE TABLE images (
+                 id BLOB PRIMARY KEY,
+                 data BLOB NOT NULL,
                  created INTEGER NOT NULL
              );",
         )?;
@@ -193,7 +201,12 @@ impl OgpFile {
                 .execute_batch("ALTER TABLE objects ADD COLUMN z REAL;")?;
         }
         self.conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS groups (
+            "CREATE TABLE IF NOT EXISTS images (
+                 id BLOB PRIMARY KEY,
+                 data BLOB NOT NULL,
+                 created INTEGER NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS groups (
                  id BLOB PRIMARY KEY,
                  level INTEGER NOT NULL,
                  ix TEXT NOT NULL,
@@ -204,11 +217,39 @@ impl OgpFile {
                  created INTEGER NOT NULL
              );",
         )?;
-        if self.get_meta("format_version")?.as_deref() == Some("0.1") {
+        if matches!(
+            self.get_meta("format_version")?.as_deref(),
+            Some("0.1" | "0.2")
+        ) {
             self.set_meta("format_version", FORMAT_VERSION)?;
             self.set_meta("README", README)?;
         }
         Ok(())
+    }
+
+    /// Store a picture file under its id (no-op if it is already there).
+    pub fn put_image(&self, id: u64, bytes: &[u8]) -> Result<(), Error> {
+        self.conn.execute(
+            "INSERT OR IGNORE INTO images (id, data, created) VALUES (?1, ?2, ?3)",
+            params![id.to_be_bytes().to_vec(), bytes, now_ms()],
+        )?;
+        Ok(())
+    }
+
+    /// Every picture file in the canvas.
+    pub fn images(&self) -> Result<Vec<(u64, Vec<u8>)>, Error> {
+        let mut q = self
+            .conn
+            .prepare("SELECT id, data FROM images ORDER BY rowid")?;
+        let mut rows = q.query([])?;
+        let mut out = Vec::new();
+        while let Some(r) = rows.next()? {
+            let id: Vec<u8> = r.get(0)?;
+            if let Ok(b) = <[u8; 8]>::try_from(id.as_slice()) {
+                out.push((u64::from_be_bytes(b), r.get(1)?));
+            }
+        }
+        Ok(out)
     }
 
     /// Write a shape or text (no-op if it is already in the file).
@@ -400,9 +441,15 @@ mod tests {
             },
         )
         .unwrap();
+        f.put_image(u64::MAX - 5, b"png bytes").unwrap();
+        f.put_image(u64::MAX - 5, b"png bytes").unwrap();
         drop(f);
 
-        let (_f, s2, view, groups) = OgpFile::open(&path).unwrap();
+        let (f2, s2, view, groups) = OgpFile::open(&path).unwrap();
+        assert_eq!(
+            f2.images().unwrap(),
+            vec![(u64::MAX - 5, b"png bytes".to_vec())]
+        );
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].strokes, vec![42]);
         assert_eq!(groups[0].data, vec![1, 2, 3]);
@@ -431,7 +478,7 @@ mod tests {
         assert!(s3.strokes.is_empty() && g3.is_empty());
         assert_eq!(
             f2.get_meta("format_version").unwrap().as_deref(),
-            Some("0.2")
+            Some("0.3")
         );
         let v = view.unwrap();
         assert_eq!(v.cell, cam.cell);

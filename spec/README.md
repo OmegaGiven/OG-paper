@@ -7,7 +7,7 @@ The formal spec (v1) will be written during Phase 1. Until then, the design live
 [`../docs/DESIGN.md`](../docs/DESIGN.md#data-model-and-file-format):
 
 - [Target v1 schema](../docs/DESIGN.md#schema-v1-draft) and [longevity guarantees](../docs/DESIGN.md#longevity-guarantees)
-- [`.ogp` format 0.2](../docs/DESIGN.md#implemented-today-ogp-format-02): what the app writes today (`meta`, `objects`, `groups`)
+- [`.ogp` format 0.3](../docs/DESIGN.md#implemented-today-ogp-format-03): what the app writes today (`meta`, `objects`, `groups`, `images`)
 - [Shapes, text and editing](../docs/DESIGN.md#shapes-text-and-editing): how shapes and text are stored as strokes plus their settings
 - [Time stamps and the timeline](../docs/DESIGN.md#time-stamps-and-the-timeline): the stroke event log
 - [Bookmarks](../docs/DESIGN.md#bookmarks)

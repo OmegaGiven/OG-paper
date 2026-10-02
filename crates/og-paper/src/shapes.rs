@@ -267,6 +267,9 @@ pub struct Piece {
     pub brush: Brush,
     pub dash: Dash,
     pub color: u32,
+    /// Fill only: points whose incoming edge just joins two contours (a
+    /// letter's hole or second part), drawn without an edge.
+    pub bridges: Vec<u32>,
 }
 
 fn with_opacity(c: u32, o: u8) -> u32 {
@@ -559,6 +562,7 @@ pub fn pieces(st: &ShapeStyle, g: &Geom, width: f64, seed: u32) -> Vec<Piece> {
         brush: Brush::Marker,
         dash,
         color,
+        bridges: vec![],
     };
 
     if st.kind.is_linear() {
@@ -616,6 +620,7 @@ pub fn pieces(st: &ShapeStyle, g: &Geom, width: f64, seed: u32) -> Vec<Piece> {
             brush: Brush::Fill,
             dash: Dash::Solid,
             color: fill,
+            bridges: vec![],
         }),
         FillStyle::Hachure | FillStyle::CrossHatch => {
             let mut lines = hatch(&poly, angle, gap);
@@ -691,6 +696,7 @@ fn arrowhead(
         brush: Brush::Fill,
         dash: Dash::Solid,
         color,
+        bridges: vec![],
     };
     let stroke = |pts: Vec<[f64; 2]>| Piece {
         pts,
@@ -698,6 +704,7 @@ fn arrowhead(
         brush: Brush::Marker,
         dash: Dash::Solid,
         color,
+        bridges: vec![],
     };
     let w = size * 0.5;
     match h {

@@ -10,6 +10,8 @@ mod demo;
 mod edit;
 mod egui_io;
 mod font;
+mod hotbar;
+mod images;
 mod objects;
 mod render;
 mod shapes;
@@ -57,6 +59,11 @@ fn dist(a: [f64; 2], b: [f64; 2]) -> f64 {
 
 /// Pixels per level-0 cell at scale 1.
 const BASE_PX: f64 = 800.0;
+
+/// What this app puts on the system clipboard when it copies (the copy
+/// itself stays in the app).
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+const CLIP_MARK: &str = "OG Paper selection (paste it into OG Paper)";
 
 fn home_camera() -> Camera {
     Camera::new(CellAddr::new(0, 0, 0), [0.5, 0.5], BASE_PX)
@@ -126,6 +133,8 @@ pub struct App {
     touch_start: HashMap<u64, [f64; 2]>,
     message_until: Option<Instant>,
     last_dbg: (u32, u32, u32),
+    /// The last picture the color picker read, decoded.
+    pick_img: std::cell::RefCell<Option<(u64, image::RgbaImage)>>,
 }
 
 impl App {
@@ -133,13 +142,17 @@ impl App {
         let _ = &open_path;
         // Light controls on light paper, whatever the system theme.
         let egui_ctx = egui::Context::default();
+        #[cfg(not(target_arch = "wasm32"))]
+        load_user_fonts();
         egui_ctx.set_theme(egui::Theme::Light);
+        let mut ui = UiState::default();
+        (ui.hotbar, ui.inventory) = hotbar::load();
         Self {
             window: None,
             gpu: None,
             egui_ctx,
             egui_io: None,
-            ui: UiState::default(),
+            ui,
             scene: Scene::new(),
             cam: home_camera(),
             history: History::default(),
@@ -172,6 +185,7 @@ impl App {
             touch_start: HashMap::new(),
             message_until: None,
             last_dbg: (0, 0, 0),
+            pick_img: Default::default(),
         }
     }
 
@@ -409,7 +423,51 @@ impl App {
             );
             za.total_cmp(&zb).then(a.cmp(&b))
         })?;
+        if let Some(&(id, _)) = self.objs.image_of.get(&top) {
+            return self.picture_color(top, id, p);
+        }
         let [r, g, b, _] = self.scene.strokes[top as usize].color.to_le_bytes();
+        Some(egui::Color32::from_rgb(r, g, b))
+    }
+
+    /// The color of picture `id` (placed by stroke `carrier`) under screen point `p`.
+    fn picture_color(&self, carrier: u32, id: u64, p: [f64; 2]) -> Option<egui::Color32> {
+        let inst = self.draw.strokes.iter().find(|i| i.stroke == carrier)?;
+        let c: Vec<[f64; 2]> = self
+            .scene
+            .stroke_points(carrier)
+            .iter()
+            .map(|q| {
+                [
+                    (inst.ox + q[0] * inst.scale) as f64,
+                    (inst.oy + q[1] * inst.scale) as f64,
+                ]
+            })
+            .collect();
+        if c.len() != 4 {
+            return None;
+        }
+        // p = c0 + u (c1 - c0) + v (c3 - c0)
+        let (a, b) = (
+            [c[1][0] - c[0][0], c[1][1] - c[0][1]],
+            [c[3][0] - c[0][0], c[3][1] - c[0][1]],
+        );
+        let d = [p[0] - c[0][0], p[1] - c[0][1]];
+        let det = a[0] * b[1] - a[1] * b[0];
+        if det.abs() < 1e-9 {
+            return None;
+        }
+        let u = (d[0] * b[1] - d[1] * b[0]) / det;
+        let v = (a[0] * d[1] - a[1] * d[0]) / det;
+        let mut cache = self.pick_img.borrow_mut();
+        if cache.as_ref().is_none_or(|(cid, _)| *cid != id) {
+            let img = image::load_from_memory(&self.objs.images.get(&id)?.bytes).ok()?;
+            *cache = Some((id, img.to_rgba8()));
+        }
+        let (_, img) = cache.as_ref()?;
+        let x = ((u.clamp(0.0, 1.0) * img.width() as f64) as u32).min(img.width() - 1);
+        let y = ((v.clamp(0.0, 1.0) * img.height() as f64) as u32).min(img.height() - 1);
+        let [r, g, b, _] = img.get_pixel(x, y).0;
         Some(egui::Color32::from_rgb(r, g, b))
     }
 
@@ -434,6 +492,10 @@ impl App {
                 match back {
                     Tool::Shapes if self.ui.color_target == ui::ColorTarget::Fill => {
                         self.ui.shape.fill = col
+                    }
+                    Tool::Shapes if self.ui.color_target == ui::ColorTarget::Both => {
+                        self.ui.shape.stroke = col;
+                        self.ui.shape.fill = col;
                     }
                     Tool::Shapes => self.ui.shape.stroke = col,
                     Tool::Text => self.ui.text.color = col,
@@ -523,6 +585,8 @@ impl App {
                 kind: match g.data {
                     objects::ObjData::Shape { .. } => "shape".into(),
                     objects::ObjData::Text { .. } => "text".into(),
+                    objects::ObjData::Image { .. } => "image".into(),
+                    objects::ObjData::Table { .. } => "table".into(),
                 },
                 data: snapshot::data_bytes(&g.data),
                 strokes: g
@@ -531,6 +595,11 @@ impl App {
                     .map(|&s| self.scene.strokes[s as usize].uid)
                     .collect(),
             };
+            if let objects::ObjData::Image { id, .. } = g.data {
+                if let Some(a) = self.objs.images.get(&id) {
+                    let _ = f.put_image(id, &a.bytes);
+                }
+            }
             let _ = f.put_group(uid::new(), &fg);
         }
         self.groups_saved = self.objs.groups.len();
@@ -618,6 +687,13 @@ impl App {
                 self.file = Some(f);
                 self.load_scene(scene, cam);
                 self.objs = groups_from_file(&self.scene, groups);
+                if let Some(f) = &self.file {
+                    for (id, b) in f.images().unwrap_or_default() {
+                        if let Ok(a) = images::load(b) {
+                            self.objs.images.insert(id, a);
+                        }
+                    }
+                }
                 self.groups_saved = self.objs.groups.len();
                 self.say(format!("Opened {} ({n} strokes)", path.display()));
             }
@@ -634,6 +710,61 @@ impl App {
         self.ui.file_name = "Untitled".into();
         self.bookmarks.clear();
         self.load_scene(Scene::new(), home_camera());
+    }
+
+    /// Pick a font file, keep a copy in the fonts folder and use it.
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+    fn add_font_dialog(&mut self) {
+        let Some(p) = rfd::FileDialog::new()
+            .add_filter("Font (TrueType / OpenType)", &["ttf", "otf", "TTF", "OTF"])
+            .pick_file()
+        else {
+            return;
+        };
+        let bytes = match std::fs::read(&p) {
+            Ok(b) => b,
+            Err(e) => return self.say(format!("Could not read {}: {e}", p.display())),
+        };
+        match font::register(None, "Yours", bytes, true) {
+            Ok((id, name)) => {
+                if let (Some(dir), Some(file)) = (fonts_dir(), p.file_name()) {
+                    let _ = std::fs::create_dir_all(&dir)
+                        .and_then(|_| std::fs::copy(&p, dir.join(file)));
+                }
+                self.font_added(id, &name);
+            }
+            Err(e) => self.say(format!("Could not add {}: {e}", p.display())),
+        }
+    }
+
+    /// Use a font that was just added.
+    fn font_added(&mut self, id: font::FontId, name: &str) {
+        self.ui.text.font = id;
+        if self.ui.tool == Tool::Select && self.ui.sel.kind == ui::SelKind::Text {
+            self.ui.sel.text.font = id;
+        }
+        self.say(format!("Added the font {name}"));
+        self.redraw();
+    }
+
+    /// Let egui draw every outline font (the font picker shows each name in
+    /// its own font).
+    fn sync_egui_fonts(&mut self) {
+        for f in font::list() {
+            if f.outline && !self.ui.egui_fonts.contains(&f.name) {
+                if let Some(bytes) = font::outline_data(&f.name) {
+                    self.egui_ctx.add_font(egui::epaint::text::FontInsert::new(
+                        &f.name,
+                        egui::FontData::from_owned(bytes.to_vec()),
+                        vec![egui::epaint::text::InsertFontFamily {
+                            family: egui::FontFamily::Name(f.name.as_str().into()),
+                            priority: egui::epaint::text::FontPriority::Highest,
+                        }],
+                    ));
+                    self.ui.egui_fonts.insert(f.name.clone());
+                }
+            }
+        }
     }
 
     fn action(&mut self, a: Action) {
@@ -672,6 +803,21 @@ impl App {
             Action::FullScreen => web::emit("fullscreen"),
             #[cfg(target_arch = "wasm32")]
             Action::Tour => web::emit("tour"),
+            #[cfg(target_arch = "wasm32")]
+            Action::AddFont => web::emit("font"),
+            #[cfg(target_arch = "wasm32")]
+            Action::Picture => web::emit("picture"),
+            #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+            Action::Picture => {
+                if let Some(p) = rfd::FileDialog::new()
+                    .add_filter("Pictures", &["png", "jpg", "jpeg", "gif", "webp"])
+                    .pick_file()
+                {
+                    self.open_dropped(p, None);
+                }
+            }
+            #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+            Action::AddFont => self.add_font_dialog(),
             #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
             Action::Open => {
                 if let Some(p) = rfd::FileDialog::new()
@@ -708,6 +854,105 @@ impl App {
             }
             #[allow(unreachable_patterns)]
             _ => self.say("Not available on this platform yet"),
+        }
+    }
+
+    /// After copying: put a marker on the system clipboard, so pasting
+    /// pastes the copy until something else is copied elsewhere.
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+    fn clip_mark(&mut self) {
+        if let Ok(mut cb) = arboard::Clipboard::new() {
+            let _ = cb.set_text(CLIP_MARK);
+        }
+    }
+    #[cfg(any(target_arch = "wasm32", target_os = "android"))]
+    fn clip_mark(&mut self) {}
+
+    /// Paste from the system clipboard: a picture, files, a table or text.
+    /// False when it holds nothing to paste, or this app's own copy.
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+    fn system_paste(&mut self) -> bool {
+        let Ok(mut cb) = arboard::Clipboard::new() else {
+            return false;
+        };
+        let text = cb.get_text().ok();
+        if text.as_deref() == Some(CLIP_MARK) {
+            return false;
+        }
+        let at = Some(self.cursor);
+        // Spreadsheets put both a table and a picture of it on the clipboard:
+        // take the table.
+        if let Some(t) = &text {
+            if objects::table_from_text(t).is_some() {
+                self.paste_text(t, at);
+                return true;
+            }
+        }
+        if let Ok(img) = cb.get_image() {
+            let rgba =
+                image::RgbaImage::from_raw(img.width as u32, img.height as u32, img.bytes.into());
+            match rgba
+                .ok_or("bad picture".to_string())
+                .and_then(images::from_rgba)
+            {
+                Ok(a) => self.insert_image(a, at),
+                Err(e) => self.say(format!("Could not paste the picture: {e}")),
+            }
+            return true;
+        }
+        if let Ok(files) = cb.get().file_list() {
+            if !files.is_empty() {
+                for f in files {
+                    self.open_dropped(f, at);
+                }
+                return true;
+            }
+        }
+        match text {
+            Some(t) if !t.trim().is_empty() => {
+                self.paste_text(&t, at);
+                true
+            }
+            _ => false,
+        }
+    }
+    #[cfg(any(target_arch = "wasm32", target_os = "android"))]
+    fn system_paste(&mut self) -> bool {
+        false
+    }
+
+    /// A file dropped on the window (or picked): a picture goes on the
+    /// canvas, a canvas opens, text is pasted.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn open_dropped(&mut self, path: PathBuf, at: Option<[f64; 2]>) {
+        let ext = path
+            .extension()
+            .map(|e| e.to_string_lossy().to_lowercase())
+            .unwrap_or_default();
+        if ext == "ogp" {
+            self.open_file(path);
+            return;
+        }
+        let bytes = match std::fs::read(&path) {
+            Ok(b) => b,
+            Err(e) => {
+                self.say(format!("Could not read {}: {e}", path.display()));
+                return;
+            }
+        };
+        if matches!(ext.as_str(), "txt" | "tsv" | "md" | "csv") {
+            let text = String::from_utf8_lossy(&bytes).into_owned();
+            let text = if ext == "csv" {
+                text.replace(',', "\t")
+            } else {
+                text
+            };
+            self.paste_text(&text, at);
+            return;
+        }
+        match images::prepare(bytes) {
+            Ok(a) => self.insert_image(a, at),
+            Err(e) => self.say(format!("Could not add {}: {e}", file_label(&path))),
         }
     }
 
@@ -756,8 +1001,20 @@ impl App {
             (true, _, "o") => self.action(Action::Open),
             (true, true, "s") | (true, false, "s") => self.action(Action::SaveAs),
             (true, _, "d") if selecting => self.sel_action(Action::Duplicate),
-            (true, _, "c") if selecting => self.copy_selection(),
-            (true, _, "v") => self.paste(),
+            (true, _, "c") if selecting => {
+                self.copy_selection();
+                self.clip_mark();
+            }
+            (true, _, "x") if selecting => {
+                self.copy_selection();
+                self.clip_mark();
+                self.sel_action(Action::Delete);
+            }
+            (true, _, "v") => {
+                if !self.system_paste() {
+                    self.paste();
+                }
+            }
             (true, _, "a") => self.select_all_visible(),
             (true, _, "]") if selecting => self.sel_action(Action::ToFront),
             (true, _, "[") if selecting => self.sel_action(Action::ToBack),
@@ -779,10 +1036,12 @@ impl App {
             (false, _, "l") => {
                 (self.ui.tool, self.ui.shape.kind) = (Tool::Shapes, shapes::ShapeKind::Line)
             }
-            (false, _, "1") => (self.ui.tool, self.ui.last_ink) = (Tool::Pen, Tool::Pen),
-            (false, _, "2") => (self.ui.tool, self.ui.last_ink) = (Tool::Marker, Tool::Marker),
-            (false, _, "3") => {
-                (self.ui.tool, self.ui.last_ink) = (Tool::Highlighter, Tool::Highlighter)
+            // The quick bar's slots.
+            (false, _, d) if d.len() == 1 && ("1"..="9").contains(&d) => {
+                let i = d.parse::<usize>().expect("digit") - 1;
+                if !self.ui.use_slot(i) {
+                    return false;
+                }
             }
             (false, _, "e") => self.ui.tool = Tool::Eraser,
             (false, _, "h") => self.ui.tool = Tool::Hand,
@@ -1029,7 +1288,13 @@ impl App {
         use web::Cmd;
         let changes = !matches!(
             c,
-            Cmd::Timeline(_) | Cmd::BookmarkGo(_) | Cmd::Home | Cmd::Menu(_) | Cmd::Text(None)
+            Cmd::Timeline(_)
+                | Cmd::BookmarkGo(_)
+                | Cmd::Home
+                | Cmd::Menu(_)
+                | Cmd::Text(None)
+                | Cmd::FontAdded(..)
+                | Cmd::Copy(false)
         );
         match c {
             Cmd::Load(bytes, demo) => {
@@ -1091,6 +1356,22 @@ impl App {
                 self.text_commit();
             }
             Cmd::Text(None) => self.text_cancel(),
+            Cmd::FontAdded(id, name) => self.font_added(id, &name),
+            Cmd::Copy(cut) => {
+                self.copy_selection();
+                if cut {
+                    self.sel_action(Action::Delete);
+                }
+            }
+            Cmd::PasteOwn => self.paste(),
+            Cmd::Picture(a, at) => {
+                let k = web_dpr() as f64;
+                self.insert_image(a, at.map(|p| [p[0] * k, p[1] * k]));
+            }
+            Cmd::PasteText(t, at) => {
+                let k = web_dpr() as f64;
+                self.paste_text(&t, at.map(|p| [p[0] * k, p[1] * k]));
+            }
             Cmd::Timeline(i) => self.timeline_show(i),
             Cmd::TimelineRestore => self.timeline_restore(),
         }
@@ -1103,6 +1384,7 @@ impl App {
     /// Hand the page our status (and a snapshot, if it asked for one).
     #[cfg(target_arch = "wasm32")]
     fn web_publish(&mut self) {
+        web::set_has_selection(self.ui.tool == Tool::Select && !self.edit.selection.is_empty());
         if web::snapshot_wanted() {
             // Saved as it is now, not as the timeline is showing it.
             let mut scene_flags = None;
@@ -1235,6 +1517,7 @@ impl App {
         self.ui.can_undo = self.history.can_undo();
         self.ui.can_redo = self.history.can_redo();
         self.ui.strokes = self.scene.strokes.iter().filter(|s| !s.deleted).count();
+        self.sync_egui_fonts();
         let pointer_down = self.egui_ctx.input(|i| i.pointer.any_down());
         self.sync_sel_panel(pointer_down);
         self.build_overlay();
@@ -1249,6 +1532,9 @@ impl App {
             .output(&window, out.platform_output);
         for a in actions {
             self.action(a);
+        }
+        if std::mem::take(&mut self.ui.presets_dirty) {
+            hotbar::save(&self.ui.hotbar, &self.ui.inventory);
         }
         if out
             .viewport_output
@@ -1307,7 +1593,7 @@ impl App {
             .gpu
             .as_mut()
             .expect("gpu")
-            .render(&self.scene, &self.draw, wet, paint)
+            .render(&self.scene, &self.draw, &self.objs, wet, paint)
         {
             log::debug!("frame not presented; retrying");
             window.request_redraw();
@@ -1414,6 +1700,11 @@ impl ApplicationHandler for App {
                 window.request_redraw();
             }
             WindowEvent::RedrawRequested => self.frame(),
+            #[cfg(not(target_arch = "wasm32"))]
+            WindowEvent::DroppedFile(path) => {
+                self.open_dropped(path, Some(self.cursor));
+                window.request_redraw();
+            }
             WindowEvent::ModifiersChanged(m) => self.mods = m.state(),
             WindowEvent::KeyboardInput { event, .. } => {
                 if let Key::Named(NamedKey::Space) = event.logical_key {
@@ -1516,6 +1807,43 @@ fn file_label(p: &std::path::Path) -> String {
 /// App-private storage on platforms without a home directory (Android).
 #[cfg(not(target_arch = "wasm32"))]
 static DATA_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// Fonts you added: ~/OG Paper/fonts/ (Android: the app's storage).
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn fonts_dir() -> Option<PathBuf> {
+    let dir = match DATA_DIR.get() {
+        Some(d) => d.join("fonts"),
+        None => std::env::var_os("HOME")
+            .or_else(|| std::env::var_os("USERPROFILE"))
+            .map(PathBuf::from)?
+            .join("OG Paper")
+            .join("fonts"),
+    };
+    Some(dir)
+}
+
+/// Register the fonts saved in the fonts folder.
+#[cfg(not(target_arch = "wasm32"))]
+fn load_user_fonts() {
+    let Some(dir) = fonts_dir() else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for e in entries.flatten() {
+        let p = e.path();
+        let ext = p
+            .extension()
+            .map(|x| x.to_string_lossy().to_lowercase())
+            .unwrap_or_default();
+        if ext == "ttf" || ext == "otf" {
+            if let Ok(bytes) = std::fs::read(&p) {
+                let _ = font::register(None, "Yours", bytes, true);
+            }
+        }
+    }
+}
 
 /// Where a new canvas is saved before you pick a name: ~/OG Paper/.
 #[cfg(not(target_arch = "wasm32"))]

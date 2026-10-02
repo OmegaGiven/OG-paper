@@ -51,6 +51,8 @@ pub struct TextEdit {
     pub text: String,
     /// The text group being edited, if any.
     pub group: Option<u32>,
+    /// Editing a table's cells (as tab-separated text).
+    pub table: bool,
 }
 
 /// Editing state kept by the app.
@@ -269,22 +271,30 @@ impl App {
             style: self.ui.text,
             text: String::new(),
             group: None,
+            table: false,
         });
         self.text_open_editor();
     }
 
-    /// Edit an existing text group.
+    /// Edit an existing text group (or a table, as tab-separated text).
     pub(crate) fn text_edit_group(&mut self, g: u32) {
         let grp = &self.objs.groups[g as usize];
-        let ObjData::Text {
-            text,
-            style,
-            geom,
-            size,
-            ..
-        } = to_cam(&grp.cell, &grp.data, &self.cam)
-        else {
-            return;
+        let (text, style, geom, size, table) = match to_cam(&grp.cell, &grp.data, &self.cam) {
+            ObjData::Text {
+                text,
+                style,
+                geom,
+                size,
+                ..
+            } => (text, style, geom, size, false),
+            ObjData::Table {
+                cells,
+                style,
+                geom,
+                size,
+                ..
+            } => (objects::to_tsv(&cells), style, geom, size, true),
+            _ => return,
         };
         let tl = {
             let d = rot2([-geom.half[0], -geom.half[1]], geom.rot);
@@ -297,6 +307,7 @@ impl App {
             style,
             text,
             group: Some(g),
+            table,
         });
         self.text_open_editor();
     }
@@ -311,13 +322,16 @@ impl App {
         {
             let [r, g, b, _] = t.style.color.to_le_bytes();
             crate::web::text_request(format!(
-                "{{\"x\":{:.1},\"y\":{:.1},\"size\":{:.1},\"color\":\"#{:02x}{:02x}{:02x}\",\"text\":{}}}",
+                "{{\"x\":{:.1},\"y\":{:.1},\"size\":{:.1},\"color\":\"#{:02x}{:02x}{:02x}\",\"font\":{},\"single\":{},\"table\":{},\"text\":{}}}",
                 px[0] / ppp,
                 px[1] / ppp,
                 t.size * self.cam.ppc() / ppp,
                 r,
                 g,
                 b,
+                crate::web::json_str(&crate::font::name_of(t.style.font)),
+                crate::font::is_single_line(t.style.font),
+                t.table,
                 crate::web::json_str(&t.text)
             ));
         }
@@ -353,22 +367,42 @@ impl App {
             self.record_edit(removed, vec![]);
             return;
         }
-        let half = {
-            let b = objects::text_box(&text, &t.style, t.size);
-            [b[0] * 0.5, b[1] * 0.5]
-        };
-        let d = rot2(half, t.rot);
-        let data = ObjData::Text {
-            text,
-            style: t.style,
-            geom: Geom {
-                center: [t.at[0] + d[0], t.at[1] + d[1]],
-                half,
-                rot: t.rot,
-                pts: vec![],
-            },
-            size: t.size,
-            seed: self.next_seed(),
+        let seed = self.next_seed();
+        let data = if t.table {
+            let cells = objects::parse_tsv(&text);
+            let b = objects::table_layout(&cells, &t.style, t.size).size();
+            let half = [b[0] * 0.5, b[1] * 0.5];
+            let d = rot2(half, t.rot);
+            ObjData::Table {
+                cells,
+                style: t.style,
+                geom: Geom {
+                    center: [t.at[0] + d[0], t.at[1] + d[1]],
+                    half,
+                    rot: t.rot,
+                    pts: vec![],
+                },
+                size: t.size,
+                seed,
+            }
+        } else {
+            let half = {
+                let b = objects::text_box(&text, &t.style, t.size);
+                [b[0] * 0.5, b[1] * 0.5]
+            };
+            let d = rot2(half, t.rot);
+            ObjData::Text {
+                text,
+                style: t.style,
+                geom: Geom {
+                    center: [t.at[0] + d[0], t.at[1] + d[1]],
+                    half,
+                    rot: t.rot,
+                    pts: vec![],
+                },
+                size: t.size,
+                seed,
+            }
         };
         let (g, ids) = self.add_group(&data, z);
         if t.group.is_some() {
@@ -464,7 +498,10 @@ impl App {
         self.edit.last_tap = Some((Instant::now(), p));
         if double {
             if let Some(ObjRef::Group(g)) = self.obj_at(p) {
-                if matches!(self.objs.groups[g as usize].data, ObjData::Text { .. }) {
+                if matches!(
+                    self.objs.groups[g as usize].data,
+                    ObjData::Text { .. } | ObjData::Table { .. }
+                ) {
                     self.text_edit_group(g);
                     return;
                 }
@@ -567,9 +604,10 @@ impl App {
                 let u1 = rot2([c[0] - pivot[0], c[1] - pivot[1]], -d.rot0);
                 let k = |a: f64, b: f64| if a.abs() < 1e-6 { 1.0 } else { b / a };
                 let (mut sx, mut sy) = (k(u0[0], u1[0]), k(u0[1], u1[1]));
-                // Keep proportions with Shift, and always for text.
+                // Keep proportions with Shift, and always for text, tables
+                // and pictures.
                 let text = matches!(self.edit.selection.as_slice(), [ObjRef::Group(g)]
-                    if matches!(self.objs.groups[*g as usize].data, ObjData::Text { .. }));
+                    if !matches!(self.objs.groups[*g as usize].data, ObjData::Shape { .. }));
                 if self.mods.shift_key() || text {
                     let m = sx.abs().max(sy.abs());
                     sx = m * sx.signum();
@@ -931,6 +969,89 @@ impl App {
         self.apply_op(&Op::Move([dx * k, dy * k]));
     }
 
+    // ---- pasting and inserting ---------------------------------------------
+
+    /// Screen point (px) for something pasted: `at`, or the middle of the screen.
+    fn drop_point(&self, at: Option<[f64; 2]>) -> [f64; 2] {
+        let s = self.size();
+        at.unwrap_or([s[0] * 0.5, s[1] * 0.5])
+    }
+
+    /// Add a new object centred on screen point `at` (px) and select it.
+    fn insert(&mut self, data: ObjData) {
+        let (g, ids) = self.add_group(&data, None);
+        self.record_edit(vec![], ids);
+        self.edit.selection = vec![ObjRef::Group(g)];
+        self.ui.tool = Tool::Select;
+    }
+
+    /// Put a picture on the canvas at its own size (at most 60% of the screen).
+    pub(crate) fn insert_image(&mut self, asset: crate::images::Asset, at: Option<[f64; 2]>) {
+        let at = self.drop_point(at);
+        let ppp = self.ppp();
+        let s = self.size();
+        let (mut w, mut h) = (asset.w as f64 * ppp, asset.h as f64 * ppp);
+        let k = (s[0] * 0.6 / w).min(s[1] * 0.6 / h).min(1.0);
+        w *= k;
+        h *= k;
+        let id = crate::images::id_of(&asset.bytes);
+        self.objs.images.entry(id).or_insert(asset);
+        let ppc = self.cam.ppc();
+        self.insert(ObjData::Image {
+            id,
+            geom: Geom {
+                center: self.px_to_cam(at),
+                half: [w * 0.5 / ppc, h * 0.5 / ppc],
+                rot: 0.0,
+                pts: vec![],
+            },
+            opacity: 255,
+        });
+        self.say("Picture added — drag to move, corners to resize");
+    }
+
+    /// Pasted text: a table if it looks like one (spreadsheet cells or a
+    /// Markdown table), else a text, in the text tool's style.
+    pub(crate) fn paste_text(&mut self, text: &str, at: Option<[f64; 2]>) {
+        let at = self.px_to_cam(self.drop_point(at));
+        let size = self.ui.text_size as f64 * self.ppp() / self.cam.ppc();
+        let style = self.ui.text;
+        let seed = self.next_seed();
+        if let Some(cells) = objects::table_from_text(text) {
+            let b = objects::table_layout(&cells, &style, size).size();
+            self.insert(ObjData::Table {
+                cells,
+                style,
+                geom: Geom {
+                    center: at,
+                    half: [b[0] * 0.5, b[1] * 0.5],
+                    rot: 0.0,
+                    pts: vec![],
+                },
+                size,
+                seed,
+            });
+            return;
+        }
+        let text: String = text.trim().chars().take(5000).collect();
+        if text.is_empty() {
+            return;
+        }
+        let b = objects::text_box(&text, &style, size);
+        self.insert(ObjData::Text {
+            text,
+            style,
+            geom: Geom {
+                center: at,
+                half: [b[0] * 0.5, b[1] * 0.5],
+                rot: 0.0,
+                pts: vec![],
+            },
+            size,
+            seed,
+        });
+    }
+
     // ---- panel <-> selection -----------------------------------------------
 
     /// Describe the selection's style for the panel; when the panel changed
@@ -972,7 +1093,8 @@ impl App {
             ObjRef::Ink(_) => SelKind::Ink,
             ObjRef::Group(g) => match self.objs.groups[*g as usize].data {
                 ObjData::Shape { .. } => SelKind::Shapes,
-                ObjData::Text { .. } => SelKind::Text,
+                ObjData::Text { .. } | ObjData::Table { .. } => SelKind::Text,
+                ObjData::Image { .. } => SelKind::Images,
             },
         });
         let first = kinds.next().unwrap_or(SelKind::None);
@@ -995,7 +1117,8 @@ impl App {
             }
             Some(ObjRef::Group(g)) => match &self.objs.groups[*g as usize].data {
                 ObjData::Shape { style, .. } => s.shape = *style,
-                ObjData::Text { style, .. } => s.text = *style,
+                ObjData::Text { style, .. } | ObjData::Table { style, .. } => s.text = *style,
+                ObjData::Image { opacity, .. } => s.opacity = *opacity,
             },
             None => {}
         }
@@ -1056,19 +1179,7 @@ impl App {
                         size,
                         seed,
                     } => {
-                        let (bt, at) = (b.text, a.text);
-                        if at.font != bt.font {
-                            style.font = at.font;
-                        }
-                        if at.align != bt.align {
-                            style.align = at.align;
-                        }
-                        if at.color != bt.color {
-                            style.color = at.color;
-                        }
-                        if at.opacity != bt.opacity {
-                            style.opacity = at.opacity;
-                        }
+                        merge_text(&mut style, &b.text, &a.text);
                         // The box follows the new font.
                         let bx = objects::text_box(&text, &style, size);
                         let half = [bx[0] * 0.5, bx[1] * 0.5];
@@ -1087,6 +1198,40 @@ impl App {
                             seed,
                         }
                     }
+                    ObjData::Table {
+                        cells,
+                        mut style,
+                        geom,
+                        size,
+                        seed,
+                    } => {
+                        merge_text(&mut style, &b.text, &a.text);
+                        let bx = objects::table_layout(&cells, &style, size).size();
+                        let half = [bx[0] * 0.5, bx[1] * 0.5];
+                        let tl = rot2([-geom.half[0], -geom.half[1]], geom.rot);
+                        let tl = [geom.center[0] + tl[0], geom.center[1] + tl[1]];
+                        let d = rot2(half, geom.rot);
+                        ObjData::Table {
+                            cells,
+                            style,
+                            geom: Geom {
+                                center: [tl[0] + d[0], tl[1] + d[1]],
+                                half,
+                                ..geom
+                            },
+                            size,
+                            seed,
+                        }
+                    }
+                    ObjData::Image { id, geom, opacity } => ObjData::Image {
+                        id,
+                        geom,
+                        opacity: if a.opacity != b.opacity {
+                            a.opacity
+                        } else {
+                            opacity
+                        },
+                    },
                 };
                 let grp = &app.objs.groups[g as usize];
                 if changed == grp.data {
@@ -1140,6 +1285,22 @@ impl App {
             }
         }
         self.ui.overlay = ov;
+    }
+}
+
+/// Copy the text settings that changed from `b` to `a` into `st`.
+fn merge_text(st: &mut TextStyle, b: &TextStyle, a: &TextStyle) {
+    if a.font != b.font {
+        st.font = a.font;
+    }
+    if a.align != b.align {
+        st.align = a.align;
+    }
+    if a.color != b.color {
+        st.color = a.color;
+    }
+    if a.opacity != b.opacity {
+        st.opacity = a.opacity;
     }
 }
 

@@ -3,87 +3,189 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>OG Paper</title>
-<meta name="description" content="An open-source infinite canvas: endless zoom, fast on every device, and files you own.">
+<title>OG Paper — the endless canvas</title>
+<meta name="description" content="A free, open-source infinite canvas. Sketch, write, paste pictures and tables, then zoom in forever. Your work stays in a file you own.">
+<meta property="og:title" content="OG Paper — the endless canvas">
+<meta property="og:description" content="A free, open-source infinite canvas. Sketch, write, paste pictures and tables, then zoom in forever.">
+<meta property="og:image" content="assets/hero.jpg">
 <link rel="icon" href="app/icon-192.png">
 <style>
-  :root { --bg: #f5f3ec; --card: #fcfbf8; --ink: #1c1c24; --muted: #5d5d68; --edge: #d9d6cc; --accent: #c8285a; }
+  @font-face { font-family: "Architects Daughter"; src: url("app/fonts/ArchitectsDaughter.ttf") format("truetype"); font-display: swap; }
+  :root {
+    --bg: #f5f3ec; --card: #fcfbf8; --ink: #1c1c24; --muted: #5d5d68; --edge: #dedbd1;
+    --accent: #c8285a; --accent-ink: #fff; --hl: #f6e46e; --shadow: 0 18px 50px rgba(40, 30, 10, .16);
+  }
   @media (prefers-color-scheme: dark) {
-    :root { --bg: #16161b; --card: #1f1f26; --ink: #ecebe6; --muted: #a3a2ab; --edge: #34343d; --accent: #ff5c8d; }
+    :root { --bg: #15151a; --card: #1e1e25; --ink: #ecebe6; --muted: #a3a2ab; --edge: #33333c;
+            --accent: #ff5c8d; --accent-ink: #1a0b10; --hl: #6b5d12; --shadow: 0 18px 50px rgba(0, 0, 0, .5); }
   }
   * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--ink); font: 17px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif; }
-  main { max-width: 860px; margin: 0 auto; padding: 48px 20px 64px; }
-  header { display: flex; align-items: center; gap: 16px; }
-  header img { width: 64px; height: 64px; border-radius: 14px; }
-  h1 { font-size: 2.4rem; margin: 0; letter-spacing: -0.02em; }
-  .lead { font-size: 1.2rem; color: var(--muted); margin: 18px 0 28px; }
-  .cta { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 36px; }
-  .btn { display: inline-block; padding: 12px 20px; border-radius: 12px; text-decoration: none; font-weight: 600;
-         border: 1px solid var(--edge); color: var(--ink); background: var(--card); }
-  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; }
-  .card { background: var(--card); border: 1px solid var(--edge); border-radius: 14px; padding: 16px 18px; }
-  .card h3 { margin: 0 0 6px; font-size: 1.05rem; }
-  .card p { margin: 0; color: var(--muted); font-size: 0.95rem; }
-  h2 { margin: 40px 0 12px; font-size: 1.3rem; }
-  table { width: 100%; border-collapse: collapse; font-size: 0.95rem; }
-  td, th { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--edge); }
-  th { color: var(--muted); font-weight: 600; }
-  a { color: var(--accent); }
-  footer { margin-top: 48px; color: var(--muted); font-size: 0.9rem; }
-  code { background: var(--card); border: 1px solid var(--edge); border-radius: 6px; padding: 1px 5px; font-size: 0.9em; }
+  html { scroll-behavior: smooth; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 17px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  a { color: inherit; }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 0 20px; }
+  .hand { font-family: "Architects Daughter", "Comic Sans MS", cursive; font-weight: 400; }
+
+  nav { display: flex; align-items: center; gap: 20px; padding: 18px 0; }
+  nav .brand { display: flex; align-items: center; gap: 10px; text-decoration: none; font-size: 1.35rem; margin-right: auto; }
+  nav .brand img { width: 34px; height: 34px; border-radius: 9px; }
+  nav .links { display: flex; gap: 18px; align-items: center; }
+  nav .links a { text-decoration: none; color: var(--muted); font-weight: 500; }
+  nav .links a:hover { color: var(--ink); }
+  @media (max-width: 640px) { nav .links .opt { display: none; } }
+
+  .btn { display: inline-flex; align-items: center; gap: 8px; padding: 13px 22px; border-radius: 14px; text-decoration: none;
+         font-weight: 650; border: 1.5px solid var(--edge); background: var(--card); color: var(--ink); transition: transform .12s, box-shadow .12s; }
+  .btn:hover { transform: translateY(-1px); box-shadow: 0 6px 18px rgba(0, 0, 0, .08); }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+  .btn.small { padding: 7px 14px; border-radius: 10px; font-size: .92rem; }
+  .heart { color: #db61a2; }
+
+  .hero { text-align: center; padding: 48px 0 28px; }
+  .hero h1 { font-size: clamp(2.6rem, 7vw, 4.6rem); line-height: 1.05; margin: 0; letter-spacing: -.01em; }
+  .hero h1 mark { background: linear-gradient(transparent 55%, var(--hl) 55%, var(--hl) 88%, transparent 88%); color: inherit; padding: 0 .1em; }
+  .hero p.lead { font-size: clamp(1.08rem, 2.2vw, 1.3rem); color: var(--muted); max-width: 640px; margin: 20px auto 30px; }
+  .cta { display: flex; flex-wrap: wrap; gap: 12px; justify-content: center; }
+  .platforms { margin-top: 16px; color: var(--muted); font-size: .92rem; }
+
+  .shot { margin: 44px auto 0; max-width: 1000px; border-radius: 16px; overflow: hidden; border: 1px solid var(--edge);
+          box-shadow: var(--shadow); background: var(--card); }
+  .shot .bar { display: flex; gap: 7px; padding: 11px 14px; border-bottom: 1px solid var(--edge); }
+  .shot .bar i { width: 11px; height: 11px; border-radius: 50%; background: var(--edge); }
+  .shot img { display: block; width: 100%; height: auto; }
+
+  section { padding: 72px 0 8px; }
+  h2 { font-size: clamp(1.8rem, 4vw, 2.5rem); margin: 0 0 8px; text-align: center; }
+  .sub { text-align: center; color: var(--muted); margin: 0 auto 34px; max-width: 620px; }
+
+  .features { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
+  .feature { background: var(--card); border: 1px solid var(--edge); border-radius: 18px; padding: 22px; }
+  .feature svg { width: 40px; height: 40px; color: var(--accent); }
+  .feature h3 { margin: 10px 0 6px; font-size: 1.15rem; }
+  .feature p { margin: 0; color: var(--muted); }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 22px; }
+  .chips span { border: 1px solid var(--edge); background: var(--card); border-radius: 999px; padding: 6px 13px; font-size: .92rem; color: var(--muted); }
+
+  .downloads { display: grid; grid-template-columns: repeat(auto-fit, minmax(290px, 1fr)); gap: 14px; }
+  .dl { display: flex; flex-direction: column; gap: 6px; background: var(--card); border: 1px solid var(--edge); border-radius: 18px;
+        padding: 20px; text-decoration: none; transition: transform .12s, border-color .12s; }
+  a.dl:hover { transform: translateY(-2px); border-color: var(--accent); }
+  .dl b { font-size: 1.1rem; }
+  .dl small { color: var(--muted); }
+  .dl .go { margin-top: auto; padding-top: 8px; color: var(--accent); font-weight: 650; }
+  .dl.featured { border: 2px solid var(--accent); }
+  .note { text-align: center; color: var(--muted); font-size: .9rem; margin-top: 16px; }
+
+  .sponsor { text-align: center; background: var(--card); border: 1px solid var(--edge); border-radius: 22px; padding: 40px 24px; }
+  .sponsor h2 { margin-bottom: 10px; }
+  .sponsor p { color: var(--muted); max-width: 560px; margin: 0 auto 22px; }
+  .sponsor .row { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; align-items: center; }
+
+  footer { padding: 56px 0 40px; color: var(--muted); font-size: .92rem; text-align: center; }
+  footer a { color: var(--muted); }
 </style>
 </head>
 <body>
-<main>
-  <header>
-    <img src="app/icon-192.png" alt="">
-    <h1>OG Paper</h1>
+<div class="wrap">
+  <nav>
+    <a class="brand hand" href="./"><img src="app/icon-192.png" alt="">OG Paper</a>
+    <div class="links">
+      <a class="opt" href="#features">Features</a>
+      <a class="opt" href="#download">Download</a>
+      <a class="opt" href="https://github.com/OmegaGiven/OG-paper">GitHub</a>
+      <a class="btn small" href="https://github.com/sponsors/OmegaGiven"><span class="heart">♥</span> Sponsor</a>
+    </div>
+  </nav>
+
+  <header class="hero">
+    <h1 class="hand">Zoom in <mark>forever.</mark></h1>
+    <p class="lead">OG Paper is a free, open-source infinite canvas. Sketch, write, paste pictures and tables —
+      then dive in 10<sup>45</sup> times deeper and keep drawing. Your work stays in a file you own.</p>
+    <div class="cta">
+      <a class="btn primary" href="try/">Try it now — no install</a>
+      <a class="btn" href="#download">Download</a>
+    </div>
+    <div class="platforms">Web · Windows · macOS · Linux · Android</div>
+    <div class="shot">
+      <div class="bar"><i></i><i></i><i></i></div>
+      <a href="try/"><img src="assets/hero.jpg" width="1600" height="1000" alt="The OG Paper canvas: hand-drawn notes, shapes and a quick bar of saved tools"></a>
+    </div>
   </header>
-  <p class="lead">An open-source infinite canvas. Zoom in forever, draw at any depth, and keep your work in an open
-    file format that outlives the app.</p>
-  <div class="cta">
-    <a class="btn primary" href="try/">Try it now</a>
-    <a class="btn" href="app/">Open the app</a>
-    <a class="btn" href="https://github.com/OmegaGiven/OG-paper/releases">Downloads</a>
-    <a class="btn" href="spike/?chain=25">Zoom demo (10<sup>48</sup> deep)</a>
-    <a class="btn" href="https://github.com/OmegaGiven/OG-paper">Source</a>
-  </div>
 
-  <div class="grid">
-    <div class="card"><h3>Truly endless</h3><p>Unlimited zoom depth with no precision loss: tested from 10<sup>-0.6</sup> to 10<sup>49</sup>.</p></div>
-    <div class="card"><h3>Fast at any size</h3><p>Only what is on screen is drawn: the same frame time at 1M or 10M strokes.</p></div>
-    <div class="card"><h3>Files you own</h3><p>Every canvas is one <code>.ogp</code> SQLite file with a published, openly licensed format.</p></div>
-    <div class="card"><h3>Bookmarks</h3><p>Save any view and fly back to it with one tap, even 10<sup>45</sup> zoom levels away.</p></div>
-    <div class="card"><h3>Shapes &amp; text</h3><p>Rectangles to stars and arrows with hachure, solid or zigzag fills and a hand-drawn look, plus text. Select, move, resize, rotate and restyle anything.</p></div>
-    <div class="card"><h3>Timeline</h3><p>Every stroke is time-stamped. Scrub or replay the canvas as it was at any moment, and restore it.</p></div>
-    <div class="card"><h3>Offline copies</h3><p>The web app autosaves in your browser. Download a copy of a canvas, or load one back, any time.</p></div>
-    <div class="card"><h3>Everywhere</h3><p>One Rust engine for Windows, macOS, Linux, Android and the web. Installs as an app from your browser.</p></div>
-  </div>
+  <section id="features">
+    <h2 class="hand">Paper that never runs out</h2>
+    <p class="sub">Draw at any size, anywhere. Only what is on screen is drawn, so it stays fast with millions of strokes.</p>
+    <div class="features">
+      <div class="feature">
+        <svg viewBox="0 0 40 40" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><circle cx="17" cy="17" r="11"/><circle cx="17" cy="17" r="5"/><circle cx="17" cy="17" r="1.5"/><path d="M25 25l9 9"/></svg>
+        <h3>Truly endless</h3>
+        <p>No edges and no zoom limit: tested from 10<sup>-0.6</sup> to 10<sup>49</sup>. Bookmark any view and fly back in one tap.</p>
+      </div>
+      <div class="feature">
+        <svg viewBox="0 0 40 40" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 33c6-1 9-4 12-9l11-15 4 3-11 15c-3 5-7 6-16 6z"/><rect x="25" y="25" width="10" height="9" rx="2"/></svg>
+        <h3>Ink, shapes, text &amp; pictures</h3>
+        <p>Pressure pen, marker, highlighter, hand-drawn shapes, 11 fonts (or your own), and paste in images, charts and spreadsheet tables.</p>
+      </div>
+      <div class="feature">
+        <svg viewBox="0 0 40 40" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M10 5h14l7 7v23H10z"/><path d="M24 5v7h7"/><path d="M15 21h11M15 27h8"/></svg>
+        <h3>Files you own</h3>
+        <p>Every canvas is one open <code>.ogp</code> file with a published format. Works offline; nothing is locked in an account.</p>
+      </div>
+    </div>
+    <div class="chips">
+      <span>Timeline replay</span><span>Saved-tools hotbar</span><span>Select, move, rotate</span><span>Undo forever</span>
+      <span>Bookmarks</span><span>Offline web app</span><span>Pen pressure</span>
+    </div>
+  </section>
 
-  <h2>Try mode</h2>
-  <p><a href="try/">Try mode</a> opens the real app on a demo canvas: a home page with a world hidden in the dot of an
-    “i”, and inside that another, and another, 15 worlds down to 10<sup>45</sup>. A checklist walks you through drawing,
-    zooming, panning, erasing, bookmarks and the timeline. Your drawings there autosave in this browser, separate from the app.</p>
+  <section id="download">
+    <h2 class="hand">Get OG Paper</h2>
+    <p class="sub">Start in your browser in a second, or grab the app for your device.</p>
+    <div class="downloads">
+      <a class="dl featured" href="app/"><b>Web app</b><small>Any modern browser. Install it from the address bar for full screen and offline use.</small><span class="go">Open the app →</span></a>
+      <a class="dl" data-asset="og-paper-windows-x86_64.zip" href="https://github.com/OmegaGiven/OG-paper/releases"><b>Windows</b><small>64-bit, .zip</small><span class="go">Download</span></a>
+      <a class="dl" data-asset="og-paper-macos-universal.zip" href="https://github.com/OmegaGiven/OG-paper/releases"><b>macOS</b><small>Apple silicon &amp; Intel. First launch: right-click → Open.</small><span class="go">Download</span></a>
+      <a class="dl" data-asset="og-paper-linux-x86_64.tar.gz" href="https://github.com/OmegaGiven/OG-paper/releases"><b>Linux</b><small>x86_64, .tar.gz</small><span class="go">Download</span></a>
+      <a class="dl" data-asset="og-paper-android-arm64.apk" href="https://github.com/OmegaGiven/OG-paper/releases"><b>Android</b><small>arm64 .apk</small><span class="go">Download</span></a>
+      <a class="dl" href="app/"><b>iPhone &amp; iPad</b><small>Use the web app and “Add to Home Screen”.</small><span class="go">Open the app →</span></a>
+    </div>
+    <p class="note" id="release-note">Early builds, unsigned. All releases are on <a href="https://github.com/OmegaGiven/OG-paper/releases">GitHub</a>.</p>
+  </section>
 
-  <h2>Get it</h2>
-  <table>
-    <tr><th>Platform</th><th>How</th></tr>
-    <tr><td>Any browser</td><td><a href="app/">Open the app</a>, then “Install app” / “Add to Home screen” for full screen and offline use</td></tr>
-    <tr><td>Windows, macOS, Linux</td><td><a href="https://github.com/OmegaGiven/OG-paper/releases">Releases page</a> (unsigned builds; macOS: right-click → Open the first time)</td></tr>
-    <tr><td>Android</td><td>APK from the <a href="https://github.com/OmegaGiven/OG-paper/releases">releases page</a></td></tr>
-    <tr><td>iPhone / iPad</td><td>Use the web app for now; a native build needs Apple signing</td></tr>
-  </table>
+  <section>
+    <div class="sponsor">
+      <h2 class="hand"><span class="heart">♥</span> Support OG Paper</h2>
+      <p>OG Paper is free and built in the open. If it is useful to you, sponsoring on GitHub helps keep it growing.</p>
+      <div class="row">
+        <a class="btn primary" href="https://github.com/sponsors/OmegaGiven">♥ Sponsor on GitHub</a>
+        <a class="btn" href="https://github.com/OmegaGiven/OG-paper">★ Star on GitHub</a>
+      </div>
+    </div>
+  </section>
 
-  <h2>Status</h2>
-  <p>Early development (Phase 1). Working: pen, marker, highlighter with pressure, dashes and opacity; shapes with
-    Excalidraw-style fills and hand-drawn looks; text; select, move, resize, rotate and restyle; color dial and picker,
-    eraser, undo/redo, autosave to <code>.ogp</code> on desktop; on the web, bookmarks, a timeline, browser autosave and
-    downloadable offline copies (<code>.ogpt</code>). Next: save to and open from Google Drive, Dropbox or OneDrive;
-    stickers (paste PNG/JPG/SVG), lasso select, arrows that stick to shapes, textured brushes, multi-device sync.</p>
-
-  <footer>Created by OmegaGiven and contributors · App: MPL-2.0 · File format spec: CC BY 4.0</footer>
-</main>
+  <footer>
+    <a href="https://github.com/OmegaGiven/OG-paper">Source</a> ·
+    <a href="spike/?chain=25">Zoom demo (10<sup>48</sup> deep)</a> ·
+    <a href="https://github.com/sponsors/OmegaGiven">Sponsor</a><br>
+    Made by OmegaGiven and contributors · App: MPL-2.0 · File format spec: CC BY 4.0
+  </footer>
+</div>
+<script>
+  // Point the download cards straight at the newest release's files.
+  fetch('https://api.github.com/repos/OmegaGiven/OG-paper/releases?per_page=10')
+    .then(r => r.ok ? r.json() : [])
+    .then(list => {
+      const rel = list.find(r => !r.draft);
+      if (!rel) return;
+      const files = new Map(rel.assets.map(a => [a.name, a.browser_download_url]));
+      for (const card of document.querySelectorAll('[data-asset]')) {
+        const url = files.get(card.dataset.asset);
+        if (url) card.href = url;
+      }
+      const note = document.getElementById('release-note');
+      note.firstChild.textContent = `Latest: ${rel.name || rel.tag_name}${rel.prerelease ? ' (pre-release)' : ''}. Early builds, unsigned. All releases are on `;
+    })
+    .catch(() => {});
+</script>
 </body>
 </html>

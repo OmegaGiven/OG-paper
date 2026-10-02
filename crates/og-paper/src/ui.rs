@@ -5,7 +5,7 @@
 
 //! Screen-size-independent controls: a tool button in the bottom-right
 //! corner that fans out into a radial menu, small undo/redo buttons, a tool
-//! panel top-left (width, pressure, color dial) and a settings button
+//! panel bottom-left (width, pressure, color dial) and a settings button
 //! top-right whose fan holds the canvas commands. Icons are drawn, not taken from a font.
 
 use std::f32::consts::{FRAC_PI_2, PI};
@@ -13,7 +13,8 @@ use std::f32::consts::{FRAC_PI_2, PI};
 use egui::{pos2, vec2, Align2, Color32, Id, Order, Pos2, Rect, Sense, Shape, Stroke, Vec2};
 use ogpaper_core::{Brush, Dash};
 
-use crate::font::{Align, Font, ALIGNS, FONTS};
+use crate::font::{self, Align, ALIGNS};
+use crate::hotbar::{self, Preset};
 use crate::objects::TextStyle;
 use crate::shapes::{
     self, ArrowType, FillStyle, Head, ShapeKind, ShapeStyle, Sloppiness, ARROW_TYPES, FILLS, HEADS,
@@ -106,7 +107,9 @@ pub enum SelKind {
     None,
     Ink,
     Shapes,
+    /// Texts and tables.
     Text,
+    Images,
     Mixed,
 }
 
@@ -119,6 +122,8 @@ pub struct SelStyle {
     pub ink: Option<InkSettings>,
     pub shape: ShapeStyle,
     pub text: TextStyle,
+    /// Pictures' opacity.
+    pub opacity: u8,
 }
 
 /// Which color the shape panel's dial edits.
@@ -127,6 +132,8 @@ pub enum ColorTarget {
     #[default]
     Stroke,
     Fill,
+    /// Stroke and fill share one color.
+    Both,
 }
 
 /// Screen-space drawing the app asks the UI to show over the canvas.
@@ -174,6 +181,8 @@ pub enum AppItem {
     Open,
     Save,
     Home,
+    /// Put a picture from a file on the canvas.
+    Picture,
     Bookmarks,
     Timeline,
     FullScreen,
@@ -187,6 +196,7 @@ impl AppItem {
             AppItem::Open => "Open",
             AppItem::Save => "Save copy",
             AppItem::Home => "Home",
+            AppItem::Picture => "Insert picture",
             AppItem::Bookmarks => "Bookmarks",
             AppItem::Timeline => "Timeline",
             AppItem::FullScreen => "Full screen",
@@ -200,6 +210,7 @@ impl AppItem {
             AppItem::Open => Action::Open,
             AppItem::Save => Action::SaveAs,
             AppItem::Home => Action::Home,
+            AppItem::Picture => Action::Picture,
             AppItem::Bookmarks => Action::Bookmarks,
             AppItem::Timeline => Action::Timeline,
             AppItem::FullScreen => Action::FullScreen,
@@ -232,7 +243,7 @@ pub struct UiState {
     pub app_items: Vec<AppItem>,
     /// Timeline view open (its fan item shows as active).
     pub timeline_on: bool,
-    /// The tool panel (top left) is expanded; collapsed it is one small button.
+    /// The tool panel (bottom left) is expanded; collapsed it is one small button.
     /// `None` until the first frame, which picks by screen width.
     pub panel_open: Option<bool>,
     pub shape: ShapeStyle,
@@ -244,9 +255,19 @@ pub struct UiState {
     pub text_size: f32,
     /// The selection, for the panel (app fills it; panel edits it).
     pub sel: SelStyle,
+    /// Font names egui can draw (the picker shows each name in its font).
+    pub egui_fonts: std::collections::HashSet<String>,
     /// Text being typed (native editor): the screen point and the text.
     pub text_edit: Option<(Pos2, String)>,
     pub overlay: Overlay,
+    /// Saved tools: the quick bar along the bottom and the inventory.
+    pub hotbar: Vec<Option<Preset>>,
+    pub inventory: Vec<Option<Preset>>,
+    pub bag_open: bool,
+    /// A saved tool picked up in the inventory, to put in another slot.
+    pub held: Option<Preset>,
+    /// The slots changed: the app saves them.
+    pub presets_dirty: bool,
 }
 
 impl Default for UiState {
@@ -285,7 +306,13 @@ impl Default for UiState {
             strokes: 0,
             message: None,
             touch_ui: false,
-            app_items: vec![AppItem::New, AppItem::Open, AppItem::Save, AppItem::Home],
+            app_items: vec![
+                AppItem::New,
+                AppItem::Open,
+                AppItem::Save,
+                AppItem::Picture,
+                AppItem::Home,
+            ],
             timeline_on: false,
             panel_open: None,
             shape: ShapeStyle::default(),
@@ -294,8 +321,14 @@ impl Default for UiState {
             text: TextStyle::default(),
             text_size: 24.0,
             sel: SelStyle::default(),
+            egui_fonts: Default::default(),
             text_edit: None,
             overlay: Overlay::default(),
+            hotbar: vec![None; hotbar::BAR],
+            inventory: vec![None; hotbar::INVENTORY],
+            bag_open: false,
+            held: None,
+            presets_dirty: false,
         }
     }
 }
@@ -308,6 +341,53 @@ impl UiState {
 
     pub fn menu_open(&self) -> bool {
         self.menu != Menu::None
+    }
+
+    /// The current tool and its settings.
+    pub fn preset(&self) -> Preset {
+        let mut p = Preset::tool(self.tool);
+        match self.tool {
+            Tool::Pen => p.ink = Some(self.pen),
+            Tool::Marker => p.ink = Some(self.marker),
+            Tool::Highlighter => p.ink = Some(self.highlighter),
+            Tool::Shapes => p.shape = Some((self.shape, self.shape_width)),
+            Tool::Text => p.text = Some((self.text, self.text_size)),
+            _ => {}
+        }
+        p
+    }
+
+    /// Switch to a saved tool.
+    pub fn apply(&mut self, p: &Preset) {
+        self.tool = p.tool;
+        if let Some(ink) = p.ink {
+            if let Some(dst) = ink_of(self, p.tool) {
+                *dst = ink;
+            }
+        }
+        if p.tool.brush().is_some() {
+            self.last_ink = p.tool;
+        }
+        if let Some((sh, w)) = p.shape {
+            self.shape = sh;
+            self.shape_width = w;
+        }
+        if let Some((tx, size)) = p.text {
+            self.text = tx;
+            self.text_size = size;
+        }
+        self.menu = Menu::None;
+    }
+
+    /// Use quick-bar slot `i` (0-based), if it holds a tool.
+    pub fn use_slot(&mut self, i: usize) -> bool {
+        match self.hotbar.get(i).copied().flatten() {
+            Some(p) => {
+                self.apply(&p);
+                true
+            }
+            None => false,
+        }
     }
 }
 
@@ -336,6 +416,10 @@ pub enum Action {
     FlipH,
     FlipV,
     EditText,
+    /// Load a font file of your own.
+    AddFont,
+    /// Insert a picture from a file.
+    Picture,
     TextDone,
     TextCancel,
     // Web page panels.
@@ -543,6 +627,7 @@ pub fn draw(ctx: &egui::Context, st: &mut UiState) -> Vec<Action> {
         });
 
     paint_overlay(ctx, &st.overlay, st.touch_ui);
+    quick_bar(ctx, st, &g);
     tool_panel(ctx, st, &mut actions);
     text_editor(ctx, st, &mut actions);
 
@@ -582,7 +667,392 @@ pub fn draw(ctx: &egui::Context, st: &mut UiState) -> Vec<Action> {
     actions
 }
 
-/// The tool panel, top left: the current tool's settings (or the
+/// Which set of slots.
+#[derive(Clone, Copy, PartialEq)]
+enum Slots {
+    Bar,
+    Inventory,
+}
+
+/// The quick bar (bottom middle) and, when its bag button is on, the
+/// inventory above it. Tap a slot to use its tool; tap an empty one to save
+/// the current tool there; long-press or right-click for more. In the
+/// inventory, tap a slot to pick its tool up and another to put it down.
+fn quick_bar(ctx: &egui::Context, st: &mut UiState, g: &Geo) {
+    let touch = st.touch_ui;
+    let screen = ctx.content_rect();
+    let m = if touch { 18.0 } else { 16.0 };
+    let gap = 4.0;
+    let mut s = if touch { 44.0 } else { 38.0 };
+    // Bottom row, between the panel button and undo / redo, if it fits;
+    // else a row above them.
+    let small = g.r * 0.72;
+    let right = g.undo.x - small - 12.0;
+    let left = screen.left() + m + if touch { 64.0 } else { 52.0 };
+    let full = (hotbar::BAR + 1) as f32 * (s + gap);
+    let (n, y, cx) = if full <= right - left {
+        let cx = screen
+            .center()
+            .x
+            .clamp(left + full * 0.5, right - full * 0.5);
+        (hotbar::BAR, g.tool.y, cx)
+    } else {
+        let avail = screen.width() - 2.0 * m;
+        if avail < full {
+            // Fewer slots rather than slots too small to tap.
+            s = (avail / (hotbar::BAR + 1) as f32 - gap).max(if touch { 40.0 } else { 30.0 });
+        }
+        let fit = ((avail / (s + gap)) as usize).saturating_sub(1);
+        let n = fit.clamp(3, hotbar::BAR);
+        (n, g.tool.y - g.r - 14.0 - s * 0.5, screen.center().x)
+    };
+    let row = (n + 1) as f32 * (s + gap) - gap;
+    let x0 = cx - row * 0.5;
+    let current = st.preset();
+    let mut fx = SlotFx {
+        current,
+        changed: false,
+        say: None,
+    };
+
+    egui::Area::new(Id::new("quick_bar"))
+        .order(Order::Middle)
+        .fixed_pos(pos2(x0, y - s * 0.5))
+        .show(ctx, |ui| {
+            ui.set_clip_rect(screen);
+            let (all, _) = ui.allocate_exact_size(vec2(row, s), Sense::hover());
+            for i in 0..n {
+                let r =
+                    Rect::from_min_size(all.min + vec2(i as f32 * (s + gap), 0.0), Vec2::splat(s));
+                slot(ui, st, r, Slots::Bar, i, &mut fx);
+            }
+            // The bag: opens the inventory.
+            let r = Rect::from_min_size(all.min + vec2(n as f32 * (s + gap), 0.0), Vec2::splat(s));
+            let resp = ui.interact(r, Id::new("bag"), Sense::click());
+            let p = ui.painter();
+            p.rect_filled(
+                r,
+                8.0,
+                if resp.hovered() || st.bag_open {
+                    Color32::WHITE
+                } else {
+                    FACE
+                },
+            );
+            p.rect_stroke(
+                r,
+                8.0,
+                Stroke::new(
+                    if st.bag_open { 2.5 } else { 1.0 },
+                    if st.bag_open { ACCENT } else { EDGE },
+                ),
+                egui::StrokeKind::Inside,
+            );
+            bag_icon(p, r.center(), s * 0.5);
+            if resp.clicked() {
+                st.bag_open = !st.bag_open;
+            }
+            resp.on_hover_text(if st.bag_open {
+                "Close the inventory"
+            } else {
+                "Saved tools: open the inventory"
+            });
+        });
+
+    if st.bag_open {
+        let cols = n.max(6);
+        let rows = hotbar::INVENTORY.div_ceil(cols);
+        let w = cols as f32 * (s + gap) - gap;
+        egui::Area::new(Id::new("inventory"))
+            .order(Order::Foreground)
+            .pivot(Align2::CENTER_BOTTOM)
+            .fixed_pos(pos2(cx.clamp(screen.left() + w * 0.5 + m, screen.right() - w * 0.5 - m), y - s * 0.5 - 10.0))
+            .show(ctx, |ui| {
+                ui.style_mut().visuals = egui::Visuals::light();
+                egui::Frame::new()
+                    .fill(FACE)
+                    .stroke(Stroke::new(1.0, EDGE))
+                    .corner_radius(12.0)
+                    .inner_margin(10.0)
+                    .shadow(egui::Shadow {
+                        offset: [0, 2],
+                        blur: 10,
+                        spread: 0,
+                        color: Color32::from_black_alpha(40),
+                    })
+                    .show(ui, |ui| {
+                        ui.set_width(w);
+                        ui.horizontal(|ui| {
+                            ui.strong("Saved tools");
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if ui.button("Close").clicked() {
+                                    st.bag_open = false;
+                                }
+                                if ui
+                                    .button("+ Save current")
+                                    .on_hover_text("Keep the current tool and its settings")
+                                    .clicked()
+                                {
+                                    match st.inventory.iter().position(|x| x.is_none()) {
+                                        Some(k) => {
+                                            st.inventory[k] = Some(current);
+                                            fx.changed = true;
+                                        }
+                                        None => fx.say = Some("The inventory is full".into()),
+                                    }
+                                }
+                            });
+                        });
+                        ui.label(
+                            egui::RichText::new(
+                                "Tap a tool to pick it up, then a slot (here or in the bar) to put it down.",
+                            )
+                            .small()
+                            .weak(),
+                        );
+                        ui.add_space(4.0);
+                        let (all, _) = ui.allocate_exact_size(
+                            vec2(w, rows as f32 * (s + gap) - gap),
+                            Sense::hover(),
+                        );
+                        for i in 0..hotbar::INVENTORY {
+                            let (cx, cy) = (i % cols, i / cols);
+                            let r = Rect::from_min_size(
+                                all.min + vec2(cx as f32 * (s + gap), cy as f32 * (s + gap)),
+                                Vec2::splat(s),
+                            );
+                            slot(ui, st, r, Slots::Inventory, i, &mut fx);
+                        }
+                        // Bin: drop the held tool.
+                        ui.add_space(6.0);
+                        ui.horizontal(|ui| {
+                            let bin = ui.add_enabled(st.held.is_some(), egui::Button::new("🗑 Throw away"));
+                            if bin.clicked() {
+                                st.held = None;
+                                fx.changed = true;
+                            }
+                        });
+                    });
+            });
+    } else if let Some(h) = st.held.take() {
+        // Closed while holding a tool: put it back in the first free slot.
+        if let Some(k) = st.inventory.iter().position(|x| x.is_none()) {
+            st.inventory[k] = Some(h);
+        } else if let Some(k) = st.hotbar.iter().position(|x| x.is_none()) {
+            st.hotbar[k] = Some(h);
+        }
+        fx.changed = true;
+    }
+
+    // The held tool follows the pointer.
+    if let (Some(h), Some(at)) = (st.held, ctx.pointer_hover_pos()) {
+        let p = ctx.layer_painter(egui::LayerId::new(Order::Tooltip, Id::new("held")));
+        let c = at + vec2(s * 0.3, s * 0.3);
+        p.circle_filled(c, s * 0.45, Color32::from_white_alpha(230));
+        p.circle_stroke(c, s * 0.45, Stroke::new(1.5, ACCENT));
+        preset_icon(&p, c, s * 0.45, &h, &st.egui_fonts);
+    }
+    if fx.changed {
+        st.presets_dirty = true;
+    }
+    if let Some(m) = fx.say {
+        st.message = Some(m);
+    }
+}
+
+/// What tapping slots did this frame.
+struct SlotFx {
+    current: Preset,
+    changed: bool,
+    say: Option<String>,
+}
+
+fn slot_mut(st: &mut UiState, which: Slots, i: usize) -> &mut Option<Preset> {
+    match which {
+        Slots::Bar => &mut st.hotbar[i],
+        Slots::Inventory => &mut st.inventory[i],
+    }
+}
+
+/// One slot: draws it and handles taps.
+fn slot(ui: &mut egui::Ui, st: &mut UiState, rect: Rect, which: Slots, i: usize, fx: &mut SlotFx) {
+    let current = fx.current;
+    let resp = ui.interact(rect, Id::new(("slot", which as u8, i)), Sense::click());
+    let item = *slot_mut(st, which, i);
+    let p = ui.painter();
+    let on = !st.bag_open && item.is_some_and(|it| it == current);
+    p.rect_filled(
+        rect,
+        8.0,
+        if resp.hovered() { Color32::WHITE } else { FACE },
+    );
+    p.rect_stroke(
+        rect,
+        8.0,
+        Stroke::new(if on { 2.5 } else { 1.0 }, if on { ACCENT } else { EDGE }),
+        egui::StrokeKind::Inside,
+    );
+    if which == Slots::Bar {
+        p.text(
+            rect.left_top() + vec2(5.0, 3.0),
+            Align2::LEFT_TOP,
+            format!("{}", i + 1),
+            egui::FontId::proportional(9.0),
+            Color32::from_gray(150),
+        );
+    }
+    if let Some(it) = &item {
+        preset_icon(p, rect.center(), rect.width() * 0.5, it, &st.egui_fonts);
+    }
+    if resp.clicked() {
+        if st.bag_open {
+            // Pick up / put down / swap.
+            let held = st.held.take();
+            st.held = std::mem::replace(slot_mut(st, which, i), held);
+            fx.changed = true;
+        } else if let Some(it) = item {
+            st.apply(&it);
+        } else {
+            *slot_mut(st, which, i) = Some(current);
+            fx.changed = true;
+            fx.say = Some(format!("Saved {} to slot {}", describe(&current), i + 1));
+        }
+    }
+    let tip = match &item {
+        Some(it) => describe(it),
+        None if st.bag_open => "Empty".into(),
+        None => "Empty: tap to save the current tool here".into(),
+    };
+    let resp = resp.on_hover_text(tip);
+    resp.context_menu(|ui| {
+        if ui.button("Save the current tool here").clicked() {
+            *slot_mut(st, which, i) = Some(current);
+            fx.changed = true;
+            ui.close();
+        }
+        if item.is_some() && ui.button("Empty this slot").clicked() {
+            *slot_mut(st, which, i) = None;
+            fx.changed = true;
+            ui.close();
+        }
+    });
+}
+
+/// "Pen, 3 px", "Shapes: Arrow", "Text: Lora 24 px"...
+fn describe(p: &Preset) -> String {
+    if let Some(i) = p.ink {
+        let [r, g, b, _] = i.color.to_array();
+        let dash = match i.dash {
+            Dash::Solid => "",
+            Dash::Dashed => ", dashed",
+            Dash::Dotted => ", dotted",
+        };
+        return format!(
+            "{}, {:.0} px, #{r:02x}{g:02x}{b:02x}{dash}",
+            p.tool.name(),
+            i.width
+        );
+    }
+    if let Some((sh, w)) = p.shape {
+        return format!("{}: {}, {:.0} px", p.tool.name(), sh.kind.name(), w);
+    }
+    if let Some((tx, size)) = p.text {
+        return format!("Text: {}, {:.0} px", font::name_of(tx.font), size);
+    }
+    p.tool.name().to_string()
+}
+
+/// A saved tool's picture: the tool in its color, with a width bar for pens.
+fn preset_icon(
+    p: &egui::Painter,
+    c: Pos2,
+    r: f32,
+    it: &Preset,
+    fonts: &std::collections::HashSet<String>,
+) {
+    if let Some(i) = it.ink {
+        let col = i.color;
+        tool_icon(p, c - vec2(0.0, r * 0.12), r * 0.85, it.tool, col);
+        let w = (i.width * 0.35).clamp(1.5, r * 0.3);
+        let [cr, cg, cb, _] = col.to_array();
+        let a = if it.tool == Tool::Highlighter {
+            150
+        } else {
+            i.opacity
+        };
+        let y = c.y + r * 0.62;
+        let st = Stroke::new(w, Color32::from_rgba_unmultiplied(cr, cg, cb, a));
+        match i.dash {
+            Dash::Solid => {
+                p.line_segment([pos2(c.x - r * 0.55, y), pos2(c.x + r * 0.55, y)], st);
+            }
+            _ => {
+                for k in 0..3 {
+                    let x = c.x - r * 0.55 + k as f32 * r * 0.42;
+                    p.line_segment([pos2(x, y), pos2(x + r * 0.22, y)], st);
+                }
+            }
+        }
+        return;
+    }
+    if let Some((sh, _)) = it.shape {
+        if sh.fill_style != FillStyle::None && !sh.kind.is_linear() {
+            p.circle_filled(c + vec2(r * 0.45, r * 0.45), r * 0.16, c32(sh.fill));
+        }
+        shape_icon(p, c, r * 0.6, sh.kind, c32(sh.stroke));
+        return;
+    }
+    if let Some((tx, _)) = it.text {
+        let name = font::name_of(tx.font);
+        let fam = if fonts.contains(&name) {
+            egui::FontFamily::Name(name.as_str().into())
+        } else {
+            egui::FontFamily::Proportional
+        };
+        p.text(
+            c,
+            Align2::CENTER_CENTER,
+            "Aa",
+            egui::FontId::new(r * 0.8, fam),
+            c32(tx.color),
+        );
+        return;
+    }
+    tool_icon(p, c, r * 0.9, it.tool, INKY);
+}
+
+/// A satchel: the inventory button.
+fn bag_icon(p: &egui::Painter, c: Pos2, r: f32) {
+    let s = r * 0.42;
+    let st = Stroke::new((r * 0.08).max(1.2), INKY);
+    let pts = |v: &[Vec2]| v.iter().map(|q| c + *q * s).collect::<Vec<_>>();
+    p.add(Shape::closed_line(
+        pts(&[
+            vec2(-0.95, -0.35),
+            vec2(0.95, -0.35),
+            vec2(0.8, 0.95),
+            vec2(-0.8, 0.95),
+        ]),
+        st,
+    ));
+    p.add(Shape::line(
+        pts(&[
+            vec2(-0.45, -0.35),
+            vec2(-0.4, -0.85),
+            vec2(0.4, -0.85),
+            vec2(0.45, -0.35),
+        ]),
+        st,
+    ));
+    p.add(Shape::line(pts(&[vec2(-0.95, 0.15), vec2(0.95, 0.15)]), st));
+    p.rect_filled(
+        Rect::from_center_size(c + vec2(0.0, 0.15) * s, Vec2::splat(s * 0.35)),
+        1.0,
+        INKY,
+    );
+}
+
+/// The tool panel, bottom left: the current tool's settings (or the
 /// selection's), open until it is collapsed to a small button (which pops it
 /// back out). New per-tool options (textures, presets, ...) go here as
 /// sections.
@@ -594,7 +1064,8 @@ fn tool_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) 
     let touch = st.touch_ui;
     let m = if touch { 18.0 } else { 16.0 };
     let screen = ctx.content_rect();
-    let top_left = screen.min + vec2(m, m);
+    // Bottom left: in thumb reach on phones, out of the way on desktops.
+    let corner = vec2(m, -m);
     // Open by default where there is room; tucked away on phones.
     let open = *st.panel_open.get_or_insert(screen.width() >= 700.0);
 
@@ -604,7 +1075,7 @@ fn tool_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) 
         let col = tool_color(st, tool);
         egui::Area::new(Id::new("tool_panel_btn"))
             .order(Order::Foreground)
-            .fixed_pos(top_left)
+            .anchor(Align2::LEFT_BOTTOM, corner)
             .show(ctx, |ui| {
                 let (rect, resp) =
                     ui.allocate_exact_size(Vec2::splat(2.0 * r + 4.0), Sense::click());
@@ -630,7 +1101,7 @@ fn tool_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) 
     let mut pick = false;
     egui::Area::new(Id::new("tool_panel"))
         .order(Order::Foreground)
-        .fixed_pos(top_left)
+        .anchor(Align2::LEFT_BOTTOM, corner)
         .show(ctx, |ui| {
             // Light like the rest of the controls, whatever the system theme.
             ui.style_mut().visuals = egui::Visuals::light();
@@ -705,6 +1176,8 @@ fn tool_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) 
                                 Some(&mut st.text_size),
                                 touch,
                                 &mut dial_hue,
+                                &st.egui_fonts,
+                                actions,
                             ),
                             Tool::Select => {
                                 select_actions(ui, st.sel.kind, actions);
@@ -734,7 +1207,13 @@ fn tool_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) 
                                         None,
                                         touch,
                                         &mut dial_hue,
+                                        &st.egui_fonts,
+                                        actions,
                                     ),
+                                    SelKind::Images => {
+                                        opacity_slider(ui, &mut st.sel.opacity);
+                                        false
+                                    }
                                     _ => false,
                                 }
                             }
@@ -1015,19 +1494,19 @@ fn shape_section(
     }
     opacity_slider(ui, &mut sh.opacity);
     let fillable = !sh.kind.is_linear() && sh.fill_style != FillStyle::None;
-    if !fillable {
-        *target = ColorTarget::Stroke;
-    }
     if fillable {
         heading(ui, "Color");
         ui.horizontal(|ui| {
             ui.selectable_value(target, ColorTarget::Stroke, "Stroke");
             ui.selectable_value(target, ColorTarget::Fill, "Fill");
+            ui.selectable_value(target, ColorTarget::Both, "Both")
+                .on_hover_text("Stroke and fill in one color");
         });
     } else {
         heading(ui, "Stroke color");
     }
-    let slot = if *target == ColorTarget::Fill {
+    let edit_fill = fillable && *target == ColorTarget::Fill;
+    let slot = if edit_fill {
         &mut sh.fill
     } else {
         &mut sh.stroke
@@ -1035,6 +1514,9 @@ fn shape_section(
     let mut c = c32(*slot);
     let pick = color_dial(ui, &mut c, false, dial_hue, touch);
     *slot = u32c(c);
+    if fillable && *target == ColorTarget::Both {
+        sh.fill = sh.stroke;
+    }
     pick
 }
 
@@ -1045,27 +1527,12 @@ fn text_section(
     size: Option<&mut f32>,
     touch: bool,
     dial_hue: &mut f32,
+    egui_fonts: &std::collections::HashSet<String>,
+    actions: &mut Vec<Action>,
 ) -> bool {
     let sz = if touch { 34.0 } else { 28.0 };
     heading(ui, "Font");
-    chips(
-        ui,
-        &FONTS,
-        &mut tx.font,
-        sz * 1.9,
-        |f| f.name().into(),
-        |p, c, _, f| {
-            text_chip(
-                p,
-                c,
-                match f {
-                    Font::Normal => "Normal",
-                    Font::Hand => "Hand",
-                    Font::Code => "Code",
-                },
-            )
-        },
-    );
+    font_picker(ui, tx, touch, egui_fonts, actions);
     if let Some(size) = size {
         heading(ui, "Size");
         let mut pick = [16.0f32, 24.0, 36.0, 56.0]
@@ -1116,6 +1583,83 @@ fn text_section(
     let pick = color_dial(ui, &mut c, false, dial_hue, touch);
     tx.color = u32c(c);
     pick
+}
+
+/// Fonts by style, each name shown in its own font, plus "Add your own".
+fn font_picker(
+    ui: &mut egui::Ui,
+    tx: &mut TextStyle,
+    touch: bool,
+    egui_fonts: &std::collections::HashSet<String>,
+    actions: &mut Vec<Action>,
+) {
+    const ORDER: [&str; 8] = [
+        "Hand-drawn",
+        "Marker",
+        "Sans",
+        "Serif",
+        "Mono",
+        "Display",
+        "Yours",
+        "Single-line",
+    ];
+    let rank = |c: &str| ORDER.iter().position(|o| *o == c).unwrap_or(ORDER.len());
+    let mut fonts = font::list();
+    fonts.sort_by_key(|f| (rank(&f.category), f.id));
+    let row = if touch { 26.0 } else { 20.0 };
+    egui::Frame::new()
+        .fill(Color32::WHITE)
+        .stroke(Stroke::new(1.0, EDGE))
+        .corner_radius(8.0)
+        .inner_margin(4.0)
+        .show(ui, |ui| {
+            egui::ScrollArea::vertical()
+                .id_salt("fonts")
+                .max_height(row * 7.5)
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    let mut cat = String::new();
+                    for f in fonts {
+                        if f.category != cat {
+                            cat = f.category.clone();
+                            ui.label(egui::RichText::new(&cat).small().weak());
+                        }
+                        let mut text =
+                            egui::RichText::new(&f.name).size(if touch { 18.0 } else { 15.0 });
+                        if egui_fonts.contains(&f.name) {
+                            text = text.family(egui::FontFamily::Name(f.name.as_str().into()));
+                        }
+                        if !f.available {
+                            text = text.weak();
+                        }
+                        let resp = ui
+                            .add_sized(
+                                vec2(ui.available_width(), row),
+                                egui::Button::selectable(tx.font == f.id, text),
+                            )
+                            .on_hover_text(if f.available {
+                                f.name.clone()
+                            } else if f.category == "Not on this device" {
+                                format!(
+                                    "{}: not on this device (add it with \"Add your own font\")",
+                                    f.name
+                                )
+                            } else {
+                                format!("{}: loading…", f.name)
+                            });
+                        if resp.clicked() {
+                            tx.font = f.id;
+                        }
+                    }
+                });
+        });
+    if ui
+        .button("+ Add your own font…")
+        .on_hover_text("A TrueType (.ttf) or OpenType (.otf) file")
+        .clicked()
+    {
+        actions.push(Action::AddFont);
+    }
 }
 
 /// Buttons for what can be done with a selection.
@@ -1204,6 +1748,8 @@ fn text_editor(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>)
                     egui::TextEdit::multiline(text)
                         .desired_rows(2)
                         .desired_width(240.0)
+                        // Tab types a tab: tables are edited as tab-separated cells.
+                        .lock_focus(true)
                         .hint_text("Type, then Done (Ctrl+Enter)"),
                 );
                 resp.request_focus();
@@ -1472,6 +2018,24 @@ fn app_icon(p: &egui::Painter, c: Pos2, r: f32, item: AppItem) {
         }
         AppItem::Tour => {
             line(&[vec2(-0.8, 0.0), vec2(-0.25, 0.6), vec2(0.85, -0.6)]);
+        }
+        AppItem::Picture => {
+            // A framed landscape: a hill and a sun.
+            line(&[
+                vec2(-1.0, -0.75),
+                vec2(1.0, -0.75),
+                vec2(1.0, 0.75),
+                vec2(-1.0, 0.75),
+                vec2(-1.0, -0.75),
+            ]);
+            line(&[
+                vec2(-1.0, 0.55),
+                vec2(-0.35, -0.1),
+                vec2(0.15, 0.4),
+                vec2(0.45, 0.1),
+                vec2(1.0, 0.6),
+            ]);
+            p.circle_stroke(c + vec2(0.45, -0.35) * s, s * 0.18, st);
         }
     }
 }
