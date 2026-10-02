@@ -210,6 +210,7 @@ pub fn og_set_menu(items: &str) {
                 "paste" => AppItem::Paste,
                 "library" => AppItem::Library,
                 "diagram" => AppItem::Diagram,
+                "layout" => AppItem::Layout,
                 "picture" => AppItem::Picture,
                 "bookmarks" => AppItem::Bookmarks,
                 "timeline" => AppItem::Timeline,

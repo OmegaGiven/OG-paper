@@ -16,6 +16,7 @@ mod export;
 mod font;
 mod hotbar;
 mod images;
+mod layout;
 mod library;
 mod objects;
 mod pdf;
@@ -166,6 +167,7 @@ impl App {
         let prefs = prefs::load();
         ui.grid = ui::GridMode::from_key(prefs.get("grid").map_or("off", |s| s.as_str()));
         ui.diagram = prefs.get("diagram").is_some_and(|v| v == "on");
+        ui.layout = layout::Layout::decode(prefs.get("layout").map_or("", |s| s.as_str()));
         Self {
             window: None,
             gpu: None,
@@ -880,6 +882,11 @@ impl App {
                     self.ui.search_open = !self.ui.search_open;
                     self.ui.search_focus = true;
                 }
+                self.redraw();
+            }
+            Action::EditLayout => {
+                self.ui.layout_edit = true;
+                self.ui.menu = ui::Menu::None;
                 self.redraw();
             }
             Action::Diagram => {

@@ -206,6 +206,8 @@ pub enum AppItem {
     Library,
     /// Diagram mode: lines and arrows stick to objects.
     Diagram,
+    /// Move the controls around.
+    Layout,
     /// Background grid: off, lines, dots.
     Grid,
     New,
@@ -228,6 +230,7 @@ impl AppItem {
             AppItem::Paste => "Paste",
             AppItem::Library => "Library",
             AppItem::Diagram => "Diagram",
+            AppItem::Layout => "Edit layout",
             AppItem::Grid => "Grid",
             AppItem::New => "New canvas",
             AppItem::Open => "Open",
@@ -248,6 +251,7 @@ impl AppItem {
             AppItem::Paste => Action::Paste,
             AppItem::Library => Action::Library,
             AppItem::Diagram => Action::Diagram,
+            AppItem::Layout => Action::EditLayout,
             AppItem::Grid => Action::Grid,
             AppItem::New => Action::New,
             AppItem::Open => Action::Open,
@@ -310,6 +314,9 @@ pub struct UiState {
     pub grid: GridMode,
     /// Diagram mode: lines and arrows stick to what they touch.
     pub diagram: bool,
+    /// Where the controls sit, and whether they are being moved.
+    pub layout: crate::layout::Layout,
+    pub layout_edit: bool,
     /// Desktop text search: open, focus it next frame, the query, the query
     /// the results are for, the results, and a result picked to fly to.
     pub search_open: bool,
@@ -441,8 +448,11 @@ impl Default for UiState {
                 AppItem::Search,
                 AppItem::Grid,
                 AppItem::Diagram,
+                AppItem::Layout,
             ],
             diagram: false,
+            layout: Default::default(),
+            layout_edit: false,
             cropping: false,
             lib_open: false,
             lib: Vec::new(),
@@ -614,6 +624,8 @@ pub enum Action {
     FlipV,
     /// Toggle diagram mode.
     Diagram,
+    /// Start moving the controls around.
+    EditLayout,
     /// Save the selection to the library.
     SaveSticker,
     /// Open the library.
@@ -696,33 +708,95 @@ struct Geo {
     tool: Pos2,
     undo: Pos2,
     redo: Pos2,
-    /// The settings button, top right.
+    /// The settings button, top right by default.
     app: Pos2,
+    /// The arcs the tool and settings fans open along (start, sweep).
+    tool_arc: (f32, f32),
+    app_arc: (f32, f32),
 }
 
-fn geo(ctx: &egui::Context, touch: bool) -> Geo {
+/// A point at screen fractions `f`, kept `pad` inside the screen.
+fn at_frac(screen: Rect, f: [f32; 2], pad: f32) -> Pos2 {
+    pos2(
+        (screen.left() + f[0] * screen.width()).clamp(
+            screen.left() + pad,
+            (screen.right() - pad).max(screen.left() + pad),
+        ),
+        (screen.top() + f[1] * screen.height()).clamp(
+            screen.top() + pad,
+            (screen.bottom() - pad).max(screen.top() + pad),
+        ),
+    )
+}
+
+/// The screen fractions of a point.
+fn frac_of(screen: Rect, p: Pos2) -> [f32; 2] {
+    [
+        ((p.x - screen.left()) / screen.width().max(1.0)).clamp(0.0, 1.0),
+        ((p.y - screen.top()) / screen.height().max(1.0)).clamp(0.0, 1.0),
+    ]
+}
+
+fn geo(ctx: &egui::Context, st: &UiState) -> Geo {
+    let touch = st.touch_ui;
+    let lay = &st.layout;
     let screen = ctx.content_rect();
     let r = if touch { 30.0 } else { 24.0 };
     let m = if touch { 18.0 } else { 16.0 };
-    let tool = pos2(screen.right() - m - r, screen.bottom() - m - r);
+    let tool = match lay.tool {
+        Some(f) => at_frac(screen, f, m + r),
+        None => pos2(screen.right() - m - r, screen.bottom() - m - r),
+    };
     let small = r * 0.72;
-    // Redo sits next to the tool button, undo to its left.
-    let redo = tool - vec2(r + 14.0 + small, r - small);
-    let undo = redo - vec2(2.0 * small + 10.0, 0.0);
-    let app = pos2(screen.right() - m - r, screen.top() + m + r);
+    let (undo, redo) = match lay.undo {
+        Some(f) => {
+            let c = at_frac(screen, f, m + 2.0 * small + 5.0);
+            (c - vec2(small + 5.0, 0.0), c + vec2(small + 5.0, 0.0))
+        }
+        None if lay.tool.is_none() => {
+            // Redo sits next to the tool button, undo to its left.
+            let redo = tool - vec2(r + 14.0 + small, r - small);
+            (redo - vec2(2.0 * small + 10.0, 0.0), redo)
+        }
+        None => {
+            // Beside the moved tool button, on the side toward the middle.
+            let dir = if tool.x > screen.center().x {
+                -1.0
+            } else {
+                1.0
+            };
+            let near = tool + vec2(dir * (r + 14.0 + small), r - small);
+            let far = near + vec2(dir * (2.0 * small + 10.0), 0.0);
+            if dir < 0.0 {
+                (far, near)
+            } else {
+                (near, far)
+            }
+        }
+    };
+    let app = match lay.app {
+        Some(f) => at_frac(screen, f, m + r),
+        None => pos2(screen.right() - m - r, screen.top() + m + r),
+    };
     Geo {
         app,
         r,
         tool,
         undo,
         redo,
+        tool_arc: crate::layout::fan_arc(frac_of(screen, tool)),
+        app_arc: crate::layout::fan_arc(frac_of(screen, app)),
     }
 }
 
 /// Draw the UI; returns actions for the app to perform.
 pub fn draw(ctx: &egui::Context, st: &mut UiState) -> Vec<Action> {
     let mut actions = Vec::new();
-    let g = geo(ctx, st.touch_ui);
+    if st.layout_edit {
+        layout_editor(ctx, st);
+        return actions;
+    }
+    let g = geo(ctx, st);
     let t = ctx.animate_bool_with_time(Id::new("tools_open"), st.menu == Menu::Tools, 0.12);
 
     // The controls layer covers exactly the buttons plus any open fan, so
@@ -732,12 +806,12 @@ pub fn draw(ctx: &egui::Context, st: &mut UiState) -> Vec<Action> {
     let mut bbox = sq(g.tool, g.r)
         .union(sq(g.undo, small))
         .union(sq(g.redo, small));
-    let tool_slots = ring_slots(TOOLS.len(), g.r);
+    let tool_slots = ring_slots(TOOLS.len(), g.r, g.tool_arc.1);
     if t > 0.0 {
         let reach = fan_reach(&tool_slots, g.r) * t + g.r * 1.2;
-        bbox = bbox.union(Rect::from_min_max(
-            g.tool - vec2(reach + 30.0, reach + 16.0),
-            g.tool + vec2(g.r, g.r),
+        bbox = bbox.union(Rect::from_center_size(
+            g.tool,
+            Vec2::splat(2.0 * (reach + 30.0)),
         ));
     }
     let bbox = bbox.expand(4.0);
@@ -754,7 +828,7 @@ pub fn draw(ctx: &egui::Context, st: &mut UiState) -> Vec<Action> {
             if t > 0.0 {
                 for (i, &tool) in TOOLS.iter().enumerate() {
                     let (radius, frac) = tool_slots[i];
-                    let a = PI + FRAC_PI_2 * frac;
+                    let a = g.tool_arc.0 + g.tool_arc.1 * frac;
                     let pc = g.tool + Vec2::angled(a) * radius * t;
                     let rr = g.r * 0.9 * t.max(0.3);
                     let resp = ui.interact(
@@ -931,6 +1005,34 @@ fn quick_bar(ctx: &egui::Context, st: &mut UiState, g: &Geo) {
         let fit = ((avail / (s + gap)) as usize).saturating_sub(2);
         let n = fit.clamp(3, hotbar::BAR);
         (n, g.tool.y - g.r - 14.0 - s * 0.5, screen.center().x)
+    };
+    // Moved (Edit layout): centred where it was put, as many slots as fit.
+    let (n, y, cx) = match st.layout.bar {
+        Some(f) => {
+            let avail = screen.width() - 2.0 * m;
+            let fit = ((avail / (s + gap)) as usize)
+                .saturating_sub(2)
+                .clamp(3, hotbar::BAR);
+            let row = (fit + 2) as f32 * (s + gap) - gap;
+            let c = at_frac(screen, f, 0.0);
+            (
+                fit,
+                c.y.clamp(screen.top() + m + s * 0.5, screen.bottom() - m - s * 0.5),
+                c.x.clamp(
+                    screen.left() + m + row * 0.5,
+                    (screen.right() - m - row * 0.5).max(screen.left() + m + row * 0.5),
+                ),
+            )
+        }
+        // The tool button moved: the bar stays along the bottom.
+        None if st.layout.tool.is_some() => {
+            let avail = screen.width() - 2.0 * m;
+            let fit = ((avail / (s + gap)) as usize)
+                .saturating_sub(2)
+                .clamp(3, hotbar::BAR);
+            (fit, screen.bottom() - m - s * 0.5, screen.center().x)
+        }
+        None => (n, y, cx),
     };
     let row = (n + 2) as f32 * (s + gap) - gap;
     let x0 = cx - row * 0.5;
@@ -1511,8 +1613,23 @@ fn tool_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) 
     let touch = st.touch_ui;
     let m = if touch { 18.0 } else { 16.0 };
     let screen = ctx.content_rect();
-    // Bottom left: in thumb reach on phones, out of the way on desktops.
-    let corner = vec2(m, -m);
+    // Bottom left by default (in thumb reach on phones, out of the way on
+    // desktops); any corner via Edit layout.
+    let pc = st.layout.panel;
+    let align = match pc {
+        crate::layout::Corner::BottomLeft => Align2::LEFT_BOTTOM,
+        crate::layout::Corner::BottomRight => Align2::RIGHT_BOTTOM,
+        crate::layout::Corner::TopLeft => Align2::LEFT_TOP,
+        crate::layout::Corner::TopRight => Align2::RIGHT_TOP,
+    };
+    let corner = vec2(
+        if pc.is_right() { -m } else { m },
+        if pc.is_top() {
+            m + if touch { 70.0 } else { 60.0 }
+        } else {
+            -m
+        },
+    );
     // Open by default where there is room; tucked away on phones.
     let open = *st.panel_open.get_or_insert(screen.width() >= 700.0);
 
@@ -1522,7 +1639,7 @@ fn tool_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) 
         let col = tool_color(st, tool);
         egui::Area::new(Id::new("tool_panel_btn"))
             .order(Order::Foreground)
-            .anchor(Align2::LEFT_BOTTOM, corner)
+            .anchor(align, corner)
             .show(ctx, |ui| {
                 let (rect, resp) =
                     ui.allocate_exact_size(Vec2::splat(2.0 * r + 4.0), Sense::click());
@@ -1548,7 +1665,7 @@ fn tool_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) 
     let mut pick = false;
     egui::Area::new(Id::new("tool_panel"))
         .order(Order::Foreground)
-        .anchor(Align2::LEFT_BOTTOM, corner)
+        .anchor(align, corner)
         .show(ctx, |ui| {
             // Light like the rest of the controls, whatever the system theme.
             ui.style_mut().visuals = egui::Visuals::light();
@@ -2338,19 +2455,29 @@ fn collapse_icon(p: &egui::Painter, c: Pos2, r: f32) {
 /// radius, position along the quarter circle 0..1). Rings fill from the
 /// inside out, each holding as many items as fit along its arc, so a long
 /// menu grows outward in layers instead of one huge curve.
-fn ring_slots(n: usize, r: f32) -> Vec<(f32, f32)> {
+/// Slots for `n` buttons on rings around a button, along an arc of `span`
+/// radians: (radius, fraction along the arc).
+fn ring_slots(n: usize, r: f32, span: f32) -> Vec<(f32, f32)> {
     let rr = r * 0.9;
     let along = 2.0 * rr + 8.0;
     // Room between rings for the labels.
     let step = 2.0 * rr + 56.0;
-    let mut radius = r * 4.4;
+    let full = span >= TAU - 1e-3;
+    // A full ring starts closer in: it has room all round.
+    let mut radius = if full { r * 3.2 } else { r * 4.4 };
     let mut out = Vec::with_capacity(n);
     let mut left = n;
     while left > 0 {
-        let cap = ((FRAC_PI_2 * radius / along).floor() as usize + 1).max(1);
+        let cap = if full {
+            ((span * radius / along).floor() as usize).max(1)
+        } else {
+            ((span * radius / along).floor() as usize + 1).max(1)
+        };
         let m = cap.min(left);
         for i in 0..m {
-            let frac = if m == 1 {
+            let frac = if full {
+                i as f32 / m as f32
+            } else if m == 1 {
                 0.5
             } else {
                 i as f32 / (m - 1) as f32
@@ -2391,15 +2518,15 @@ fn u32c(c: Color32) -> u32 {
 fn app_menu(ctx: &egui::Context, st: &mut UiState, g: &Geo, actions: &mut Vec<Action>) {
     let open = ctx.animate_bool_with_time(Id::new("app_open"), st.menu == Menu::App, 0.12);
     let items = st.app_items.clone();
-    let slots = ring_slots(items.len(), g.r);
+    let slots = ring_slots(items.len(), g.r, g.app_arc.1);
     let mut bbox = Rect::from_center_size(g.app, Vec2::splat(2.0 * g.r)).union(
         Rect::from_center_size(g.app + vec2(0.0, g.r + 12.0), vec2(2.0 * g.r + 24.0, 18.0)),
     );
     if open > 0.0 {
         let reach = fan_reach(&slots, g.r) * open + g.r * 1.2;
-        bbox = bbox.union(Rect::from_min_max(
-            g.app - vec2(reach + 50.0, g.r),
-            g.app + vec2(g.r, reach + 24.0),
+        bbox = bbox.union(Rect::from_center_size(
+            g.app,
+            Vec2::splat(2.0 * (reach + 50.0)),
         ));
     }
     let bbox = bbox.expand(4.0);
@@ -2413,9 +2540,9 @@ fn app_menu(ctx: &egui::Context, st: &mut UiState, g: &Geo, actions: &mut Vec<Ac
             let p = ui.painter().clone();
             if open > 0.0 {
                 for (i, &item) in items.iter().enumerate() {
-                    // From straight down (pi/2) round to straight left (pi).
+                    // Along the arc toward the middle of the screen.
                     let (radius, frac) = slots[i];
-                    let a = FRAC_PI_2 + FRAC_PI_2 * frac;
+                    let a = g.app_arc.0 + g.app_arc.1 * frac;
                     let pc = g.app + Vec2::angled(a) * radius * open;
                     let rr = g.r * 0.9 * open.max(0.3);
                     let resp = ui.interact(
@@ -2498,6 +2625,26 @@ fn app_icon(p: &egui::Painter, c: Pos2, r: f32, item: AppItem, grid: GridMode) {
         p.add(Shape::line(pts.iter().map(|v| c + *v * s).collect(), st));
     };
     match item {
+        AppItem::Layout => {
+            // Four tiles, one lifted and moving.
+            for (x, y) in [(-0.95, -0.95), (0.15, -0.95), (-0.95, 0.15)] {
+                line(&[
+                    vec2(x, y),
+                    vec2(x + 0.8, y),
+                    vec2(x + 0.8, y + 0.8),
+                    vec2(x, y + 0.8),
+                    vec2(x, y),
+                ]);
+            }
+            line(&[
+                vec2(0.3, 0.3),
+                vec2(1.0, 0.3),
+                vec2(1.0, 1.0),
+                vec2(0.3, 1.0),
+                vec2(0.3, 0.3),
+            ]);
+            line(&[vec2(0.1, 0.55), vec2(0.1, 0.1), vec2(0.55, 0.1)]);
+        }
         AppItem::Diagram => {
             // Two boxes joined by an arrow.
             line(&[
@@ -3482,4 +3629,191 @@ fn library_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action
                     });
                 });
         });
+}
+
+/// Edit layout: the controls as handles to drag anywhere; fans then open
+/// toward the middle of the screen from wherever their button is. The tool
+/// panel goes to the corner it is dropped nearest.
+fn layout_editor(ctx: &egui::Context, st: &mut UiState) {
+    let screen = ctx.content_rect();
+    let touch = st.touch_ui;
+    let m = if touch { 18.0 } else { 16.0 };
+    let g = geo(ctx, st);
+    let small = g.r * 0.72;
+    let accent = Color32::from_rgb(200, 40, 90);
+    let tool = st.tool;
+    let col = tool_color(st, tool);
+    let mut lay = st.layout;
+    // Everything here is UI: the canvas gets no input while editing.
+    egui::Area::new(Id::new("layout_edit"))
+        .order(Order::Foreground)
+        .fixed_pos(screen.min)
+        .show(ctx, |ui| {
+            ui.set_clip_rect(screen);
+            let (all, _) = ui.allocate_exact_size(screen.size(), Sense::hover());
+            let p = ui.painter().clone();
+            p.rect_filled(
+                all,
+                0.0,
+                Color32::from_rgba_unmultiplied(245, 242, 235, 140),
+            );
+            // Thirds: corners give quarter fans, edges half, the middle a ring.
+            let faint = Stroke::new(1.0, Color32::from_rgba_unmultiplied(120, 120, 140, 70));
+            for k in [1.0 / 3.0, 2.0 / 3.0] {
+                let x = screen.left() + screen.width() * k;
+                let y = screen.top() + screen.height() * k;
+                p.line_segment([pos2(x, screen.top()), pos2(x, screen.bottom())], faint);
+                p.line_segment([pos2(screen.left(), y), pos2(screen.right(), y)], faint);
+            }
+            // A draggable handle: its new centre (snapped to the edges)
+            // while dragged.
+            let handle =
+                |id: &str, rect: Rect, paint: &dyn Fn(&egui::Painter, Rect)| -> Option<Pos2> {
+                    let resp = ui.interact(rect, Id::new(("lay", id)), Sense::drag());
+                    let mut r = rect;
+                    if resp.dragged() {
+                        r = r.translate(resp.drag_delta());
+                    }
+                    let lit = resp.hovered() || resp.dragged();
+                    p.rect_filled(
+                        r.expand(6.0),
+                        10.0,
+                        Color32::from_rgba_unmultiplied(255, 255, 255, 170),
+                    );
+                    p.rect_stroke(
+                        r.expand(6.0),
+                        10.0,
+                        Stroke::new(if lit { 2.0 } else { 1.2 }, accent),
+                        egui::StrokeKind::Middle,
+                    );
+                    paint(&p, r);
+                    (resp.dragged() || resp.drag_stopped()).then(|| {
+                        let mut c = r.center();
+                        let h = r.size() * 0.5;
+                        let snap = 28.0;
+                        if c.x - h.x - screen.left() < snap {
+                            c.x = screen.left() + m + h.x;
+                        }
+                        if screen.right() - c.x - h.x < snap {
+                            c.x = screen.right() - m - h.x;
+                        }
+                        if c.y - h.y - screen.top() < snap {
+                            c.y = screen.top() + m + h.y;
+                        }
+                        if screen.bottom() - c.y - h.y < snap {
+                            c.y = screen.bottom() - m - h.y;
+                        }
+                        c
+                    })
+                };
+            let tool_r = Rect::from_center_size(g.tool, Vec2::splat(2.0 * g.r));
+            if let Some(c) = handle("tool", tool_r, &|p, r| {
+                disc(p, r.center(), g.r, FACE, false);
+                tool_icon(p, r.center(), g.r, tool, col);
+            }) {
+                lay.tool = Some(frac_of(screen, c));
+            }
+            let app_r = Rect::from_center_size(g.app, Vec2::splat(2.0 * g.r));
+            if let Some(c) = handle("app", app_r, &|p, r| {
+                disc(p, r.center(), g.r, FACE, false);
+                gear_icon(p, r.center(), g.r);
+            }) {
+                lay.app = Some(frac_of(screen, c));
+            }
+            let ur = Rect::from_two_pos(g.undo - Vec2::splat(small), g.redo + Vec2::splat(small));
+            if let Some(c) = handle("undo", ur, &|p, r| {
+                let d = vec2(small + 5.0, 0.0);
+                disc(p, r.center() - d, small, FACE, false);
+                undo_icon(p, r.center() - d, small, false, INKY);
+                disc(p, r.center() + d, small, FACE, false);
+                undo_icon(p, r.center() + d, small, true, INKY);
+            }) {
+                lay.undo = Some(frac_of(screen, c));
+            }
+            // The quick bar, as a strip of empty slots.
+            let s = if touch { 44.0 } else { 38.0 };
+            let w = ((hotbar::BAR + 2) as f32 * (s + 4.0) - 4.0).min(screen.width() - 2.0 * m);
+            let bar_c = match lay.bar {
+                Some(f) => at_frac(screen, f, 0.0),
+                None if lay.tool.is_some() => {
+                    pos2(screen.center().x, screen.bottom() - m - s * 0.5)
+                }
+                None => pos2(screen.center().x, g.tool.y),
+            };
+            if let Some(c) = handle("bar", Rect::from_center_size(bar_c, vec2(w, s)), &|p, r| {
+                let n = ((r.width() + 4.0) / (s + 4.0)) as usize;
+                for i in 0..n {
+                    let b = Rect::from_min_size(
+                        pos2(r.left() + i as f32 * (s + 4.0), r.top()),
+                        Vec2::splat(s),
+                    );
+                    p.rect_filled(b, 8.0, FACE);
+                    p.rect_stroke(b, 8.0, Stroke::new(1.0, EDGE), egui::StrokeKind::Middle);
+                }
+            }) {
+                lay.bar = Some(frac_of(screen, c));
+            }
+            // The tool panel, as a card in its corner.
+            let (pw, ph) = (200.0, 150.0);
+            let pc = lay.panel;
+            let px = if pc.is_right() {
+                screen.right() - m - pw
+            } else {
+                screen.left() + m
+            };
+            let py = if pc.is_top() {
+                screen.top() + m + if touch { 70.0 } else { 60.0 }
+            } else {
+                screen.bottom() - m - ph
+            };
+            if let Some(c) = handle(
+                "panel",
+                Rect::from_min_size(pos2(px, py), vec2(pw, ph)),
+                &|p, r| {
+                    p.rect_filled(r, 12.0, FACE);
+                    p.text(
+                        r.left_top() + vec2(12.0, 12.0),
+                        Align2::LEFT_TOP,
+                        "Tool settings",
+                        egui::FontId::proportional(14.0),
+                        INKY,
+                    );
+                    p.text(
+                        r.center(),
+                        Align2::CENTER_CENTER,
+                        "goes to a corner",
+                        egui::FontId::proportional(12.0),
+                        Color32::from_gray(120),
+                    );
+                },
+            ) {
+                lay.panel = crate::layout::Corner::nearest(frac_of(screen, c));
+            }
+        });
+    st.layout = lay;
+    let mut done =
+        ctx.input(|i| i.key_pressed(egui::Key::Escape) || i.key_pressed(egui::Key::Enter));
+    egui::Area::new(Id::new("layout_bar"))
+        .order(Order::Tooltip)
+        .anchor(Align2::CENTER_TOP, vec2(0.0, 14.0))
+        .show(ctx, |ui| {
+            ui.style_mut().visuals = egui::Visuals::light();
+            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("Drag the controls anywhere. Fans open toward the middle.");
+                    if ui.button("Reset").clicked() {
+                        st.layout = Default::default();
+                    }
+                    if ui.button("Done").clicked() {
+                        done = true;
+                    }
+                });
+            });
+        });
+    if done {
+        st.layout_edit = false;
+        let mut p = crate::prefs::load();
+        p.insert("layout".into(), st.layout.encode());
+        crate::prefs::save(&p);
+    }
 }
