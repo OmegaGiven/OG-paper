@@ -209,6 +209,7 @@ pub fn og_set_menu(items: &str) {
                 "export" => AppItem::Export,
                 "paste" => AppItem::Paste,
                 "library" => AppItem::Library,
+                "diagram" => AppItem::Diagram,
                 "picture" => AppItem::Picture,
                 "bookmarks" => AppItem::Bookmarks,
                 "timeline" => AppItem::Timeline,

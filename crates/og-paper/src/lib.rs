@@ -9,6 +9,7 @@ mod bucket;
 mod crop;
 #[cfg(any(test, target_arch = "wasm32"))]
 mod demo;
+mod diagram;
 mod edit;
 mod egui_io;
 mod export;
@@ -164,6 +165,7 @@ impl App {
         ui.load_saved(hotbar::load());
         let prefs = prefs::load();
         ui.grid = ui::GridMode::from_key(prefs.get("grid").map_or("off", |s| s.as_str()));
+        ui.diagram = prefs.get("diagram").is_some_and(|v| v == "on");
         Self {
             window: None,
             gpu: None,
@@ -878,6 +880,21 @@ impl App {
                     self.ui.search_open = !self.ui.search_open;
                     self.ui.search_focus = true;
                 }
+                self.redraw();
+            }
+            Action::Diagram => {
+                self.ui.diagram = !self.ui.diagram;
+                let mut p = prefs::load();
+                p.insert(
+                    "diagram".into(),
+                    if self.ui.diagram { "on" } else { "off" }.into(),
+                );
+                prefs::save(&p);
+                self.say(if self.ui.diagram {
+                    "Diagram mode: lines and arrows stick to shapes, texts and pictures"
+                } else {
+                    "Diagram mode off"
+                });
                 self.redraw();
             }
             Action::Grid => {

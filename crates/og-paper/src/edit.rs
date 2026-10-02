@@ -37,6 +37,10 @@ pub struct SelDrag {
     pub rot0: f64,
     /// Original points of every selected stroke (restored before committing).
     pub orig: Vec<(u32, Vec<Point>)>,
+    /// Diagram mode: connectors with ends on the selection (drawn following
+    /// it), and their strokes, hidden meanwhile.
+    pub att: Vec<(u32, ObjData, [bool; 2])>,
+    pub hidden: Vec<u32>,
 }
 
 /// Text being typed.
@@ -266,6 +270,14 @@ impl App {
         }
     }
 
+    /// Diagram mode: a line or arrow's ends snapped onto outlines.
+    fn snap_line(&self, a: [f64; 2], b: [f64; 2]) -> ([f64; 2], [f64; 2]) {
+        match self.ui.shape.kind {
+            shapes::ShapeKind::Line | shapes::ShapeKind::Arrow => self.snap_ends(a, b),
+            _ => (a, b),
+        }
+    }
+
     pub(crate) fn shape_end(&mut self, cancel: bool) {
         let Some((a, b)) = self.edit.shape_drag.take() else {
             return;
@@ -275,6 +287,7 @@ impl App {
             self.redraw();
             return;
         }
+        let (a, b) = self.snap_line(a, b);
         let g = self.shape_geom_px(a, b);
         let ppc = self.cam.ppc();
         let seed = self.next_seed();
@@ -648,7 +661,11 @@ impl App {
                 orig.push((id, self.scene.stroke_points(id).to_vec()));
             }
         }
+        let att = self.attached_to(&self.edit.selection);
+        let hidden = self.hide_attached(&att);
         self.edit.sel_drag = Some(SelDrag {
+            att,
+            hidden,
             kind,
             start: p,
             cur: p,
@@ -771,6 +788,7 @@ impl App {
             return self.crop_end();
         }
         if let Some(d) = self.edit.sel_drag.take() {
+            self.unhide(&d.hidden);
             let op = if cancel { None } else { self.drag_op(&d) };
             // Put the original points back; the edit makes new strokes.
             let ids: Vec<u32> = d.orig.iter().map(|o| o.0).collect();
@@ -783,7 +801,7 @@ impl App {
             }
             if let Some(op) = op {
                 let op = self.op_to_cam(&op);
-                self.apply_op(&op);
+                self.apply_op_with(&op, d.att);
             }
         }
         if let Some((a, b)) = self.edit.marquee.take() {
@@ -968,13 +986,33 @@ impl App {
     }
 
     pub(crate) fn apply_op(&mut self, op: &Op) {
+        let att = self.attached_to(&self.edit.selection);
+        self.apply_op_with(op, att);
+    }
+
+    /// Apply `op` to the selection; in diagram mode the connectors in `att`
+    /// follow it, in the same undo step.
+    fn apply_op_with(&mut self, op: &Op, att: Vec<(u32, ObjData, [bool; 2])>) {
         let op = *op;
+        self.sel_alive();
+        let n = self.edit.selection.len();
+        self.edit
+            .selection
+            .extend(att.iter().map(|(g, _, _)| ObjRef::Group(*g)));
+        let mut k: usize = 0;
         self.replace_selection(|app, r| {
+            let i = k;
+            k += 1;
+            if let Some((g, d, ends)) = i.checked_sub(n).and_then(|j| att.get(j)) {
+                let nd = App::follow(d, *ends, &op);
+                return Some(app.group_copy(*g, |_| nd, None));
+            }
             Some(match r {
                 ObjRef::Ink(id) => app.ink_copy(id, Some(&op), None, None),
                 ObjRef::Group(g) => app.group_copy(g, |d| d.edited(&op), None),
             })
         });
+        self.edit.selection.truncate(n);
     }
 
     /// Strokes of the selection in draw order, with the objects they belong to.
@@ -1443,6 +1481,7 @@ impl App {
         let to_pt = |p: [f64; 2]| pos2((p[0] / ppp) as f32, (p[1] / ppp) as f32);
         let mut ov = ui::Overlay::default();
         if let Some((a, b)) = self.edit.shape_drag {
+            let (a, b) = self.snap_line(a, b);
             let g = self.shape_geom_px(a, b);
             let w = self.ui.shape_width as f64 * ppp;
             for pc in shapes::pieces(&self.ui.shape, &g, w, 7) {
@@ -1458,6 +1497,10 @@ impl App {
         }
         if let Some(l) = &self.edit.lasso {
             ov.lasso = Some(l.iter().map(|&q| to_pt(q)).collect());
+        }
+        if let Some(d) = self.edit.sel_drag.as_ref().filter(|d| !d.att.is_empty()) {
+            let op = self.drag_op(d).map(|o| self.op_to_cam(&o));
+            self.follow_preview(&d.att, op.as_ref(), &mut ov);
         }
         if self.edit.crop.is_some() {
             self.crop_overlay(&mut ov);

@@ -204,6 +204,8 @@ pub enum AppItem {
     Paste,
     /// Saved drawings to place copies of.
     Library,
+    /// Diagram mode: lines and arrows stick to objects.
+    Diagram,
     /// Background grid: off, lines, dots.
     Grid,
     New,
@@ -225,6 +227,7 @@ impl AppItem {
             AppItem::Export => "Export",
             AppItem::Paste => "Paste",
             AppItem::Library => "Library",
+            AppItem::Diagram => "Diagram",
             AppItem::Grid => "Grid",
             AppItem::New => "New canvas",
             AppItem::Open => "Open",
@@ -244,6 +247,7 @@ impl AppItem {
             AppItem::Export => Action::Export,
             AppItem::Paste => Action::Paste,
             AppItem::Library => Action::Library,
+            AppItem::Diagram => Action::Diagram,
             AppItem::Grid => Action::Grid,
             AppItem::New => Action::New,
             AppItem::Open => Action::Open,
@@ -304,6 +308,8 @@ impl GridMode {
 pub struct UiState {
     pub tool: Tool,
     pub grid: GridMode,
+    /// Diagram mode: lines and arrows stick to what they touch.
+    pub diagram: bool,
     /// Desktop text search: open, focus it next frame, the query, the query
     /// the results are for, the results, and a result picked to fly to.
     pub search_open: bool,
@@ -434,7 +440,9 @@ impl Default for UiState {
                 AppItem::Home,
                 AppItem::Search,
                 AppItem::Grid,
+                AppItem::Diagram,
             ],
+            diagram: false,
             cropping: false,
             lib_open: false,
             lib: Vec::new(),
@@ -604,6 +612,8 @@ pub enum Action {
     ToBack,
     FlipH,
     FlipV,
+    /// Toggle diagram mode.
+    Diagram,
     /// Save the selection to the library.
     SaveSticker,
     /// Open the library.
@@ -2414,7 +2424,8 @@ fn app_menu(ctx: &egui::Context, st: &mut UiState, g: &Geo, actions: &mut Vec<Ac
                         Sense::click(),
                     );
                     let active = (item == AppItem::Timeline && st.timeline_on)
-                        || (item == AppItem::Grid && st.grid != GridMode::Off);
+                        || (item == AppItem::Grid && st.grid != GridMode::Off)
+                        || (item == AppItem::Diagram && st.diagram);
                     disc(
                         &p,
                         pc,
@@ -2426,6 +2437,8 @@ fn app_menu(ctx: &egui::Context, st: &mut UiState, g: &Geo, actions: &mut Vec<Ac
                     if open > 0.9 {
                         let out = Vec2::angled(a);
                         let name = match item {
+                            AppItem::Diagram if st.diagram => "Diagram: on",
+                            AppItem::Diagram => "Diagram: off",
                             AppItem::Grid => match st.grid {
                                 GridMode::Off => "Grid: off",
                                 GridMode::Lines => "Grid: lines",
@@ -2485,6 +2498,25 @@ fn app_icon(p: &egui::Painter, c: Pos2, r: f32, item: AppItem, grid: GridMode) {
         p.add(Shape::line(pts.iter().map(|v| c + *v * s).collect(), st));
     };
     match item {
+        AppItem::Diagram => {
+            // Two boxes joined by an arrow.
+            line(&[
+                vec2(-1.0, -0.95),
+                vec2(-0.3, -0.95),
+                vec2(-0.3, -0.35),
+                vec2(-1.0, -0.35),
+                vec2(-1.0, -0.95),
+            ]);
+            line(&[
+                vec2(0.3, 0.35),
+                vec2(1.0, 0.35),
+                vec2(1.0, 0.95),
+                vec2(0.3, 0.95),
+                vec2(0.3, 0.35),
+            ]);
+            line(&[vec2(-0.65, -0.35), vec2(-0.65, 0.65), vec2(0.3, 0.65)]);
+            line(&[vec2(0.05, 0.42), vec2(0.3, 0.65), vec2(0.05, 0.88)]);
+        }
         AppItem::Library => {
             // Two books on a shelf, one leaning.
             line(&[vec2(-0.9, 0.95), vec2(0.95, 0.95)]);
