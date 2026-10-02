@@ -149,6 +149,8 @@ pub struct App {
     /// Where each current touch started (tap vs. pinch/drag detection).
     touch_start: HashMap<u64, [f64; 2]>,
     message_until: Option<Instant>,
+    /// The message the timer above is for (the UI sets messages too).
+    message_seen: Option<String>,
     last_dbg: (u32, u32, u32),
     /// The last picture the color picker read, decoded.
     pick_img: std::cell::RefCell<Option<(u64, image::RgbaImage)>>,
@@ -208,6 +210,7 @@ impl App {
             multi_tap: None,
             touch_start: HashMap::new(),
             message_until: None,
+            message_seen: None,
             last_dbg: (0, 0, 0),
             pick_img: Default::default(),
         }
@@ -249,7 +252,8 @@ impl App {
 
     fn say(&mut self, msg: impl Into<String>) {
         self.ui.message = Some(msg.into());
-        self.message_until = Some(Instant::now() + Duration::from_secs(4));
+        // The same message again restarts its time.
+        self.message_seen = None;
     }
 
     fn view_changed(&mut self) {
@@ -1845,8 +1849,18 @@ impl App {
             self.web_cmd(c);
         }
         self.fly_step();
+        // Every message (from the app or the UI) shows for 4 seconds.
+        if self.ui.message != self.message_seen {
+            self.message_seen = self.ui.message.clone();
+            self.message_until = self
+                .ui
+                .message
+                .is_some()
+                .then(|| Instant::now() + Duration::from_secs(4));
+        }
         if self.message_until.is_some_and(|t| Instant::now() > t) {
             self.ui.message = None;
+            self.message_seen = None;
             self.message_until = None;
         }
         if self
@@ -1990,6 +2004,24 @@ impl App {
 }
 
 impl ApplicationHandler for App {
+    /// Wake up to hide a message when its time is up.
+    fn about_to_wait(&mut self, el: &ActiveEventLoop) {
+        match self.message_until {
+            Some(t) if Instant::now() >= t => {
+                self.redraw();
+                el.set_control_flow(ControlFlow::Wait);
+            }
+            Some(t) => el.set_control_flow(ControlFlow::WaitUntil(t)),
+            None => el.set_control_flow(ControlFlow::Wait),
+        }
+    }
+
+    fn new_events(&mut self, _el: &ActiveEventLoop, cause: winit::event::StartCause) {
+        if matches!(cause, winit::event::StartCause::ResumeTimeReached { .. }) {
+            self.redraw();
+        }
+    }
+
     fn resumed(&mut self, el: &ActiveEventLoop) {
         let window = match &self.window {
             Some(w) => w.clone(),
