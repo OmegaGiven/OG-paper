@@ -14,6 +14,7 @@ use std::collections::HashMap;
 use ogpaper_core::{Brush, Camera, CellAddr, Dash, Scene, Style};
 
 use crate::font::{self, Align, FontId, Mark};
+use crate::images::Asset;
 use crate::shapes::{self, Geom, Piece, ShapeStyle};
 
 /// How text looks.
@@ -56,6 +57,17 @@ pub enum ObjData {
         size: f64,
         seed: u32,
     },
+    /// A picture: `geom` is its box; its file is in [`Objects::images`].
+    Image { id: u64, geom: Geom, opacity: u8 },
+    /// Rows of cells drawn as a grid; `size` is the cap height and `geom`
+    /// the whole table's box.
+    Table {
+        cells: Vec<Vec<String>>,
+        style: TextStyle,
+        geom: Geom,
+        size: f64,
+        seed: u32,
+    },
 }
 
 /// A shape or a text: its settings, in the units of `cell`, and its strokes.
@@ -77,6 +89,10 @@ pub enum ObjRef {
 pub struct Objects {
     pub groups: Vec<Group>,
     pub of_stroke: HashMap<u32, u32>,
+    /// Picture files by id.
+    pub images: HashMap<u64, Asset>,
+    /// The stroke that places a picture (its corners): picture id and opacity.
+    pub image_of: HashMap<u32, (u64, u8)>,
 }
 
 impl Objects {
@@ -98,6 +114,11 @@ impl Objects {
         let gi = self.groups.len() as u32;
         for &s in &g.strokes {
             self.of_stroke.insert(s, gi);
+        }
+        if let ObjData::Image { id, opacity, .. } = g.data {
+            for &s in &g.strokes {
+                self.image_of.insert(s, (id, opacity));
+            }
         }
         self.groups.push(g);
         gi
@@ -213,7 +234,10 @@ fn geom_map(g: &Geom, f: impl Fn([f64; 2]) -> [f64; 2], k: f64) -> Geom {
 impl ObjData {
     pub fn geom(&self) -> &Geom {
         match self {
-            ObjData::Shape { geom, .. } | ObjData::Text { geom, .. } => geom,
+            ObjData::Shape { geom, .. }
+            | ObjData::Text { geom, .. }
+            | ObjData::Image { geom, .. }
+            | ObjData::Table { geom, .. } => geom,
         }
     }
 
@@ -240,6 +264,24 @@ impl ObjData {
                 seed,
             } => ObjData::Text {
                 text: text.clone(),
+                style: *style,
+                geom: geom_map(geom, &f, k),
+                size: size * k,
+                seed: *seed,
+            },
+            ObjData::Image { id, geom, opacity } => ObjData::Image {
+                id: *id,
+                geom: geom_map(geom, &f, k),
+                opacity: *opacity,
+            },
+            ObjData::Table {
+                cells,
+                style,
+                geom,
+                size,
+                seed,
+            } => ObjData::Table {
+                cells: cells.clone(),
                 style: *style,
                 geom: geom_map(geom, &f, k),
                 size: size * k,
@@ -280,6 +322,29 @@ impl ObjData {
                     seed: *seed,
                 }
             }
+            ObjData::Image { id, geom, opacity } => ObjData::Image {
+                id: *id,
+                geom: op.geom(geom),
+                opacity: *opacity,
+            },
+            ObjData::Table {
+                cells,
+                style,
+                geom,
+                size,
+                seed,
+            } => {
+                let k = op.scale_factor();
+                let mut g = op.geom(geom);
+                g.half = [geom.half[0] * k, geom.half[1] * k];
+                ObjData::Table {
+                    cells: cells.clone(),
+                    style: *style,
+                    geom: g,
+                    size: size * k,
+                    seed: *seed,
+                }
+            }
         }
     }
 
@@ -299,6 +364,23 @@ impl ObjData {
                 size,
                 seed,
             } => text_pieces(text, style, geom, *size, *seed),
+            // One invisible polygon on the picture's corners: it places the
+            // picture (the renderer draws it there) and makes it selectable.
+            ObjData::Image { .. } => vec![Piece {
+                pts: self.extent(),
+                width: 0.0,
+                brush: Brush::Fill,
+                dash: Dash::Solid,
+                color: 0,
+                bridges: vec![],
+            }],
+            ObjData::Table {
+                cells,
+                style,
+                geom,
+                size,
+                seed,
+            } => table_pieces(cells, style, geom, *size, *seed),
         }
     }
 
@@ -324,6 +406,182 @@ pub fn text_box(text: &str, style: &TextStyle, size: f64) -> [f64; 2] {
     let (_, b) = font::layout(text, style.font, style.align, 0);
     let u = size / 6.0;
     [b[0] * u, b[1] * u]
+}
+
+/// Column widths, row heights and padding of a table (frame units).
+pub struct TableLayout {
+    pub cols: Vec<f64>,
+    pub rows: Vec<f64>,
+    pub pad: f64,
+}
+
+impl TableLayout {
+    pub fn size(&self) -> [f64; 2] {
+        [self.cols.iter().sum(), self.rows.iter().sum()]
+    }
+}
+
+pub fn table_layout(cells: &[Vec<String>], style: &TextStyle, size: f64) -> TableLayout {
+    let pad = size * 0.8;
+    let n = cells.iter().map(|r| r.len()).max().unwrap_or(0).max(1);
+    let line = text_box("Xg", style, size)[1];
+    let mut cols = vec![size * 2.0; n];
+    let mut rows = Vec::with_capacity(cells.len());
+    for row in cells {
+        let mut h = line;
+        for (j, c) in row.iter().enumerate() {
+            if c.trim().is_empty() {
+                continue;
+            }
+            let b = text_box(c, style, size);
+            cols[j] = cols[j].max(b[0]);
+            h = h.max(b[1]);
+        }
+        rows.push(h + 2.0 * pad);
+    }
+    for c in &mut cols {
+        *c += 2.0 * pad;
+    }
+    TableLayout { cols, rows, pad }
+}
+
+/// Tab-separated text (one row per line) as cells; trailing empty rows go.
+pub fn parse_tsv(text: &str) -> Vec<Vec<String>> {
+    let mut rows: Vec<Vec<String>> = text
+        .lines()
+        .map(|l| l.split('\t').map(|c| c.trim().to_string()).collect())
+        .collect();
+    while rows.last().is_some_and(|r| r.iter().all(|c| c.is_empty())) {
+        rows.pop();
+    }
+    rows
+}
+
+/// Cells as tab-separated text (for editing a table).
+pub fn to_tsv(cells: &[Vec<String>]) -> String {
+    cells
+        .iter()
+        .map(|r| r.join("\t"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Pasted text as a table, if it looks like one: tab-separated (from a
+/// spreadsheet) or a Markdown table. At most 200 rows and 40 columns.
+pub fn table_from_text(text: &str) -> Option<Vec<Vec<String>>> {
+    let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+    if lines.is_empty() {
+        return None;
+    }
+    let mut rows: Vec<Vec<String>> = if lines.iter().all(|l| l.trim_start().starts_with('|')) {
+        lines
+            .iter()
+            .map(|l| {
+                let t = l.trim();
+                let t = t.strip_prefix('|').unwrap_or(t);
+                let t = t.strip_suffix('|').unwrap_or(t);
+                t.split('|')
+                    .map(|c| c.trim().to_string())
+                    .collect::<Vec<_>>()
+            })
+            // The |---|:--:| line under the header.
+            .filter(|r: &Vec<String>| {
+                !r.iter()
+                    .all(|c| !c.is_empty() && c.chars().all(|ch| matches!(ch, '-' | ':' | ' ')))
+            })
+            .collect()
+    } else if text.contains('\t') {
+        parse_tsv(text)
+    } else {
+        return None;
+    };
+    rows.truncate(200);
+    for r in &mut rows {
+        r.truncate(40);
+    }
+    let cells: usize = rows.iter().map(|r| r.len()).sum();
+    (cells >= 2).then_some(rows)
+}
+
+fn table_pieces(
+    cells: &[Vec<String>],
+    style: &TextStyle,
+    g: &Geom,
+    size: f64,
+    seed: u32,
+) -> Vec<Piece> {
+    let lay = table_layout(cells, style, size);
+    let [w, h] = lay.size();
+    let (s, c) = g.rot.sin_cos();
+    // Table-local (top-left origin) to frame units.
+    let place = |x: f64, y: f64| {
+        let (x, y) = (x - w * 0.5, y - h * 0.5);
+        [g.center[0] + x * c - y * s, g.center[1] + x * s + y * c]
+    };
+    let [r, gg, bb, a] = style.color.to_le_bytes();
+    let a = (a as u32 * style.opacity as u32) / 255;
+    let strong = u32::from_le_bytes([r, gg, bb, a as u8]);
+    let light = u32::from_le_bytes([r, gg, bb, (a * 2 / 5) as u8]);
+    let line = |pts: Vec<[f64; 2]>, color: u32| Piece {
+        pts,
+        width: size * 0.07,
+        brush: Brush::Marker,
+        dash: Dash::Solid,
+        color,
+        bridges: vec![],
+    };
+    let mut out = Vec::new();
+    // Inner lines first, so the frame and header rule draw over them.
+    let mut x = 0.0;
+    for cw in &lay.cols[..lay.cols.len() - 1] {
+        x += cw;
+        out.push(line(vec![place(x, 0.0), place(x, h)], light));
+    }
+    let mut y = 0.0;
+    for (i, rh) in lay.rows[..lay.rows.len().saturating_sub(1)]
+        .iter()
+        .enumerate()
+    {
+        y += rh;
+        let col = if i == 0 { strong } else { light };
+        out.push(line(vec![place(0.0, y), place(w, y)], col));
+    }
+    out.push(line(
+        vec![
+            place(0.0, 0.0),
+            place(w, 0.0),
+            place(w, h),
+            place(0.0, h),
+            place(0.0, 0.0),
+        ],
+        strong,
+    ));
+    let mut y = 0.0;
+    for (i, row) in cells.iter().enumerate() {
+        let mut x = 0.0;
+        for (j, cell) in row.iter().enumerate() {
+            let cw = lay.cols[j];
+            if !cell.trim().is_empty() {
+                let b = text_box(cell, style, size);
+                let x0 = match style.align {
+                    Align::Left => x + lay.pad,
+                    Align::Center => x + (cw - b[0]) * 0.5,
+                    Align::Right => x + cw - lay.pad - b[0],
+                };
+                let cg = Geom {
+                    center: place(x0 + b[0] * 0.5, y + lay.pad + b[1] * 0.5),
+                    half: [b[0] * 0.5, b[1] * 0.5],
+                    rot: g.rot,
+                    pts: vec![],
+                };
+                let cseed = seed.wrapping_add((i * 131 + j) as u32);
+                out.extend(text_pieces(cell, style, &cg, size, cseed));
+            }
+            x += cw;
+        }
+        y += lay.rows[i];
+    }
+    out
 }
 
 fn text_pieces(text: &str, style: &TextStyle, g: &Geom, size: f64, seed: u32) -> Vec<Piece> {
@@ -470,6 +728,59 @@ mod tests {
             .any(|&i| scene.strokes[i as usize].brush == Brush::Fill));
         let z: Vec<f64> = ids.iter().map(|&i| scene.strokes[i as usize].z).collect();
         assert!(z.windows(2).all(|w| w[0] <= w[1]) && z[0] == 1.0);
+    }
+
+    #[test]
+    fn pasted_tables_parse() {
+        let t = table_from_text("a\tb\n1\t2\n\n").unwrap();
+        assert_eq!(t, vec![vec!["a", "b"], vec!["1", "2"]]);
+        let md = table_from_text("| x | y |\n|---|:-:|\n| 1 | 2 |").unwrap();
+        assert_eq!(md, vec![vec!["x", "y"], vec!["1", "2"]]);
+        assert!(table_from_text("just words").is_none());
+        assert_eq!(parse_tsv(&to_tsv(&t)), t);
+    }
+
+    #[test]
+    fn tables_and_pictures_make_pieces() {
+        let st = TextStyle::default();
+        let cells = vec![
+            vec!["Name".to_string(), "Qty".into()],
+            vec!["Pens".into(), "3".into()],
+        ];
+        let lay = table_layout(&cells, &st, 0.05);
+        let [w, h] = lay.size();
+        assert!(w > 0.0 && h > 0.0 && lay.rows.len() == 2 && lay.cols.len() == 2);
+        let g = Geom {
+            center: [0.5, 0.5],
+            half: [w * 0.5, h * 0.5],
+            rot: 0.0,
+            pts: vec![],
+        };
+        let table = ObjData::Table {
+            cells,
+            style: st,
+            geom: g.clone(),
+            size: 0.05,
+            seed: 1,
+        };
+        // 1 inner column line, 1 header rule, the frame, then the letters.
+        assert!(table.pieces().len() > 3);
+        let pic = ObjData::Image {
+            id: 7,
+            geom: g,
+            opacity: 255,
+        };
+        let p = pic.pieces();
+        assert_eq!(p.len(), 1);
+        assert_eq!(p[0].pts.len(), 4);
+        assert_eq!(p[0].color, 0);
+        let mut objs = Objects::default();
+        objs.add(Group {
+            cell: CellAddr::new(0, 0, 0),
+            data: pic,
+            strokes: vec![3],
+        });
+        assert_eq!(objs.image_of.get(&3), Some(&(7, 255)));
     }
 
     #[test]

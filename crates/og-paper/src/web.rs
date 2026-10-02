@@ -35,6 +35,14 @@ pub enum Cmd {
     Text(Option<String>),
     /// A font of the user's was added: use it.
     FontAdded(crate::font::FontId, String),
+    /// Copy the selection (and delete it, for cut).
+    Copy(bool),
+    /// Paste what this app copied.
+    PasteOwn,
+    /// A picture pasted, dropped or picked; where (CSS px), if known.
+    Picture(crate::images::Asset, Option<[f64; 2]>),
+    /// Text pasted or dropped (a table if it looks like one).
+    PasteText(String, Option<[f64; 2]>),
 }
 
 /// Counters the try-mode tour checks off.
@@ -57,6 +65,12 @@ thread_local! {
     static STATS: Cell<Stats> = Cell::new(Stats { deep_draw: f64::NEG_INFINITY, ..Default::default() });
     static OUTBOX: RefCell<Vec<&'static str>> = RefCell::default();
     static TEXT_REQ: RefCell<String> = RefCell::default();
+    static HAS_SELECTION: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Whether something is selected (so the page knows a copy has something).
+pub fn set_has_selection(on: bool) {
+    HAS_SELECTION.with(|h| h.set(on));
 }
 
 /// Ask the page to show its text editor; `json` says where and with what.
@@ -159,7 +173,8 @@ pub fn og_blank() {
 }
 
 /// Set the settings fan's items from a comma-separated list of: new, open,
-/// save, home, bookmarks, timeline, fullscreen, tour (unknown names skipped).
+/// save, home, picture, bookmarks, timeline, fullscreen, tour (unknown names
+/// skipped).
 #[wasm_bindgen]
 pub fn og_set_menu(items: &str) {
     use crate::ui::AppItem;
@@ -171,6 +186,7 @@ pub fn og_set_menu(items: &str) {
                 "open" => AppItem::Open,
                 "save" => AppItem::Save,
                 "home" => AppItem::Home,
+                "picture" => AppItem::Picture,
                 "bookmarks" => AppItem::Bookmarks,
                 "timeline" => AppItem::Timeline,
                 "fullscreen" => AppItem::FullScreen,
@@ -282,6 +298,48 @@ pub fn og_font_add(
         }
         Err(e) => format!("!{e}"),
     }
+}
+
+/// Copy (or cut) the selection. Returns false when nothing is selected,
+/// so the page leaves the clipboard alone.
+#[wasm_bindgen]
+pub fn og_copy(cut: bool) -> bool {
+    let on = HAS_SELECTION.with(|h| h.get());
+    if on {
+        push(Cmd::Copy(cut));
+    }
+    on
+}
+
+/// Paste what was copied in this app.
+#[wasm_bindgen]
+pub fn og_paste_own() {
+    push(Cmd::PasteOwn);
+}
+
+fn at(x: Option<f64>, y: Option<f64>) -> Option<[f64; 2]> {
+    Some([x?, y?])
+}
+
+/// Put a picture (bytes of a PNG, JPEG, GIF or WebP file) on the canvas,
+/// centred on (x, y) in CSS px, or the middle of the screen. Returns "" or
+/// why the picture could not be used.
+#[wasm_bindgen]
+pub fn og_paste_image(bytes: Vec<u8>, x: Option<f64>, y: Option<f64>) -> String {
+    match crate::images::prepare(bytes) {
+        Ok(a) => {
+            push(Cmd::Picture(a, at(x, y)));
+            String::new()
+        }
+        Err(e) => e,
+    }
+}
+
+/// Put pasted text on the canvas: a table if it is tab-separated or a
+/// Markdown table, else a text.
+#[wasm_bindgen]
+pub fn og_paste_text(text: String, x: Option<f64>, y: Option<f64>) {
+    push(Cmd::PasteText(text, at(x, y)));
 }
 
 /// Ask for a snapshot of the canvas; pick it up with `og_snapshot_take`.

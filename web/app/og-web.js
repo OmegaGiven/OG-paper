@@ -6,6 +6,7 @@
 
 import init, {
   og_load, og_demo, og_blank, og_status, og_requests, og_set_menu, og_text_request, og_text_done, og_font_add,
+  og_copy, og_paste_own, og_paste_image, og_paste_text,
   og_bookmark_add, og_bookmark_go, og_bookmark_remove, og_bookmark_rename,
   og_timeline, og_timeline_restore, og_snapshot_request, og_snapshot_take,
 } from './pkg/og_paper.js';
@@ -249,7 +250,7 @@ export async function start({ mode = 'app' } = {}) {
   const standalone = matchMedia('(display-mode: fullscreen), (display-mode: standalone)').matches;
   const canFs = document.documentElement.requestFullscreen && !standalone;
   const syncMenu = () => {
-    const items = ['new', 'open', 'save', 'bookmarks', 'timeline', 'home'];
+    const items = ['new', 'open', 'save', 'picture', 'bookmarks', 'timeline', 'home'];
     if (canFs && !document.fullscreenElement) items.push('fullscreen');
     if (isTry) items.push('tour');
     og_set_menu(items.join(','));
@@ -393,13 +394,21 @@ export async function start({ mode = 'app' } = {}) {
     area.style.left = `${req.x}px`;
     area.style.top = `${req.y}px`;
     area.style.color = req.color || '#1c1c24';
-    const hint = el('div', { class: 'og-text-hint' }, 'Enter for a new line · Ctrl+Enter or tap away to finish · Esc to cancel');
+    const hint = el('div', { class: 'og-text-hint' }, req.table
+      ? 'Tab between cells · Enter for a new row · Ctrl+Enter or tap away to finish · Esc to cancel'
+      : 'Enter for a new line · Ctrl+Enter or tap away to finish · Esc to cancel');
     hint.style.left = `${req.x}px`;
     hint.style.top = `${Math.max(4, req.y - 26)}px`;
     const grow = () => { area.style.height = 'auto'; area.style.height = `${area.scrollHeight + 2}px`; area.style.width = `${Math.max(160, Math.min(innerWidth - req.x - 12, area.scrollWidth + 24))}px`; };
     area.addEventListener('input', grow);
     area.addEventListener('keydown', e => {
       if (e.key === 'Escape') { e.preventDefault(); closeText(false); }
+      else if (e.key === 'Tab' && req.table) {
+        // Tables are edited as tab-separated cells.
+        e.preventDefault();
+        area.setRangeText('\t', area.selectionStart, area.selectionEnd, 'end');
+        grow();
+      }
       else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); closeText(true); }
       e.stopPropagation();
     });
@@ -425,6 +434,103 @@ export async function start({ mode = 'app' } = {}) {
     if (r.startsWith('!')) { say(`Could not add ${f.name}: ${r.slice(1)}`); return; }
     pageFont(r, bytes);
     await idbPut(r, { name: r, bytes }, 'fonts');
+  };
+
+  // ---- clipboard, drag and drop, pictures ----
+  // Copying in the app puts this marker on the clipboard: pasting it pastes
+  // the app's own copy (shapes, ink and text keep everything).
+  const CLIP_MARK = 'OG Paper selection (paste it into OG Paper)';
+  const onCanvas = e => {
+    const t = e.target;
+    return !(t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement || t?.isContentEditable);
+  };
+  // Let Ctrl+C / X / V reach the browser (the canvas would swallow them),
+  // so the copy and paste events below fire.
+  window.addEventListener('keydown', e => {
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && ['c', 'x', 'v'].includes(e.key.toLowerCase()) && onCanvas(e)) e.stopPropagation();
+  }, true);
+  for (const kind of ['copy', 'cut']) {
+    document.addEventListener(kind, e => {
+      if (!onCanvas(e) || !og_copy(kind === 'cut')) return;
+      e.clipboardData.setData('text/plain', CLIP_MARK);
+      e.preventDefault();
+    });
+  }
+  const NATIVE = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
+  // Anything the browser can show (SVG, BMP, AVIF, ...) as PNG bytes.
+  async function asPng(blob) {
+    const url = URL.createObjectURL(blob);
+    try {
+      const img = new Image();
+      img.src = url;
+      await img.decode();
+      // Vector pictures are drawn at twice their size so they stay sharp.
+      const k = blob.type === 'image/svg+xml' ? 2 : 1;
+      const w = Math.max(1, Math.round((img.naturalWidth || 300) * k));
+      const h = Math.max(1, Math.round((img.naturalHeight || 150) * k));
+      const c = document.createElement('canvas');
+      c.width = w; c.height = h;
+      c.getContext('2d').drawImage(img, 0, 0, w, h);
+      const out = await new Promise(r => c.toBlob(r, 'image/png'));
+      return new Uint8Array(await out.arrayBuffer());
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  }
+  async function addPicture(blob, at) {
+    try {
+      const bytes = NATIVE.includes(blob.type) ? new Uint8Array(await blob.arrayBuffer()) : await asPng(blob);
+      const err = og_paste_image(bytes, at?.[0], at?.[1]);
+      if (err) say(`Could not add the picture: ${err}`);
+    } catch (e) {
+      say(`Could not add the picture: ${e.message || e}`);
+    }
+  }
+  // An HTML table (from a spreadsheet or a web page) as tab-separated text.
+  function htmlTable(html) {
+    if (!/<table/i.test(html)) return null;
+    const t = new DOMParser().parseFromString(html, 'text/html').querySelector('table');
+    if (!t) return null;
+    const rows = [...t.rows].map(r => [...r.cells].map(c => c.innerText.replace(/[\t\n]+/g, ' ').trim()).join('\t'));
+    return rows.length ? rows.join('\n') : null;
+  }
+  async function pasteFrom(dt, at) {
+    const text = dt.getData('text/plain');
+    if (text === CLIP_MARK) { og_paste_own(); return; }
+    // Spreadsheets also put a picture of the cells on the clipboard: the table wins.
+    const table = htmlTable(dt.getData('text/html') || '');
+    if (table) { og_paste_text(table, at?.[0], at?.[1]); return; }
+    const files = [...dt.files];
+    const pics = files.filter(f => f.type.startsWith('image/'));
+    if (pics.length) {
+      for (const [i, f] of pics.entries()) await addPicture(f, at && [at[0] + i * 24, at[1] + i * 24]);
+      return;
+    }
+    const copy = files.find(f => f.name.toLowerCase().endsWith('.ogpt'));
+    if (copy) { og_load(new Uint8Array(await copy.arrayBuffer()), false); return; }
+    const txt = files.find(f => /\.(txt|tsv|md)$/i.test(f.name));
+    if (txt) { og_paste_text(await txt.text(), at?.[0], at?.[1]); return; }
+    if (/^\s*<svg[\s>]/i.test(text)) { await addPicture(new Blob([text], { type: 'image/svg+xml' }), at); return; }
+    if (text.trim()) og_paste_text(text, at?.[0], at?.[1]);
+  }
+  let pointer = null;
+  document.addEventListener('pointermove', e => { pointer = [e.clientX, e.clientY]; });
+  document.addEventListener('paste', e => {
+    if (!onCanvas(e)) return;
+    e.preventDefault();
+    pasteFrom(e.clipboardData, pointer);
+  });
+  document.addEventListener('dragover', e => { if (onCanvas(e)) e.preventDefault(); });
+  document.addEventListener('drop', e => {
+    if (!onCanvas(e)) return;
+    e.preventDefault();
+    pasteFrom(e.dataTransfer, [e.clientX, e.clientY]);
+  });
+  const picPicker = el('input', { type: 'file', accept: 'image/*', multiple: '', hidden: '' });
+  root.append(picPicker);
+  picPicker.onchange = async () => {
+    for (const f of picPicker.files) await addPicture(f, null);
+    picPicker.value = '';
   };
 
   function newCanvas() {
@@ -495,6 +601,7 @@ export async function start({ mode = 'app' } = {}) {
       else if (r === 'tour' && cards.tour) show('tour');
       else if (r === 'text') openTextEditor();
       else if (r === 'font') pickFont();
+      else if (r === 'picture') picPicker.click();
     }
     if (s.ready) {
       // Bookmarks list (only rebuilt when it changes).

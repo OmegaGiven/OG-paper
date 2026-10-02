@@ -30,23 +30,25 @@ Proprietary infinite-canvas apps such as Endless Paper keep your work in undocum
 ## What works today
 
 - **Ink:** pen with pressure, marker, highlighter; solid, dashed or dotted; any opacity; stroke eraser, eyedropper, color dial with custom colors, per-brush width, unlimited undo/redo.
-- **Shapes:** one Shapes tool with rectangle, ellipse, diamond, triangle, star, polygon, line and arrow, and Excalidraw-style options: hachure / cross-hatch / zigzag / solid fill, fill color, stroke width and style, sloppiness (clean to cartoon), sharp or round edges, curved and elbow lines, nine arrowheads, opacity.
+- **Shapes:** one Shapes tool with rectangle, ellipse, diamond, triangle, star, polygon, line and arrow, and Excalidraw-style options: hachure / cross-hatch / zigzag / solid fill, fill color (or one color for stroke and fill), stroke width and style, sloppiness (clean to cartoon), sharp or round edges, curved and elbow lines, nine arrowheads, opacity.
 - **Text:** 11 bundled open-licensed fonts (hand-drawn, marker, sans, serif, mono, display) plus three single-stroke fonts, or add your own `.ttf` / `.otf`; sizes, alignment, color, opacity. Text is ink (letters are filled outlines), so it stays sharp at any zoom.
-- **Select and edit:** tap or drag a box to select; move, resize, rotate, flip, duplicate, delete, bring to front / send to back, copy / paste, and restyle anything from the tool panel; double-tap a text to edit it. Each edit is one undo step.
+- **Pictures and tables:** paste, drag-drop or insert pictures (PNG, JPEG, GIF, WebP; SVG and more on the web); paste spreadsheet cells or a Markdown table and get a real table you can restyle and edit; pasted text becomes text.
+- **Saved tools:** a Minecraft-style quick bar (keys 1–9) and inventory of tools with their settings: a red 2 px pen, a dashed arrow, a font at a size... Tap an empty slot to save the current tool.
+- **Select and edit:** tap or drag a box to select; move, resize, rotate, flip, duplicate, delete, bring to front / send to back, copy / cut / paste, and restyle anything from the tool panel; double-tap a text or table to edit it. Each edit is one undo step.
 - **Endless canvas:** pan and zoom with no limit; content at any depth stays exact.
-- **Controls:** round buttons that fan out like radial menus, in rings when there are many items: tools (bottom right), ↩ undo / ↪ redo, a tool panel (top left, collapsible) with the current tool's or the selection's settings, and ⚙ settings (top right) for New canvas, Open, Save copy, Home, Bookmarks, Timeline, Full screen and the tour. Keyboard shortcuts for every tool (see [`docs/DESIGN.md`](docs/DESIGN.md#where-it-stands-2026-10-01)).
+- **Controls:** round buttons that fan out like radial menus, in rings when there are many items: tools (bottom right), ↩ undo / ↪ redo, a tool panel (bottom left, collapsible) with the current tool's or the selection's settings, and ⚙ settings (top right) for New canvas, Open, Save copy, Insert picture, Home, Bookmarks, Timeline, Full screen and the tour. Keyboard shortcuts for every tool (see [`docs/DESIGN.md`](docs/DESIGN.md#where-it-stands-2026-10-02)).
 - **Files:** desktop and Android autosave to a `.ogp` file (SQLite) with New / Open / Save As. The web app autosaves in your browser and saves / opens `.ogpt` offline copies.
 - **Bookmarks** (web): save a view, then fly back to it with one tap, across any zoom depth.
 - **Timeline** (web): every stroke is time-stamped; scrub or play back the canvas as it was at any moment, and restore it.
 - **Try mode** (web): a demo canvas with 15 worlds nested inside dots, down to 10^45, and a guided checklist.
 
-File formats (`.ogp` 0.2, shapes and text, the timeline log, bookmarks, `.ogpt` v2) are documented in [`docs/DESIGN.md`](docs/DESIGN.md#implemented-today-ogp-format-02).
+File formats (`.ogp` 0.3, shapes, text, tables and pictures, the timeline log, bookmarks, `.ogpt` v3) are documented in [`docs/DESIGN.md`](docs/DESIGN.md#implemented-today-ogp-format-03).
 
 ## Coming next
 
 - **Save to / open from** the cloud: Save and Open fan out to device, Google Drive, Dropbox or OneDrive, signed in from the page with no project server.
 - `.ogpt` copies in the desktop app, and `.ogp` in the web app, so both share one format; bookmarks and the timeline on desktop.
-- Stickers (images), lasso select, arrows that stick to shapes, textured brushes, layers, export, multi-device sync — see [`docs/PHASE1.md`](docs/PHASE1.md) and the [to-do list](docs/DESIGN.md#future-to-do).
+- Vector SVG stickers, lasso select, arrows that stick to shapes, textured brushes, layers, export, multi-device sync — see [`docs/PHASE1.md`](docs/PHASE1.md) and the [to-do list](docs/DESIGN.md#future-to-do).
 
 ## Stack
 

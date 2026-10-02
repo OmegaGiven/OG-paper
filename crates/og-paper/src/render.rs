@@ -9,6 +9,7 @@
 //! buffers, so the same code runs on WebGL2 / GLES as well as WebGPU, Vulkan,
 //! Metal and DX12.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use ogpaper_core::{Brush, Dash, DrawList, Scene, TileInst};
@@ -193,7 +194,23 @@ pub struct Renderer {
     ink: Growable,
     hl: Growable,
     tiles: Growable,
+    /// Pictures: pipeline, layout, sampler, quads, and a bind group per
+    /// picture (`None`: it could not be decoded).
+    img_pipe: wgpu::RenderPipeline,
+    img_bgl: wgpu::BindGroupLayout,
+    sampler: wgpu::Sampler,
+    imgs: Growable,
+    img_tex: HashMap<u64, Option<wgpu::BindGroup>>,
     egui: egui_wgpu::Renderer,
+}
+
+/// One picture quad: corners (screen px, clockwise from top-left), then
+/// viewport size, opacity and padding.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct ImgInst {
+    corners: [f32; 8],
+    misc: [f32; 4],
 }
 
 /// A vertex buffer that grows to fit.
@@ -436,6 +453,76 @@ impl Renderer {
             &tile_attrs,
         );
 
+        let img_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("image bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+        let img_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("image"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("image.wgsl").into()),
+        });
+        let img_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("image"),
+            bind_group_layouts: &[Some(&img_bgl)],
+            immediate_size: 0,
+        });
+        let img_attrs = wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32x4];
+        let img_pipe = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("image"),
+            layout: Some(&img_layout),
+            vertex: wgpu::VertexState {
+                module: &img_shader,
+                entry_point: Some("vs_image"),
+                compilation_options: Default::default(),
+                buffers: &[Some(wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<ImgInst>() as u64,
+                    step_mode: wgpu::VertexStepMode::Instance,
+                    attributes: &img_attrs,
+                })],
+            },
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &img_shader,
+                entry_point: Some("fs_image"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(over),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("image"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
+            ..Default::default()
+        });
+
         let (strokes, points) = upload_scene(&device, &queue, &Scene::new());
         let bind = make_bind(&device, &bgl, &globals, &strokes, &points);
         let egui = egui_wgpu::Renderer::new(&device, format, egui_wgpu::RendererOptions::default());
@@ -444,6 +531,11 @@ impl Renderer {
             ink: Growable::new(&device, "ink", 1 << 16),
             hl: Growable::new(&device, "highlight", 1 << 14),
             tiles: Growable::new(&device, "tiles", 1 << 14),
+            imgs: Growable::new(&device, "images", 1 << 12),
+            img_pipe,
+            img_bgl,
+            sampler,
+            img_tex: HashMap::new(),
             device,
             queue,
             surface: Some(surface),
@@ -492,6 +584,7 @@ impl Renderer {
 
     /// Replace everything on the GPU with `scene` (new/open).
     pub fn reset(&mut self, scene: &Scene) {
+        self.img_tex.clear();
         self.stroke_len = 0;
         self.point_len = 0;
         self.rebuild(scene);
@@ -558,6 +651,7 @@ impl Renderer {
         &mut self,
         scene: &Scene,
         draw: &DrawList,
+        objs: &crate::objects::Objects,
         wet: Option<Wet<'_>>,
         ui: UiPaint,
     ) -> bool {
@@ -592,8 +686,27 @@ impl Renderer {
         // One instance per window of MAX_SEG segments; highlighter separately.
         let mut ink = Vec::with_capacity(draw.strokes.len());
         let mut hl = Vec::new();
+        let (vw, vh) = (self.config.width as f32, self.config.height as f32);
+        // Pictures in draw order: (ink instances before it, picture id, quad).
+        let mut pics: Vec<(usize, u64, ImgInst)> = Vec::new();
         for i in &draw.strokes {
             let s = &scene.strokes[i.stroke as usize];
+            if s.brush == Brush::Fill && s.color == 0 {
+                // An invisible outline; a picture's corners if it places one.
+                if let Some(&(id, opacity)) = objs.image_of.get(&i.stroke) {
+                    let p = scene.stroke_points(i.stroke);
+                    if p.len() == 4 {
+                        let mut corners = [0.0; 8];
+                        for (k, q) in p.iter().enumerate() {
+                            corners[2 * k] = i.ox + q[0] * i.scale;
+                            corners[2 * k + 1] = i.oy + q[1] * i.scale;
+                        }
+                        let misc = [vw, vh, opacity as f32 / 255.0, 0.0];
+                        pics.push((ink.len(), id, ImgInst { corners, misc }));
+                    }
+                }
+                continue;
+            }
             let list = if s.brush == Brush::Highlighter {
                 &mut hl
             } else {
@@ -640,6 +753,15 @@ impl Renderer {
             .upload(&self.device, &self.queue, bytemuck::cast_slice(&hl));
         self.tiles
             .upload(&self.device, &self.queue, as_bytes(&draw.tiles));
+        for (_, id, _) in &pics {
+            if !self.img_tex.contains_key(id) {
+                let bind = objs.images.get(id).and_then(|a| self.picture(a));
+                self.img_tex.insert(*id, bind);
+            }
+        }
+        let quads: Vec<ImgInst> = pics.iter().map(|p| p.2).collect();
+        self.imgs
+            .upload(&self.device, &self.queue, bytemuck::cast_slice(&quads));
 
         let screen = egui_wgpu::ScreenDescriptor {
             size_in_pixels: [self.config.width, self.config.height],
@@ -688,11 +810,28 @@ impl Renderer {
                 pass.set_vertex_buffer(0, self.tiles.buf.slice(..));
                 pass.draw(0..6, 0..draw.tiles.len() as u32);
             }
-            if !ink.is_empty() {
-                pass.set_pipeline(&self.ink_pipe);
-                pass.set_vertex_buffer(0, self.ink.buf.slice(..));
-                pass.draw(0..(MAX_SEG * 6) as u32, 0..ink.len() as u32);
+            // Ink in runs between pictures, so both keep their draw order.
+            let mut from = 0;
+            let ink_run = |pass: &mut wgpu::RenderPass<'static>, a: usize, b: usize| {
+                if b > a {
+                    pass.set_pipeline(&self.ink_pipe);
+                    pass.set_bind_group(0, &self.bind, &[]);
+                    pass.set_vertex_buffer(0, self.ink.buf.slice(..));
+                    pass.draw(0..(MAX_SEG * 6) as u32, a as u32..b as u32);
+                }
+            };
+            for (k, (at, id, _)) in pics.iter().enumerate() {
+                ink_run(&mut pass, from, *at);
+                from = *at;
+                if let Some(Some(bind)) = self.img_tex.get(id) {
+                    pass.set_pipeline(&self.img_pipe);
+                    pass.set_bind_group(0, bind, &[]);
+                    pass.set_vertex_buffer(0, self.imgs.buf.slice(..));
+                    pass.draw(0..6, k as u32..k as u32 + 1);
+                }
             }
+            ink_run(&mut pass, from, ink.len());
+            pass.set_bind_group(0, &self.bind, &[]);
             if !hl.is_empty() {
                 pass.set_pipeline(&self.hl_pipe);
                 pass.set_vertex_buffer(0, self.hl.buf.slice(..));
@@ -706,6 +845,65 @@ impl Renderer {
             self.egui.free_texture(id);
         }
         true
+    }
+}
+
+impl Renderer {
+    /// Upload a picture with its mip chain.
+    fn picture(&self, a: &crate::images::Asset) -> Option<wgpu::BindGroup> {
+        let levels = crate::images::mips(a, self.device.limits().max_texture_dimension_2d)?;
+        let (w, h) = levels[0].dimensions();
+        let tex = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("picture"),
+            size: wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: levels.len() as u32,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        for (m, img) in levels.iter().enumerate() {
+            let (lw, lh) = img.dimensions();
+            self.queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &tex,
+                    mip_level: m as u32,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                img.as_raw(),
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(4 * lw),
+                    rows_per_image: Some(lh),
+                },
+                wgpu::Extent3d {
+                    width: lw,
+                    height: lh,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
+        let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+        Some(self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("picture"),
+            layout: &self.img_bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+            ],
+        }))
     }
 }
 
@@ -782,13 +980,15 @@ mod tests {
     #[test]
     fn shader_validates() {
         use wgpu::naga;
-        let module = naga::front::wgsl::parse_str(include_str!("shader.wgsl"))
-            .unwrap_or_else(|e| panic!("{}", e.emit_to_string(include_str!("shader.wgsl"))));
-        naga::valid::Validator::new(
-            naga::valid::ValidationFlags::all(),
-            naga::valid::Capabilities::empty(),
-        )
-        .validate(&module)
-        .unwrap_or_else(|e| panic!("{e:?}"));
+        for src in [include_str!("shader.wgsl"), include_str!("image.wgsl")] {
+            let module = naga::front::wgsl::parse_str(src)
+                .unwrap_or_else(|e| panic!("{}", e.emit_to_string(src)));
+            naga::valid::Validator::new(
+                naga::valid::ValidationFlags::all(),
+                naga::valid::Capabilities::empty(),
+            )
+            .validate(&module)
+            .unwrap_or_else(|e| panic!("{e:?}"));
+        }
     }
 }
