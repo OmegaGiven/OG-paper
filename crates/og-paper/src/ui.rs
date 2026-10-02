@@ -193,6 +193,8 @@ pub enum AppItem {
     Search,
     /// Save the view or the selection as PNG, JPEG, SVG or PDF.
     Export,
+    /// Paste from the clipboard (for touch screens, with no Ctrl+V).
+    Paste,
     /// Background grid: off, lines, dots.
     Grid,
     New,
@@ -212,6 +214,7 @@ impl AppItem {
         match self {
             AppItem::Search => "Search text",
             AppItem::Export => "Export",
+            AppItem::Paste => "Paste",
             AppItem::Grid => "Grid",
             AppItem::New => "New canvas",
             AppItem::Open => "Open",
@@ -229,6 +232,7 @@ impl AppItem {
         match self {
             AppItem::Search => Action::Search,
             AppItem::Export => Action::Export,
+            AppItem::Paste => Action::Paste,
             AppItem::Grid => Action::Grid,
             AppItem::New => Action::New,
             AppItem::Open => Action::Open,
@@ -387,6 +391,7 @@ impl Default for UiState {
                 AppItem::Open,
                 AppItem::Save,
                 AppItem::Export,
+                AppItem::Paste,
                 AppItem::Picture,
                 AppItem::Home,
                 AppItem::Search,
@@ -570,6 +575,8 @@ pub enum Action {
     Search,
     /// Export the view or selection as a picture or PDF.
     Export,
+    /// Paste from the clipboard.
+    Paste,
     // Web page panels.
     Bookmarks,
     Timeline,
@@ -2339,6 +2346,26 @@ fn app_icon(p: &egui::Painter, c: Pos2, r: f32, item: AppItem, grid: GridMode) {
         p.add(Shape::line(pts.iter().map(|v| c + *v * s).collect(), st));
     };
     match item {
+        AppItem::Paste => {
+            // A clipboard.
+            line(&[
+                vec2(-0.35, -0.8),
+                vec2(-0.8, -0.8),
+                vec2(-0.8, 1.0),
+                vec2(0.8, 1.0),
+                vec2(0.8, -0.8),
+                vec2(0.35, -0.8),
+            ]);
+            line(&[
+                vec2(-0.35, -1.0),
+                vec2(0.35, -1.0),
+                vec2(0.35, -0.6),
+                vec2(-0.35, -0.6),
+                vec2(-0.35, -1.0),
+            ]);
+            line(&[vec2(-0.45, -0.1), vec2(0.45, -0.1)]);
+            line(&[vec2(-0.45, 0.35), vec2(0.45, 0.35)]);
+        }
         AppItem::Export => {
             // A tray with an arrow leaving it.
             line(&[vec2(0.0, 0.35), vec2(0.0, -1.0)]);

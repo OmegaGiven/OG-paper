@@ -371,7 +371,7 @@ export async function start({ mode = 'app' } = {}) {
   const standalone = matchMedia('(display-mode: fullscreen), (display-mode: standalone)').matches;
   const canFs = document.documentElement.requestFullscreen && !standalone;
   const syncMenu = () => {
-    const items = ['new', 'open', 'save', 'export', 'picture', 'search', 'bookmarks', 'timeline', 'home', 'grid'];
+    const items = ['new', 'open', 'save', 'export', 'paste', 'picture', 'search', 'bookmarks', 'timeline', 'home', 'grid'];
     if (canFs && !document.fullscreenElement) items.push('fullscreen');
     if (isTry) items.push('tour');
     og_set_menu(items.join(','));
@@ -668,6 +668,38 @@ export async function start({ mode = 'app' } = {}) {
     if (/^\s*<svg[\s>]/i.test(text)) { await addPicture(new Blob([text], { type: 'image/svg+xml' }), at); return; }
     if (text.trim()) og_paste_text(text, at?.[0], at?.[1]);
   }
+  // The Paste button (phones and tablets have no Ctrl+V): read the
+  // clipboard directly. Browsers ask permission or show a Paste prompt.
+  async function pasteButton() {
+    const mid = [innerWidth / 2, innerHeight / 2];
+    if (!navigator.clipboard?.read && !navigator.clipboard?.readText) return say('This browser does not let pages read the clipboard — use Ctrl+V or Insert picture');
+    try {
+      if (navigator.clipboard.read) {
+        const items = await navigator.clipboard.read();
+        const types = items.flatMap(i => i.types);
+        const get = async t => { for (const i of items) if (i.types.includes(t)) return i.getType(t); return null; };
+        const textBlob = await get('text/plain');
+        const text = textBlob ? await textBlob.text() : '';
+        if (text === CLIP_MARK) { og_paste_own(); return; }
+        const html = await get('text/html');
+        const table = html && htmlTable(await html.text());
+        if (table) { og_paste_text(table, mid[0], mid[1]); return; }
+        const pic = types.find(t => t.startsWith('image/'));
+        if (pic) { await addPicture(await get(pic), mid); return; }
+        if (/^\s*<svg[\s>]/i.test(text)) { await addPicture(new Blob([text], { type: 'image/svg+xml' }), mid); return; }
+        if (text.trim()) { og_paste_text(text, mid[0], mid[1]); return; }
+        og_paste_own();
+      } else {
+        const text = await navigator.clipboard.readText();
+        if (text === CLIP_MARK || !text.trim()) og_paste_own();
+        else og_paste_text(text, mid[0], mid[1]);
+      }
+    } catch (e) {
+      // Permission refused or nothing readable: the app's own copy, if any.
+      og_paste_own();
+      if (e?.name === 'NotAllowedError') say('Clipboard access was blocked — allow it for this site, or use Ctrl+V');
+    }
+  }
   let pointer = null;
   document.addEventListener('pointermove', e => { pointer = [e.clientX, e.clientY]; });
   document.addEventListener('paste', e => {
@@ -752,6 +784,7 @@ export async function start({ mode = 'app' } = {}) {
       else if (r === 'new') newCanvas();
       else if (r === 'bookmarks') show('bookmarks');
       else if (r === 'export') openExport();
+      else if (r === 'paste') pasteButton();
       else if (r === 'search') { if (open !== 'search') show('search'); sForm.q.focus(); sForm.q.select(); }
       else if (r === 'timeline') openTimeline(!tlOpen);
       else if (r === 'fullscreen') fullScreen();

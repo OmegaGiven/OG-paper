@@ -100,6 +100,44 @@ pub fn from_rgba(img: image::RgbaImage) -> Result<Asset, String> {
     })
 }
 
+/// An SVG drawing as a picture, rasterised at twice its size (so it stays
+/// sharp when zoomed a little) and capped at [`MAX_SIDE`].
+#[cfg(not(target_arch = "wasm32"))]
+pub fn from_svg(bytes: &[u8]) -> Result<Asset, String> {
+    let tree = resvg::usvg::Tree::from_data(bytes, &resvg::usvg::Options::default())
+        .map_err(|e| format!("not a drawing this app reads ({e})"))?;
+    let size = tree.size();
+    let (w, h) = (size.width() as f64, size.height() as f64);
+    if !(w > 0.0 && h > 0.0) {
+        return Err("the drawing is empty".into());
+    }
+    let k = (2.0f64).min(MAX_SIDE as f64 / w.max(h));
+    let (pw, ph) = (
+        (w * k).ceil().max(1.0) as u32,
+        (h * k).ceil().max(1.0) as u32,
+    );
+    let mut pix = resvg::tiny_skia::Pixmap::new(pw, ph).ok_or("the drawing is too big")?;
+    resvg::render(
+        &tree,
+        resvg::tiny_skia::Transform::from_scale(k as f32, k as f32),
+        &mut pix.as_mut(),
+    );
+    let mut img = image::RgbaImage::new(pw, ph);
+    for (o, c) in img.pixels_mut().zip(pix.pixels()) {
+        let c = c.demultiply();
+        *o = image::Rgba([c.red(), c.green(), c.blue(), c.alpha()]);
+    }
+    from_rgba(img)
+}
+
+/// Whether `text` looks like an SVG document.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn is_svg(text: &str) -> bool {
+    let t = text.trim_start();
+    let t = t.strip_prefix('\u{feff}').unwrap_or(t);
+    (t.starts_with("<svg") || t.starts_with("<?xml")) && t.contains("<svg")
+}
+
 /// Pixels for the GPU, with a mip chain (each level half the last), fitted
 /// into `max_side`.
 pub fn mips(asset: &Asset, max_side: u32) -> Option<Vec<image::RgbaImage>> {
@@ -159,5 +197,17 @@ mod tests {
     fn big_pictures_are_scaled_down() {
         let a = prepare(png(MAX_SIDE + 100, 10)).unwrap();
         assert_eq!(a.w, MAX_SIDE);
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod svg_tests {
+    #[test]
+    fn svg_becomes_a_picture() {
+        let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20"><rect width="40" height="20" fill="#f00"/></svg>"##;
+        assert!(super::is_svg(svg));
+        assert!(!super::is_svg("just <b>text</b>"));
+        let a = super::from_svg(svg.as_bytes()).unwrap();
+        assert_eq!((a.w, a.h), (80, 40));
     }
 }

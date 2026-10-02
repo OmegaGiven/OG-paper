@@ -838,7 +838,7 @@ impl App {
             #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
             Action::Picture => {
                 if let Some(p) = rfd::FileDialog::new()
-                    .add_filter("Pictures", &["png", "jpg", "jpeg", "gif", "webp"])
+                    .add_filter("Pictures", &["png", "jpg", "jpeg", "gif", "webp", "svg"])
                     .pick_file()
                 {
                     self.open_dropped(p, None);
@@ -882,6 +882,17 @@ impl App {
             }
             #[cfg(target_arch = "wasm32")]
             Action::Export => web::emit("export"),
+            #[cfg(target_arch = "wasm32")]
+            Action::Paste => web::emit("paste"),
+            #[cfg(not(target_arch = "wasm32"))]
+            Action::Paste => {
+                // At the middle of the screen, not where the menu was tapped.
+                let [w, h] = self.size();
+                self.cursor = [w * 0.5, h * 0.5];
+                if !self.system_paste() {
+                    self.paste();
+                }
+            }
             #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
             Action::Export => self.export_dialog(),
             #[allow(unreachable_patterns)]
@@ -978,6 +989,14 @@ impl App {
             }
         }
         match text {
+            // Copied SVG markup (from a design tool or a web page) is a drawing.
+            Some(t) if images::is_svg(&t) => {
+                match images::from_svg(t.as_bytes()) {
+                    Ok(a) => self.insert_image(a, at),
+                    Err(e) => self.say(format!("Could not paste the drawing: {e}")),
+                }
+                true
+            }
             Some(t) if !t.trim().is_empty() => {
                 self.paste_text(&t, at);
                 true
@@ -1009,6 +1028,13 @@ impl App {
                 return;
             }
         };
+        if ext == "svg" {
+            match images::from_svg(&bytes) {
+                Ok(a) => self.insert_image(a, at),
+                Err(e) => self.say(format!("Could not add {}: {e}", file_label(&path))),
+            }
+            return;
+        }
         if matches!(ext.as_str(), "txt" | "tsv" | "md" | "csv") {
             let text = String::from_utf8_lossy(&bytes).into_owned();
             let text = if ext == "csv" {

@@ -201,6 +201,7 @@ pub fn og_set_menu(items: &str) {
                 "grid" => AppItem::Grid,
                 "search" => AppItem::Search,
                 "export" => AppItem::Export,
+                "paste" => AppItem::Paste,
                 "picture" => AppItem::Picture,
                 "bookmarks" => AppItem::Bookmarks,
                 "timeline" => AppItem::Timeline,
