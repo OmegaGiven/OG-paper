@@ -172,6 +172,9 @@ impl App {
         ui.grid = ui::GridMode::from_key(prefs.get("grid").map_or("off", |s| s.as_str()));
         ui.diagram = prefs.get("diagram").is_some_and(|v| v == "on");
         ui.radial_bar = prefs.get("radialbar").is_some_and(|v| v == "on");
+        ui.hide_tools = prefs.get("hide_tools").is_some_and(|v| v == "on");
+        ui.hide_panel = prefs.get("hide_panel").is_some_and(|v| v == "on");
+        ui.hide_bar = prefs.get("hide_bar").is_some_and(|v| v == "on");
         ui.layout = layout::Layout::decode(prefs.get("layout").map_or("", |s| s.as_str()));
         ui.keys = hotkeys::Keymap::load(prefs.get("keys").map_or("", |s| s.as_str()));
         Self {
@@ -897,6 +900,19 @@ impl App {
                     self.ui.search_open = !self.ui.search_open;
                     self.ui.search_focus = true;
                 }
+                self.redraw();
+            }
+            Action::ShowTools | Action::ShowPanel | Action::ShowBar => {
+                let (key, flag) = match a {
+                    Action::ShowTools => ("hide_tools", &mut self.ui.hide_tools),
+                    Action::ShowPanel => ("hide_panel", &mut self.ui.hide_panel),
+                    _ => ("hide_bar", &mut self.ui.hide_bar),
+                };
+                *flag = !*flag;
+                let v = if *flag { "on" } else { "off" };
+                let mut p = prefs::load();
+                p.insert(key.into(), v.into());
+                prefs::save(&p);
                 self.redraw();
             }
             Action::RadialBar => {

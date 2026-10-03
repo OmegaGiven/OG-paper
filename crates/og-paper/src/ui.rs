@@ -247,6 +247,10 @@ pub enum AppItem {
     Hotkeys,
     /// The quick toolbar as a fan from the bottom-right corner.
     RadialBar,
+    /// Show or hide the tool button, the tool panel, the quick toolbar.
+    ShowTools,
+    ShowPanel,
+    ShowBar,
     /// Background grid: off, lines, dots.
     Grid,
     New,
@@ -272,6 +276,9 @@ impl AppItem {
             AppItem::Layout => "Edit layout",
             AppItem::Hotkeys => "Hotkeys",
             AppItem::RadialBar => "Radial toolbar",
+            AppItem::ShowTools => "Tool button",
+            AppItem::ShowPanel => "Tool panel",
+            AppItem::ShowBar => "Quick toolbar",
             AppItem::Grid => "Grid",
             AppItem::New => "New canvas",
             AppItem::Open => "Open",
@@ -295,6 +302,9 @@ impl AppItem {
             AppItem::Layout => Action::EditLayout,
             AppItem::Hotkeys => Action::Hotkeys,
             AppItem::RadialBar => Action::RadialBar,
+            AppItem::ShowTools => Action::ShowTools,
+            AppItem::ShowPanel => Action::ShowPanel,
+            AppItem::ShowBar => Action::ShowBar,
             AppItem::Grid => Action::Grid,
             AppItem::New => Action::New,
             AppItem::Open => Action::Open,
@@ -360,6 +370,11 @@ pub struct UiState {
     /// The quick toolbar as a fan from the bottom-right corner (tools move
     /// bottom left, their settings top right).
     pub radial_bar: bool,
+    /// Hidden by the person (Settings): the tool button, the tool panel,
+    /// the quick toolbar.
+    pub hide_tools: bool,
+    pub hide_panel: bool,
+    pub hide_bar: bool,
     /// Saved views in toolbar slots, the current view (filled in by the app
     /// each frame) and a view to fly to (for the app).
     pub views: std::collections::BTreeMap<u32, hotbar::View>,
@@ -522,8 +537,14 @@ impl Default for UiState {
                 AppItem::Diagram,
                 AppItem::Layout,
                 AppItem::RadialBar,
+                AppItem::ShowTools,
+                AppItem::ShowPanel,
+                AppItem::ShowBar,
                 AppItem::Hotkeys,
             ],
+            hide_tools: false,
+            hide_panel: false,
+            hide_bar: false,
             radial_bar: false,
             queued: Vec::new(),
             views: Default::default(),
@@ -786,6 +807,10 @@ pub enum Action {
     Hotkeys,
     /// Switch the quick toolbar between a bar and a fan.
     RadialBar,
+    /// Show / hide the tool button, the tool panel, the quick toolbar.
+    ShowTools,
+    ShowPanel,
+    ShowBar,
     /// The hotkeys changed in the menu: save them.
     SaveKeys,
     /// Save the selection to the library.
@@ -954,128 +979,132 @@ pub fn draw(ctx: &egui::Context, st: &mut UiState) -> Vec<Action> {
     }
     let bbox = bbox.expand(4.0);
     let screen = ctx.content_rect();
-    egui::Area::new(Id::new("controls"))
-        .order(Order::Foreground)
-        .fixed_pos(bbox.min)
-        .show(ctx, |ui| {
-            ui.set_clip_rect(screen);
-            ui.allocate_exact_size(bbox.size(), Sense::hover());
-            let p = ui.painter().clone();
+    // The tool button and its fan (Settings > Tool button can hide them).
+    if !st.hide_tools {
+        egui::Area::new(Id::new("controls"))
+            .order(Order::Foreground)
+            .fixed_pos(bbox.min)
+            .show(ctx, |ui| {
+                ui.set_clip_rect(screen);
+                ui.allocate_exact_size(bbox.size(), Sense::hover());
+                let p = ui.painter().clone();
 
-            // ---- tool fan: quarter-circle rings up and left of the tool button
-            if t > 0.0 {
-                // Undo and redo: the fan stays open, to step back several times.
-                for (i, redo) in [(0usize, false), (1, true)] {
-                    let (radius, frac) = tool_slots[i];
-                    let a = g.tool_arc.0 + g.tool_arc.1 * frac;
-                    let pc = g.tool + Vec2::angled(a) * radius * t;
-                    let rr = g.r * 0.9 * t.max(0.3);
-                    let resp = ui.interact(
-                        Rect::from_center_size(pc, Vec2::splat(2.0 * rr)),
-                        Id::new(("ur", redo)),
-                        Sense::click(),
-                    );
-                    let enabled = if redo { st.can_redo } else { st.can_undo };
-                    disc(
-                        &p,
-                        pc,
-                        rr,
-                        if resp.hovered() && enabled {
-                            Color32::WHITE
-                        } else {
-                            FACE
-                        },
-                        false,
-                    );
-                    undo_icon(
-                        &p,
-                        pc,
-                        rr * 0.8,
-                        redo,
-                        if enabled {
-                            INKY
-                        } else {
-                            Color32::from_gray(190)
-                        },
-                    );
-                    if t > 0.9 {
-                        let out = Vec2::angled(a);
-                        label(
-                            &p,
-                            pc + out * (rr + 16.0) + vec2(0.0, 2.0),
-                            if redo { "Redo" } else { "Undo" },
+                // ---- tool fan: quarter-circle rings up and left of the tool button
+                if t > 0.0 {
+                    // Undo and redo: the fan stays open, to step back several times.
+                    for (i, redo) in [(0usize, false), (1, true)] {
+                        let (radius, frac) = tool_slots[i];
+                        let a = g.tool_arc.0 + g.tool_arc.1 * frac;
+                        let pc = g.tool + Vec2::angled(a) * radius * t;
+                        let rr = g.r * 0.9 * t.max(0.3);
+                        let resp = ui.interact(
+                            Rect::from_center_size(pc, Vec2::splat(2.0 * rr)),
+                            Id::new(("ur", redo)),
+                            Sense::click(),
                         );
+                        let enabled = if redo { st.can_redo } else { st.can_undo };
+                        disc(
+                            &p,
+                            pc,
+                            rr,
+                            if resp.hovered() && enabled {
+                                Color32::WHITE
+                            } else {
+                                FACE
+                            },
+                            false,
+                        );
+                        undo_icon(
+                            &p,
+                            pc,
+                            rr * 0.8,
+                            redo,
+                            if enabled {
+                                INKY
+                            } else {
+                                Color32::from_gray(190)
+                            },
+                        );
+                        if t > 0.9 {
+                            let out = Vec2::angled(a);
+                            label(
+                                &p,
+                                pc + out * (rr + 16.0) + vec2(0.0, 2.0),
+                                if redo { "Redo" } else { "Undo" },
+                            );
+                        }
+                        if enabled && resp.clicked() {
+                            actions.push(if redo { Action::Redo } else { Action::Undo });
+                        }
                     }
-                    if enabled && resp.clicked() {
-                        actions.push(if redo { Action::Redo } else { Action::Undo });
-                    }
-                }
-                for (i, &tool) in TOOLS.iter().enumerate() {
-                    let (radius, frac) = tool_slots[i + 2];
-                    let a = g.tool_arc.0 + g.tool_arc.1 * frac;
-                    let pc = g.tool + Vec2::angled(a) * radius * t;
-                    let rr = g.r * 0.9 * t.max(0.3);
-                    let resp = ui.interact(
-                        Rect::from_center_size(pc, Vec2::splat(2.0 * rr)),
-                        Id::new(("tool", i)),
-                        Sense::click(),
-                    );
-                    let selected = st.tool == tool;
-                    disc(
-                        &p,
-                        pc,
-                        rr,
-                        if resp.hovered() { Color32::WHITE } else { FACE },
-                        selected,
-                    );
-                    let ic = tool_color(st, tool);
-                    tool_icon(&p, pc, rr, tool, ic);
-                    if t > 0.9 {
-                        // Label on the outer side of the circle, away from its neighbours.
-                        let out = Vec2::angled(a);
-                        label(&p, pc + out * (rr + 16.0) + vec2(0.0, 2.0), tool.name());
-                    }
-                    if resp.clicked() {
-                        if selected && tool.has_panel() {
-                            // Picking the current brush again brings its panel back.
-                            st.panel_open = Some(true);
-                            st.menu = Menu::None;
-                        } else {
-                            st.tool = tool;
-                            if tool.brush().is_some() {
-                                st.last_ink = tool;
+                    for (i, &tool) in TOOLS.iter().enumerate() {
+                        let (radius, frac) = tool_slots[i + 2];
+                        let a = g.tool_arc.0 + g.tool_arc.1 * frac;
+                        let pc = g.tool + Vec2::angled(a) * radius * t;
+                        let rr = g.r * 0.9 * t.max(0.3);
+                        let resp = ui.interact(
+                            Rect::from_center_size(pc, Vec2::splat(2.0 * rr)),
+                            Id::new(("tool", i)),
+                            Sense::click(),
+                        );
+                        let selected = st.tool == tool;
+                        disc(
+                            &p,
+                            pc,
+                            rr,
+                            if resp.hovered() { Color32::WHITE } else { FACE },
+                            selected,
+                        );
+                        let ic = tool_color(st, tool);
+                        tool_icon(&p, pc, rr, tool, ic);
+                        if t > 0.9 {
+                            // Label on the outer side of the circle, away from its neighbours.
+                            let out = Vec2::angled(a);
+                            label(&p, pc + out * (rr + 16.0) + vec2(0.0, 2.0), tool.name());
+                        }
+                        if resp.clicked() {
+                            if selected && tool.has_panel() {
+                                // Picking the current brush again brings its panel back.
+                                st.panel_open = Some(true);
+                                st.menu = Menu::None;
+                            } else {
+                                st.tool = tool;
+                                if tool.brush().is_some() {
+                                    st.last_ink = tool;
+                                }
+                                st.menu = Menu::None;
                             }
-                            st.menu = Menu::None;
                         }
                     }
                 }
-            }
 
-            // ---- main buttons
-            let tool_resp = ui.interact(
-                Rect::from_center_size(g.tool, Vec2::splat(2.0 * g.r)),
-                Id::new("tool_btn"),
-                Sense::click(),
-            );
-            disc(&p, g.tool, g.r, FACE, st.menu == Menu::Tools);
-            let cur_color = tool_color(st, st.tool);
-            tool_icon(&p, g.tool, g.r, st.tool, cur_color);
-            if tool_resp.clicked() {
-                st.menu = if st.menu == Menu::Tools {
-                    Menu::None
-                } else {
-                    Menu::Tools
-                };
-            }
-            if (tool_resp.long_touched() || tool_resp.secondary_clicked()) && st.tool.has_panel() {
-                st.panel_open = Some(true);
-                st.menu = Menu::None;
-            }
-        });
-
+                // ---- main buttons
+                let tool_resp = ui.interact(
+                    Rect::from_center_size(g.tool, Vec2::splat(2.0 * g.r)),
+                    Id::new("tool_btn"),
+                    Sense::click(),
+                );
+                disc(&p, g.tool, g.r, FACE, st.menu == Menu::Tools);
+                let cur_color = tool_color(st, st.tool);
+                tool_icon(&p, g.tool, g.r, st.tool, cur_color);
+                if tool_resp.clicked() {
+                    st.menu = if st.menu == Menu::Tools {
+                        Menu::None
+                    } else {
+                        Menu::Tools
+                    };
+                }
+                if (tool_resp.long_touched() || tool_resp.secondary_clicked())
+                    && st.tool.has_panel()
+                {
+                    st.panel_open = Some(true);
+                    st.menu = Menu::None;
+                }
+            });
+    }
     paint_overlay(ctx, &st.overlay, st.touch_ui);
     quick_bar(ctx, st, &g);
-    if st.radial_bar {
+    if st.radial_bar && !st.hide_bar {
         radial_bar(ctx, st, &g);
     }
     tool_panel(ctx, st, &mut actions);
@@ -1225,7 +1254,7 @@ fn quick_bar(ctx: &egui::Context, st: &mut UiState, g: &Geo) {
     };
 
     // Radial toolbar: the bar is a fan from its own button (see radial_bar).
-    if !st.radial_bar {
+    if !st.radial_bar && !st.hide_bar {
         egui::Area::new(Id::new("quick_bar"))
             .order(Order::Middle)
             .fixed_pos(stack.min)
@@ -1978,7 +2007,7 @@ fn bag_icon(p: &egui::Painter, c: Pos2, r: f32) {
 /// sections.
 fn tool_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) {
     let tool = st.tool;
-    if !tool.has_panel() || (tool.selects() && st.sel.count == 0) {
+    if st.hide_panel || !tool.has_panel() || (tool.selects() && st.sel.count == 0) {
         return;
     }
     let touch = st.touch_ui;
@@ -2964,7 +2993,10 @@ fn app_menu(ctx: &egui::Context, st: &mut UiState, g: &Geo, actions: &mut Vec<Ac
                     let active = (item == AppItem::Timeline && st.timeline_on)
                         || (item == AppItem::Grid && st.grid != GridMode::Off)
                         || (item == AppItem::Diagram && st.diagram)
-                        || (item == AppItem::RadialBar && st.radial_bar);
+                        || (item == AppItem::RadialBar && st.radial_bar)
+                        || (item == AppItem::ShowTools && !st.hide_tools)
+                        || (item == AppItem::ShowPanel && !st.hide_panel)
+                        || (item == AppItem::ShowBar && !st.hide_bar);
                     disc(
                         &p,
                         pc,
@@ -2972,10 +3004,23 @@ fn app_menu(ctx: &egui::Context, st: &mut UiState, g: &Geo, actions: &mut Vec<Ac
                         if resp.hovered() { Color32::WHITE } else { FACE },
                         active,
                     );
-                    app_icon(&p, pc, rr, item, st.grid);
+                    app_icon(
+                        &p,
+                        pc,
+                        rr,
+                        item,
+                        st.grid,
+                        (st.hide_tools, st.hide_panel, st.hide_bar),
+                    );
                     if open > 0.9 {
                         let out = Vec2::angled(a);
                         let name = match item {
+                            AppItem::ShowTools if st.hide_tools => "Tool button: hidden",
+                            AppItem::ShowTools => "Tool button: shown",
+                            AppItem::ShowPanel if st.hide_panel => "Tool panel: hidden",
+                            AppItem::ShowPanel => "Tool panel: shown",
+                            AppItem::ShowBar if st.hide_bar => "Quick toolbar: hidden",
+                            AppItem::ShowBar => "Quick toolbar: shown",
                             AppItem::Diagram if st.diagram => "Diagram: on",
                             AppItem::Diagram => "Diagram: off",
                             AppItem::Grid => match st.grid {
@@ -3030,13 +3075,67 @@ fn gear_icon(p: &egui::Painter, c: Pos2, r: f32) {
     p.circle_stroke(c, r * 0.13, st);
 }
 
-fn app_icon(p: &egui::Painter, c: Pos2, r: f32, item: AppItem, grid: GridMode) {
+fn app_icon(
+    p: &egui::Painter,
+    c: Pos2,
+    r: f32,
+    item: AppItem,
+    grid: GridMode,
+    st_hidden: (bool, bool, bool),
+) {
     let s = r * 0.42;
     let st = Stroke::new(r * 0.09, INKY);
     let line = |pts: &[Vec2]| {
         p.add(Shape::line(pts.iter().map(|v| c + *v * s).collect(), st));
     };
     match item {
+        AppItem::ShowTools | AppItem::ShowPanel | AppItem::ShowBar => {
+            // An eye (struck through when hidden), over what it is for.
+            let hidden = match item {
+                AppItem::ShowTools => st_hidden.0,
+                AppItem::ShowPanel => st_hidden.1,
+                _ => st_hidden.2,
+            };
+            let eye_c = c + vec2(0.0, -0.25) * s;
+            line(&[
+                vec2(-0.9, -0.25),
+                vec2(-0.45, -0.6),
+                vec2(0.0, -0.7),
+                vec2(0.45, -0.6),
+                vec2(0.9, -0.25),
+            ]);
+            line(&[
+                vec2(-0.9, -0.25),
+                vec2(-0.45, 0.1),
+                vec2(0.0, 0.2),
+                vec2(0.45, 0.1),
+                vec2(0.9, -0.25),
+            ]);
+            p.circle_stroke(eye_c, s * 0.22, st);
+            if hidden {
+                line(&[vec2(-0.8, 0.3), vec2(0.8, -0.8)]);
+            }
+            match item {
+                AppItem::ShowTools => {
+                    p.circle_stroke(c + vec2(0.0, 0.7) * s, s * 0.28, st);
+                }
+                AppItem::ShowPanel => {
+                    line(&[
+                        vec2(-0.45, 0.45),
+                        vec2(0.45, 0.45),
+                        vec2(0.45, 1.0),
+                        vec2(-0.45, 1.0),
+                        vec2(-0.45, 0.45),
+                    ]);
+                }
+                _ => {
+                    for x in [-0.6, -0.2, 0.2, 0.6] {
+                        let r = Rect::from_center_size(c + vec2(x, 0.75) * s, Vec2::splat(s * 0.3));
+                        p.rect_stroke(r, 1.5, st, egui::StrokeKind::Middle);
+                    }
+                }
+            }
+        }
         AppItem::RadialBar => {
             // A quarter fan of slots around a corner button.
             p.circle_stroke(c + vec2(0.7, 0.7) * s, s * 0.32, st);
@@ -4628,7 +4727,9 @@ fn view_icon(p: &egui::Painter, c: Pos2, r: f32, name: &str) {
 fn radial_bar(ctx: &egui::Context, st: &mut UiState, g: &Geo) {
     let open = ctx.animate_bool_with_time(Id::new("bar_open"), st.menu == Menu::Bar, 0.12);
     let n = st.hotbar.len();
-    let slots = ring_slots(n + 2, g.r, g.bar_arc.1);
+    // Toolbars and the bag sit on a small inner ring; the rings beyond hold
+    // only tools.
+    let slots = ring_slots(n, g.r, g.bar_arc.1);
     // Other toolbars ticked to show: a ring each, further out.
     let others: Vec<usize> = (0..st.toolbars.len())
         .filter(|&k| k != st.active_bar && st.toolbars[k].shown)
@@ -4675,7 +4776,13 @@ fn radial_bar(ctx: &egui::Context, st: &mut UiState, g: &Geo) {
             let p = ui.painter().clone();
             if open > 0.0 {
                 for i in 0..n + 2 {
-                    let (radius, frac) = slots[i];
+                    let (radius, frac) = if i < n {
+                        slots[i]
+                    } else if full {
+                        (g.r * 2.4, (i - n) as f32 * 0.5)
+                    } else {
+                        (g.r * 2.4, if i == n { 0.0 } else { 1.0 })
+                    };
                     let a = g.bar_arc.0 + g.bar_arc.1 * frac;
                     let pc = g.bar + Vec2::angled(a) * radius * open;
                     let rr = g.r * 0.9 * open.max(0.3);
