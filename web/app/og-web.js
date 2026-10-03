@@ -110,6 +110,7 @@ const TOUR = [
   { id: 'erase', text: 'Erase or undo something', hint: 'Eraser tool, Ctrl+Z, or a two-finger tap.', done: s => s.erased > 0 || s.undos > 0 },
   { id: 'mark', text: 'Bookmark a view and fly back to it', hint: 'Gear (top right) → Bookmarks: save a view, then tap it.', done: (s, f) => f.flewToOwn },
   { id: 'time', text: 'Scrub the timeline', hint: 'Gear → Timeline: press play to watch the canvas being drawn.', done: (s, f) => f.scrubbed },
+  { id: 'street', text: 'Walk the endless street', hint: 'Gear → Bookmarks → Endless street, then keep zooming into the far end: its portal shows the street again.', done: s => s.passes >= 2 },
   { id: 'out', text: 'Zoom out past the home page', hint: 'There is more up there too.', done: s => s.zoom <= -1 },
   { id: 'bottom', text: 'Reach 10^45', hint: 'The bottom of the demo (it is not the bottom of the canvas).', done: s => s.zoom >= 44 },
 ];

@@ -182,6 +182,8 @@ pub struct App {
     portal_view: Option<objects::PortalView>,
     /// A freehand portal window being drawn (screen px).
     portal_path: Vec<[f64; 2]>,
+    /// Times a zoom went through a portal (try mode's tour).
+    portal_passes: u32,
     /// Viewing the canvas as it was after timeline event `.0`; `.1` holds the
     /// real deleted flags to put back.
     tl_view: Option<(usize, Vec<bool>)>,
@@ -281,6 +283,7 @@ impl App {
             bookmarks: Vec::new(),
             portal_view: None,
             portal_path: Vec::new(),
+            portal_passes: 0,
             tl_view: None,
             tl_from: 0,
             fly: None,
@@ -2409,6 +2412,7 @@ impl App {
                 let [w, h] = self.size();
                 let cam = demo::frame_cell(&d.worlds[0], w, h);
                 self.load_scene(d.scene, cam);
+                self.objs = d.objs;
                 self.timeline = tl;
                 self.ui.file_name = "Try-mode demo".into();
             }
@@ -2609,7 +2613,7 @@ impl App {
             -99.0
         };
         web::set_status(format!(
-            "{{\"ready\":true,\"zoom\":{:.3},\"strokes\":{},\"drawn\":{},\"erased\":{},\"undos\":{},\"deepDraw\":{:.2},\"flying\":{},\"dirty\":{},\"bookmarks\":[{}],\"timeline\":{},\"dark\":{},\"canvas\":\"{:032x}\",\"peer\":\"{:016x}\",\"net\":{},\"name\":{}}}",
+            "{{\"ready\":true,\"zoom\":{:.3},\"strokes\":{},\"drawn\":{},\"erased\":{},\"undos\":{},\"deepDraw\":{:.2},\"flying\":{},\"dirty\":{},\"bookmarks\":[{}],\"timeline\":{},\"dark\":{},\"canvas\":\"{:032x}\",\"peer\":\"{:016x}\",\"net\":{},\"name\":{},\"passes\":{}}}",
             self.cam.log10_zoom(),
             self.scene.strokes.iter().filter(|s| !s.deleted).count(),
             st.drawn,
@@ -2625,6 +2629,7 @@ impl App {
             self.share.clock.peer(),
             web::json_str(&self.live_info().map(|l| l.state).unwrap_or_default()),
             web::json_str(&self.ui.file_name),
+            self.portal_passes,
         ));
         if self.fly.is_some() {
             self.redraw();
@@ -2815,6 +2820,13 @@ impl App {
         // Canvas
         let [w, h] = self.size();
         query(&self.scene, &self.cam, w, h, VIEW, &mut self.draw);
+        let drawing = matches!(
+            self.gesture,
+            Gesture::Ink | Gesture::Erase | Gesture::Shape | Gesture::Portal | Gesture::Select
+        );
+        if !drawing && self.portal_pass() {
+            query(&self.scene, &self.cam, w, h, VIEW, &mut self.draw);
+        }
         let ink = self.ui.ink().copied();
         let tool = self.ui.tool;
         let wet = match (

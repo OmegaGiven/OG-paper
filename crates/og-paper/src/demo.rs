@@ -7,6 +7,9 @@
 //! of nested "worlds" — each one hidden inside a dot of the one above, 1024x
 //! smaller — that reaches about 10^45 zoom. Text is drawn with a tiny
 //! single-stroke font so every letter is real ink you can erase or recolor.
+//!
+//! Right of home there is also an endless street: a portal at its far end
+//! shows the street itself, so zooming down it never ends.
 
 use std::f64::consts::TAU;
 
@@ -168,6 +171,24 @@ pub struct Demo {
     pub scene: Scene,
     /// Home, then each world down the chain (bookmarks to fly to).
     pub worlds: Vec<CellAddr>,
+    /// The street's portal.
+    pub objs: crate::objects::Objects,
+}
+
+/// The endless street's frame (home-cell units): centre (the vanishing
+/// point), width and height.
+const STREET_C: [f64; 2] = [6.2, 0.5];
+const STREET_W: f64 = 1.5;
+const STREET_H: f64 = 1.0;
+/// The portal at the end of the street is the frame this much smaller.
+const STREET_K: f64 = 0.25;
+
+/// The street's view, as its portal and bookmark keep it.
+fn street_view() -> (Camera, f64) {
+    let view_px = 900.0;
+    let mut c = Camera::new(CellAddr::new(0, 0, 0), STREET_C, BASE_PX);
+    c.zoom_at(view_px / (STREET_H * BASE_PX), [0.0, 0.0]);
+    (c, view_px)
 }
 
 /// Camera framing `cell` (a world) on a `w` x `h` px viewport.
@@ -216,6 +237,12 @@ impl Demo {
             WORLDS,
             format!("The bottom (10^{})", depth_label(WORLDS)),
         ));
+        let (cam, view_px) = street_view();
+        v.push(Bookmark {
+            name: "Endless street".into(),
+            cam,
+            view_px,
+        });
         v
     }
 
@@ -263,7 +290,180 @@ pub fn build() -> Demo {
         parent = cell;
         portal = next;
     }
-    Demo { scene, worlds }
+    let objs = street(&mut scene);
+    Demo {
+        scene,
+        worlds,
+        objs,
+    }
+}
+
+/// The endless street, in one-point perspective: everything is drawn
+/// along rays from the vanishing point at depths t (1 at the frame, 0 at
+/// the vanishing point), and repeats when t is scaled by `STREET_K`. The
+/// portal at the far end shows the street scaled by `STREET_K` about that
+/// point, so it continues the street exactly, and zooming through it
+/// lands back at the start.
+fn street(scene: &mut Scene) -> crate::objects::Objects {
+    let home = CellAddr::new(0, 0, 0);
+    let mut p = Pen {
+        scene,
+        base: home.clone(),
+    };
+    let k = STREET_K;
+    // A ray point: direction (a, b) in half-frames, at depth t.
+    let at = |a: f64, b: f64, t: f64| {
+        [
+            STREET_C[0] + a * t * STREET_W * 0.5,
+            STREET_C[1] + b * t * STREET_H * 0.5,
+        ]
+    };
+    // Depths from just inside the portal out past the frame (two repeats).
+    let (t_in, t_out) = (k, 1.0 / k);
+    let ground = 0.45;
+    // Widths shrink with depth, so each repeat is the last one scaled.
+    let w = |t: f64| 0.0035 * t;
+    let ray = |p: &mut Pen, a: f64, b: f64, t0: f64, t1: f64, width: f64, color: u32| {
+        // Split by depth so each piece keeps a width matching its depth.
+        let mut t = t0;
+        while t < t1 {
+            let u = (t * 1.25).min(t1);
+            p.pen(&[at(a, b, t), at(a, b, u)], width * (t * u).sqrt(), color);
+            t = u;
+        }
+    };
+    // The road, the kerbs and the centre line.
+    for a in [-0.28, 0.28] {
+        ray(&mut p, a, ground, t_in, t_out, 0.0035, MUTED);
+    }
+    for a in [-0.62, 0.62] {
+        ray(&mut p, a, ground, t_in, t_out, 0.004, INK);
+    }
+    let dashes = 6;
+    for i in -dashes..2 * dashes {
+        let t0 = k.powf(i as f64 / dashes as f64 * 0.5);
+        let t1 = k.powf((i as f64 + 0.45) / dashes as f64 * 0.5);
+        let (lo, hi) = (t0.min(t1), t0.max(t1));
+        if hi > t_in && lo < t_out {
+            p.pen(
+                &[at(0.0, ground, lo), at(0.0, ground, hi)],
+                w(hi) * 1.3,
+                ORANGE,
+            );
+        }
+    }
+    // Buildings on both sides, four to a repeat, each a facade between two
+    // depths with a roof at its own height, a door and windows.
+    let n: i32 = 4;
+    let sides = [
+        (
+            -0.62,
+            [-0.55, -0.85, -0.4, -0.7],
+            [BLUE, ACCENT, GREEN, PURPLE],
+        ),
+        (
+            0.62,
+            [-0.75, -0.45, -0.9, -0.6],
+            [ORANGE, BLUE, ACCENT, GREEN],
+        ),
+    ];
+    for (a, heights, colors) in sides {
+        for i in -n..n {
+            let j = i.rem_euclid(n) as usize;
+            let (hi, lo) = (
+                k.powf(i as f64 / n as f64),
+                k.powf((i + 1) as f64 / n as f64),
+            );
+            if lo >= t_out || hi <= t_in * 0.999 {
+                continue;
+            }
+            let (roof, col) = (heights[j], colors[j]);
+            let gap = (hi / lo).powf(0.06);
+            let (front, back) = (hi / gap, lo * gap);
+            for t in [front, back] {
+                p.pen(&[at(a, ground, t), at(a, roof, t)], w(t), col);
+            }
+            p.pen(&[at(a, roof, front), at(a, roof, back)], w(front), col);
+            // Windows: two columns, rows down to the door.
+            let rows = ((ground - roof) / 0.14).floor() as i64;
+            for r in 0..rows.max(1) - 1 {
+                let b0 = roof + 0.06 + r as f64 * 0.14;
+                let b1 = b0 + 0.07;
+                for c in 0..2 {
+                    let f0 = 0.18 + c as f64 * 0.42;
+                    let f1 = f0 + 0.24;
+                    let t0 = front * (back / front).powf(f0);
+                    let t1 = front * (back / front).powf(f1);
+                    p.pen(
+                        &[
+                            at(a, b0, t0),
+                            at(a, b0, t1),
+                            at(a, b1, t1),
+                            at(a, b1, t0),
+                            at(a, b0, t0),
+                        ],
+                        w(t0) * 0.6,
+                        col,
+                    );
+                }
+            }
+            // The door.
+            let t0 = front * (back / front).powf(0.4);
+            let t1 = front * (back / front).powf(0.6);
+            p.pen(
+                &[
+                    at(a, ground, t0),
+                    at(a, ground - 0.12, t0),
+                    at(a, ground - 0.12, t1),
+                    at(a, ground, t1),
+                ],
+                w(t0) * 0.7,
+                INK,
+            );
+        }
+    }
+    // A sign before the street.
+    p.text(
+        [
+            STREET_C[0] - STREET_W * 0.5,
+            STREET_C[1] - STREET_H * 0.5 - 0.07,
+        ],
+        0.04,
+        INK,
+        "THE ENDLESS STREET - ZOOM INTO THE FAR END",
+    );
+    // The portal: the far end of the street, showing the street.
+    let (cam, view_px) = street_view();
+    let data = crate::objects::ObjData::Portal {
+        style: crate::shapes::ShapeStyle {
+            kind: crate::shapes::ShapeKind::Rect,
+            fill: crate::objects::PORTAL_PAPER,
+            opacity: 0,
+            ..Default::default()
+        },
+        geom: crate::shapes::Geom {
+            center: STREET_C,
+            half: [STREET_W * 0.5 * k, STREET_H * 0.5 * k],
+            rot: 0.0,
+            pts: vec![],
+        },
+        width: 1e-4,
+        seed: 1,
+        view: crate::objects::PortalView {
+            name: "Endless street".into(),
+            cam,
+            view_px,
+        },
+    };
+    let z = p.scene.z_top + 1.0;
+    let ids = crate::objects::emit(p.scene, &home, &data, (z, z + 4.0));
+    let mut objs = crate::objects::Objects::default();
+    objs.add(crate::objects::Group {
+        cell: home,
+        data,
+        strokes: ids,
+    });
+    objs
 }
 
 fn home_world(scene: &mut Scene, home: &CellAddr) {
@@ -316,6 +516,8 @@ fn home_world(scene: &mut Scene, home: &CellAddr) {
     p.text([1.15, 0.52], 0.04, BLUE, "THERE IS NO EDGE.");
     p.arrow([1.15, 0.62], [1.6, 0.62], 0.008, BLUE);
     p.text([1.65, 0.6], 0.04, BLUE, "...KEEP GOING");
+    p.text([3.2, 0.6], 0.04, BLUE, "AN ENDLESS STREET AHEAD");
+    p.arrow([3.2, 0.7], [4.9, 0.7], 0.008, BLUE);
     p.text([12.0, 0.45], 0.06, GREEN, "TWELVE SCREENS FROM HOME!");
     p.text(
         [12.0, 0.55],

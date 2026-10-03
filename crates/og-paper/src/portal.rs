@@ -11,6 +11,11 @@
 //! is queried, so a portal you zoom into costs no more than the screen.
 //! Portals seen through portals nest, up to `MAX_DEPTH` deep: a portal
 //! that shows itself makes a tunnel.
+//!
+//! Zooming into a portal goes through it: once its window covers the
+//! whole screen, the camera moves to its view, framed exactly as the
+//! window showed it, so nothing on screen changes. A portal at the end of
+//! a street that shows the street itself is an endless zoom.
 
 use ogpaper_core::{query, DrawList};
 
@@ -34,6 +39,69 @@ impl App {
         }
         let [w, h] = self.size();
         self.portal_layers_in(&self.draw, w, h)
+    }
+
+    /// Go through a portal whose window covers the screen: the camera moves
+    /// to its view, framed as the window shows it (nothing on screen
+    /// changes). True when it did.
+    pub(crate) fn portal_pass(&mut self) -> bool {
+        if self.objs.portal_of.is_empty() || self.fly.is_some() {
+            return false;
+        }
+        let [w, h] = self.size();
+        let probe = [
+            [0.0, 0.0],
+            [w, 0.0],
+            [w, h],
+            [0.0, h],
+            [w * 0.5, 0.0],
+            [w, h * 0.5],
+            [w * 0.5, h],
+            [0.0, h * 0.5],
+            [w * 0.5, h * 0.5],
+        ];
+        for i in &self.draw.strokes {
+            let Some(&g) = self.objs.portal_of.get(&i.stroke) else {
+                continue;
+            };
+            let Some(ObjData::Portal { view, .. }) =
+                self.objs.groups.get(g as usize).map(|g| &g.data)
+            else {
+                continue;
+            };
+            if self.scene.strokes[i.stroke as usize].deleted {
+                continue;
+            }
+            let poly: Vec<[f64; 2]> = self
+                .scene
+                .stroke_points(i.stroke)
+                .iter()
+                .map(|p| {
+                    [
+                        i.ox as f64 + p[0] as f64 * i.scale as f64,
+                        i.oy as f64 + p[1] as f64 * i.scale as f64,
+                    ]
+                })
+                .collect();
+            if poly.len() < 3 || !probe.iter().all(|&q| inside(&poly, q)) {
+                continue;
+            }
+            let (mut x0, mut y0, mut x1, mut y1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+            for q in &poly {
+                (x0, y0, x1, y1) = (x0.min(q[0]), y0.min(q[1]), x1.max(q[0]), y1.max(q[1]));
+            }
+            // As `portals_in` frames it, centred on the screen.
+            let side = (x1 - x0).min(y1 - y0) as f32 as f64;
+            let mut cam = view.cam.clone();
+            cam.base_px = self.cam.base_px;
+            cam.zoom_at(side / view.view_px.max(1.0), [0.0, 0.0]);
+            cam.pan_px(-(w - x0 - x1) * 0.5, -(h - y0 - y1) * 0.5);
+            self.cam = cam;
+            self.portal_passes += 1;
+            self.view_changed();
+            return true;
+        }
+        false
     }
 
     /// The same for draw list `draw` of a `w` x `h` px screen.
@@ -124,6 +192,22 @@ impl App {
             out.layers[idx].draw = dl;
         }
     }
+}
+
+/// Whether `q` is inside polygon `poly` (non-zero winding).
+fn inside(poly: &[[f64; 2]], q: [f64; 2]) -> bool {
+    let mut wind = 0;
+    let mut prev = poly[poly.len() - 1];
+    for &cur in poly {
+        if (prev[1] <= q[1]) != (cur[1] <= q[1]) {
+            let x = prev[0] + (q[1] - prev[1]) / (cur[1] - prev[1]) * (cur[0] - prev[0]);
+            if x > q[0] {
+                wind += if cur[1] > prev[1] { 1 } else { -1 };
+            }
+        }
+        prev = cur;
+    }
+    wind != 0
 }
 
 impl App {
@@ -449,5 +533,25 @@ mod tests {
         let got = &back.objs.groups.last().unwrap().data;
         assert_eq!(got, &g.data);
         assert_eq!(back.objs.portal_of.len(), 1);
+    }
+
+    #[test]
+    fn zooming_down_the_endless_street_goes_round() {
+        let d = crate::demo::build();
+        let mut app = App::new(None);
+        let start = d.bookmarks().pop().expect("the street's bookmark").cam;
+        app.load_scene(d.scene, start.clone());
+        app.objs = d.objs;
+        // Zoomed 4.4x into the far end: its window (1/4 of the street)
+        // covers the screen, so the view goes through, back to the start
+        // and just 1.1x in.
+        app.cam.zoom_at(4.4, [0.0, 0.0]);
+        let [w, h] = app.size();
+        query(&app.scene, &app.cam, w, h, crate::VIEW, &mut app.draw);
+        assert!(app.portal_pass());
+        let dz = app.cam.log10_zoom() - start.log10_zoom();
+        assert!((dz - 1.1f64.log10()).abs() < 1e-3, "{dz}");
+        let p = app.cam.to_screen(&start.cell, start.off);
+        assert!(p[0].hypot(p[1]) < 1e-3, "centred on the street: {p:?}");
     }
 }
