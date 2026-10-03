@@ -69,6 +69,15 @@ pub struct Preset {
     pub text: Option<(TextStyle, f32)>,
     /// A saved view to fly to (key into `Saved::views`) instead of a tool.
     pub view: Option<u32>,
+    /// A command instead of a tool.
+    pub cmd: Option<SlotCmd>,
+}
+
+/// Commands a slot can hold.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SlotCmd {
+    Undo,
+    Redo,
 }
 
 /// A saved view in a toolbar slot: its name and camera (see `cam_text`).
@@ -111,6 +120,15 @@ impl Preset {
             shape: None,
             text: None,
             view: None,
+            cmd: None,
+        }
+    }
+
+    /// A slot that runs a command.
+    pub fn cmd(c: SlotCmd) -> Self {
+        Self {
+            cmd: Some(c),
+            ..Self::tool(Tool::Hand)
         }
     }
 
@@ -196,6 +214,8 @@ pub fn defaults() -> Saved {
         Some(shape(ShapeKind::Diamond, shapes::FillStyle::Solid)),
         Some(Preset::tool(Tool::Select)),
         Some(Preset::tool(Tool::Hand)),
+        Some(Preset::cmd(SlotCmd::Undo)),
+        Some(Preset::cmd(SlotCmd::Redo)),
     ];
     grow_inventory(&mut inv);
     let text = Preset {
@@ -295,6 +315,13 @@ fn put(p: &Preset) -> String {
     if let Some(v) = p.view {
         out += &format!(" view {v}");
     }
+    if let Some(c) = p.cmd {
+        out += if c == SlotCmd::Undo {
+            " cmd undo"
+        } else {
+            " cmd redo"
+        };
+    }
     if let Some(i) = p.ink {
         let [r, g, b, a] = i.color.to_array();
         out += &format!(
@@ -349,6 +376,13 @@ fn get(s: &str) -> Option<Preset> {
                 });
             }
             "view" => p.view = Some(w.next()?.parse().ok()?),
+            "cmd" => {
+                p.cmd = Some(match w.next()? {
+                    "undo" => SlotCmd::Undo,
+                    "redo" => SlotCmd::Redo,
+                    _ => return None,
+                })
+            }
             "brush" => {
                 let params = ogpaper_core::BrushParams::decode(&unhex(w.next()?)?)?;
                 if let Some(i) = p.ink.as_mut() {

@@ -354,6 +354,8 @@ pub struct UiState {
     pub views: std::collections::BTreeMap<u32, hotbar::View>,
     pub view_now: Option<hotbar::View>,
     pub fly_to: Option<String>,
+    /// Actions a slot asked for (undo, redo), handed out with this frame's.
+    pub queued: Vec<Action>,
     /// Hotkeys: the keymap, its menu, and the binding waiting for a key.
     pub keys: crate::hotkeys::Keymap,
     pub keys_open: bool,
@@ -510,6 +512,7 @@ impl Default for UiState {
                 AppItem::Layout,
                 AppItem::Hotkeys,
             ],
+            queued: Vec::new(),
             views: Default::default(),
             view_now: None,
             fly_to: None,
@@ -586,6 +589,13 @@ impl UiState {
 
     /// Switch to a saved tool (or fly to a saved view).
     pub fn apply(&mut self, p: &Preset) {
+        if let Some(c) = p.cmd {
+            self.queued.push(match c {
+                hotbar::SlotCmd::Undo => Action::Undo,
+                hotbar::SlotCmd::Redo => Action::Redo,
+            });
+            return;
+        }
         if let Some(v) = p.view {
             self.fly_to = self.views.get(&v).map(|v| v.cam.clone());
             self.menu = Menu::None;
@@ -826,8 +836,6 @@ struct Geo {
     /// Radius of the two main buttons.
     r: f32,
     tool: Pos2,
-    undo: Pos2,
-    redo: Pos2,
     /// The settings button, top right by default.
     app: Pos2,
     /// The arcs the tool and settings fans open along (start, sweep).
@@ -867,33 +875,6 @@ fn geo(ctx: &egui::Context, st: &UiState) -> Geo {
         Some(f) => at_frac(screen, f, m + r),
         None => pos2(screen.right() - m - r, screen.bottom() - m - r),
     };
-    let small = r * 0.72;
-    let (undo, redo) = match lay.undo {
-        Some(f) => {
-            let c = at_frac(screen, f, m + 2.0 * small + 5.0);
-            (c - vec2(small + 5.0, 0.0), c + vec2(small + 5.0, 0.0))
-        }
-        None if lay.tool.is_none() => {
-            // Redo sits next to the tool button, undo to its left.
-            let redo = tool - vec2(r + 14.0 + small, r - small);
-            (redo - vec2(2.0 * small + 10.0, 0.0), redo)
-        }
-        None => {
-            // Beside the moved tool button, on the side toward the middle.
-            let dir = if tool.x > screen.center().x {
-                -1.0
-            } else {
-                1.0
-            };
-            let near = tool + vec2(dir * (r + 14.0 + small), r - small);
-            let far = near + vec2(dir * (2.0 * small + 10.0), 0.0);
-            if dir < 0.0 {
-                (far, near)
-            } else {
-                (near, far)
-            }
-        }
-    };
     let app = match lay.app {
         Some(f) => at_frac(screen, f, m + r),
         None => pos2(screen.right() - m - r, screen.top() + m + r),
@@ -902,8 +883,6 @@ fn geo(ctx: &egui::Context, st: &UiState) -> Geo {
         app,
         r,
         tool,
-        undo,
-        redo,
         tool_arc: crate::layout::fan_arc(frac_of(screen, tool)),
         app_arc: crate::layout::fan_arc(frac_of(screen, app)),
     }
@@ -922,11 +901,9 @@ pub fn draw(ctx: &egui::Context, st: &mut UiState) -> Vec<Action> {
     // The controls layer covers exactly the buttons plus any open fan, so
     // "pointer over UI" is right and the rest of the screen stays canvas.
     let sq = |c: Pos2, r: f32| Rect::from_center_size(c, Vec2::splat(2.0 * r));
-    let small = g.r * 0.72;
-    let mut bbox = sq(g.tool, g.r)
-        .union(sq(g.undo, small))
-        .union(sq(g.redo, small));
-    let tool_slots = ring_slots(TOOLS.len(), g.r, g.tool_arc.1);
+    let mut bbox = sq(g.tool, g.r);
+    // Undo and redo lead the fan, then the tools.
+    let tool_slots = ring_slots(TOOLS.len() + 2, g.r, g.tool_arc.1);
     if t > 0.0 {
         let reach = fan_reach(&tool_slots, g.r) * t + g.r * 1.2;
         bbox = bbox.union(Rect::from_center_size(
@@ -946,8 +923,54 @@ pub fn draw(ctx: &egui::Context, st: &mut UiState) -> Vec<Action> {
 
             // ---- tool fan: quarter-circle rings up and left of the tool button
             if t > 0.0 {
-                for (i, &tool) in TOOLS.iter().enumerate() {
+                // Undo and redo: the fan stays open, to step back several times.
+                for (i, redo) in [(0usize, false), (1, true)] {
                     let (radius, frac) = tool_slots[i];
+                    let a = g.tool_arc.0 + g.tool_arc.1 * frac;
+                    let pc = g.tool + Vec2::angled(a) * radius * t;
+                    let rr = g.r * 0.9 * t.max(0.3);
+                    let resp = ui.interact(
+                        Rect::from_center_size(pc, Vec2::splat(2.0 * rr)),
+                        Id::new(("ur", redo)),
+                        Sense::click(),
+                    );
+                    let enabled = if redo { st.can_redo } else { st.can_undo };
+                    disc(
+                        &p,
+                        pc,
+                        rr,
+                        if resp.hovered() && enabled {
+                            Color32::WHITE
+                        } else {
+                            FACE
+                        },
+                        false,
+                    );
+                    undo_icon(
+                        &p,
+                        pc,
+                        rr * 0.8,
+                        redo,
+                        if enabled {
+                            INKY
+                        } else {
+                            Color32::from_gray(190)
+                        },
+                    );
+                    if t > 0.9 {
+                        let out = Vec2::angled(a);
+                        label(
+                            &p,
+                            pc + out * (rr + 16.0) + vec2(0.0, 2.0),
+                            if redo { "Redo" } else { "Undo" },
+                        );
+                    }
+                    if enabled && resp.clicked() {
+                        actions.push(if redo { Action::Redo } else { Action::Undo });
+                    }
+                }
+                for (i, &tool) in TOOLS.iter().enumerate() {
+                    let (radius, frac) = tool_slots[i + 2];
                     let a = g.tool_arc.0 + g.tool_arc.1 * frac;
                     let pc = g.tool + Vec2::angled(a) * radius * t;
                     let rr = g.r * 0.9 * t.max(0.3);
@@ -1007,35 +1030,6 @@ pub fn draw(ctx: &egui::Context, st: &mut UiState) -> Vec<Action> {
                 st.panel_open = Some(true);
                 st.menu = Menu::None;
             }
-
-            // ---- undo / redo
-            let undo_row = if st.menu == Menu::None {
-                vec![(g.undo, false, st.can_undo), (g.redo, true, st.can_redo)]
-            } else {
-                vec![]
-            };
-            for (pc, redo, enabled) in undo_row {
-                let resp = ui.interact(
-                    Rect::from_center_size(pc, Vec2::splat(2.0 * small)),
-                    Id::new(("ur", redo)),
-                    Sense::click(),
-                );
-                disc(&p, pc, small, FACE, false);
-                undo_icon(
-                    &p,
-                    pc,
-                    small,
-                    redo,
-                    if enabled {
-                        INKY
-                    } else {
-                        Color32::from_gray(190)
-                    },
-                );
-                if enabled && resp.clicked() {
-                    actions.push(if redo { Action::Redo } else { Action::Undo });
-                }
-            }
         });
 
     paint_overlay(ctx, &st.overlay, st.touch_ui);
@@ -1076,6 +1070,7 @@ pub fn draw(ctx: &egui::Context, st: &mut UiState) -> Vec<Action> {
     if st.keys_open {
         hotkeys_panel(ctx, st, &mut actions);
     }
+    actions.append(&mut st.queued);
 
     if let Some(msg) = &st.message {
         egui::Area::new(Id::new("msg"))
@@ -1109,8 +1104,7 @@ fn quick_bar(ctx: &egui::Context, st: &mut UiState, g: &Geo) {
     let mut s = if touch { 44.0 } else { 38.0 };
     // Bottom row, between the panel button and undo / redo, if it fits;
     // else a row above them.
-    let small = g.r * 0.72;
-    let right = g.undo.x - small - 12.0;
+    let right = g.tool.x - g.r - 12.0;
     let left = screen.left() + m + if touch { 64.0 } else { 52.0 };
     // The toolbar switcher, the slots and the bag.
     let full = (hotbar::BAR + 2) as f32 * (s + gap);
@@ -1740,6 +1734,17 @@ fn slot(ui: &mut egui::Ui, st: &mut UiState, rect: Rect, which: Slots, i: usize,
             .map_or("A view".to_string(), |v| v.name.clone())
     });
     match (&item, &view_name) {
+        (Some(it), _) if it.cmd.is_some() => {
+            let redo = it.cmd == Some(hotbar::SlotCmd::Redo);
+            let on = if redo { st.can_redo } else { st.can_undo };
+            undo_icon(
+                p,
+                rect.center(),
+                rect.width() * 0.4,
+                redo,
+                if on { INKY } else { Color32::from_gray(190) },
+            );
+        }
         (Some(_), Some(name)) => view_icon(p, rect.center(), rect.width() * 0.5, name),
         (Some(it), None) => preset_icon(p, rect.center(), rect.width() * 0.5, it, &st.egui_fonts),
         _ => {}
@@ -1799,6 +1804,11 @@ fn slot(ui: &mut egui::Ui, st: &mut UiState, rect: Rect, which: Slots, i: usize,
 
 /// "Pen, 3 px", "Shapes: Arrow", "Text: Lora 24 px"...
 fn describe(p: &Preset) -> String {
+    match p.cmd {
+        Some(hotbar::SlotCmd::Undo) => return "Undo".into(),
+        Some(hotbar::SlotCmd::Redo) => return "Redo".into(),
+        None => {}
+    }
     if let Some(i) = p.ink {
         let [r, g, b, _] = i.color.to_array();
         let dash = match i.dash {
@@ -3998,7 +4008,6 @@ fn layout_editor(ctx: &egui::Context, st: &mut UiState) {
     let touch = st.touch_ui;
     let m = if touch { 18.0 } else { 16.0 };
     let g = geo(ctx, st);
-    let small = g.r * 0.72;
     let accent = Color32::from_rgb(200, 40, 90);
     let tool = st.tool;
     let col = tool_color(st, tool);
@@ -4078,16 +4087,6 @@ fn layout_editor(ctx: &egui::Context, st: &mut UiState) {
                 gear_icon(p, r.center(), g.r);
             }) {
                 lay.app = Some(frac_of(screen, c));
-            }
-            let ur = Rect::from_two_pos(g.undo - Vec2::splat(small), g.redo + Vec2::splat(small));
-            if let Some(c) = handle("undo", ur, &|p, r| {
-                let d = vec2(small + 5.0, 0.0);
-                disc(p, r.center() - d, small, FACE, false);
-                undo_icon(p, r.center() - d, small, false, INKY);
-                disc(p, r.center() + d, small, FACE, false);
-                undo_icon(p, r.center() + d, small, true, INKY);
-            }) {
-                lay.undo = Some(frac_of(screen, c));
             }
             // The quick bar, as a strip of empty slots.
             let s = if touch { 44.0 } else { 38.0 };
