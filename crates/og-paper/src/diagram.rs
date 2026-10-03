@@ -23,7 +23,7 @@ const STICK_PX: f64 = 6.0;
 const SNAP_PX: f64 = 14.0;
 
 /// A line or arrow (its points are its path).
-fn is_connector(d: &ObjData) -> bool {
+pub(crate) fn is_connector(d: &ObjData) -> bool {
     matches!(d, ObjData::Shape { style, .. } if matches!(style.kind, ShapeKind::Line | ShapeKind::Arrow))
 }
 
@@ -261,6 +261,39 @@ impl App {
         let b2 = snap(bc, a2);
         let a2 = if a2 != ac { snap(ac, b2) } else { a2 };
         (self.cam_to_px(a2), self.cam_to_px(b2))
+    }
+
+    /// One end of a line (px) snapped onto a nearby outline, aimed from that
+    /// object's centre toward `toward` (the next point along the line).
+    pub(crate) fn snap_end(&self, p: [f64; 2], toward: [f64; 2]) -> [f64; 2] {
+        if !self.ui.diagram {
+            return p;
+        }
+        let reach = SNAP_PX * self.ppp() / self.cam.ppc();
+        let (pc, tc) = (self.px_to_cam(p), self.px_to_cam(toward));
+        let hit = self
+            .stick_targets()
+            .into_iter()
+            .rev()
+            .filter(|(_, d)| !is_connector(d))
+            .filter_map(|(_, d)| outline_of(&d).map(|(k, g)| (k, g.clone())))
+            .find(|(k, g)| {
+                to_unit(g, pc).is_some_and(|u| {
+                    let inside = match k {
+                        Outline::Box => u[0].abs().max(u[1].abs()) <= 1.0,
+                        Outline::Ellipse => u[0].hypot(u[1]) <= 1.0,
+                        Outline::Diamond => u[0].abs() + u[1].abs() <= 1.0,
+                    };
+                    inside || outline_dist(*k, g, pc).is_some_and(|d| d <= reach)
+                })
+            });
+        match hit {
+            Some((k, g)) => {
+                let u = to_unit(&g, tc).unwrap_or([1.0, 0.0]);
+                self.cam_to_px(from_unit(&g, edge_dir(k, u)))
+            }
+            None => p,
+        }
     }
 }
 

@@ -17,6 +17,7 @@ mod font;
 mod hotbar;
 mod hotkeys;
 mod images;
+mod joints;
 mod layout;
 mod library;
 mod objects;

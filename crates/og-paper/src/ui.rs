@@ -194,6 +194,8 @@ pub struct Overlay {
     pub marquee: Option<Rect>,
     /// Lasso loop being drawn (points).
     pub lasso: Option<Vec<Pos2>>,
+    /// A selected line or arrow: its points, and the + between them.
+    pub joints: Option<(Vec<Pos2>, Vec<Pos2>)>,
 }
 
 impl PartialEq for InkSettings {
@@ -2675,6 +2677,31 @@ fn paint_overlay(ctx: &egui::Context, ov: &Overlay, touch: bool) {
     if let Some(r) = ov.marquee {
         p.rect_filled(r, 0.0, Color32::from_rgba_unmultiplied(70, 110, 230, 24));
         p.rect_stroke(r, 0.0, Stroke::new(1.0, blue), egui::StrokeKind::Middle);
+    }
+    if let Some((pts, mids)) = &ov.joints {
+        let hs = if touch { 8.0 } else { 6.0 };
+        for m in mids {
+            let r = hs * 1.1;
+            p.circle_filled(*m, r, Color32::from_rgba_unmultiplied(255, 255, 255, 235));
+            p.circle_stroke(*m, r, Stroke::new(1.2, blue));
+            p.line_segment(
+                [*m - vec2(r * 0.55, 0.0), *m + vec2(r * 0.55, 0.0)],
+                Stroke::new(1.6, blue),
+            );
+            p.line_segment(
+                [*m - vec2(0.0, r * 0.55), *m + vec2(0.0, r * 0.55)],
+                Stroke::new(1.6, blue),
+            );
+        }
+        for (i, q) in pts.iter().enumerate() {
+            let end = i == 0 || i + 1 == pts.len();
+            p.circle_filled(*q, hs, if end { blue } else { Color32::WHITE });
+            p.circle_stroke(
+                *q,
+                hs,
+                Stroke::new(1.5, if end { Color32::WHITE } else { blue }),
+            );
+        }
     }
     if let Some(l) = &ov.lasso {
         if l.len() > 1 {

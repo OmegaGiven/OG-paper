@@ -75,6 +75,8 @@ pub struct EditState {
     pub lasso: Option<Vec<[f64; 2]>>,
     /// A picture being cropped.
     pub crop: Option<crate::crop::CropEdit>,
+    /// A line or arrow point being dragged.
+    pub joint: Option<crate::joints::JointDrag>,
     pub text: Option<TextEdit>,
     pub clipboard: Vec<ObjRef>,
     pub last_tap: Option<(Instant, [f64; 2])>,
@@ -617,6 +619,10 @@ impl App {
         if self.edit.crop.is_some() && self.crop_begin(p) {
             return;
         }
+        // A selected line or arrow: its points and the + between them.
+        if self.joint_begin(p) {
+            return;
+        }
         self.sel_alive();
         let ppp = self.ppp();
         // Double tap on a text: edit it.
@@ -630,8 +636,8 @@ impl App {
                 return;
             }
         }
-        // Handles of the current selection.
-        if let Some((corners, rot)) = self.sel_box() {
+        // Handles of the current selection (a line or arrow has points instead).
+        if let Some((corners, rot)) = self.sel_box().filter(|_| self.sel_connector().is_none()) {
             let pts: [Pos2; 4] = corners.map(|q| pos2((q[0] / ppp) as f32, (q[1] / ppp) as f32));
             let (_, knob) = ui::rotate_knob(&pts, self.ui.touch_ui);
             let knob = [knob.x as f64 * ppp, knob.y as f64 * ppp];
@@ -798,6 +804,9 @@ impl App {
         if self.edit.crop.is_some() {
             return self.crop_move(p);
         }
+        if self.edit.joint.is_some() {
+            return self.joint_move(p);
+        }
         if let Some(d) = self.edit.sel_drag.as_mut() {
             d.cur = p;
             self.drag_preview();
@@ -815,6 +824,9 @@ impl App {
     pub(crate) fn select_end(&mut self, cancel: bool) {
         if self.edit.crop.is_some() {
             return self.crop_end();
+        }
+        if self.edit.joint.is_some() {
+            return self.joint_end(cancel);
         }
         if let Some(d) = self.edit.sel_drag.take() {
             self.unhide(&d.hidden);
@@ -1533,7 +1545,12 @@ impl App {
             let op = self.drag_op(d).map(|o| self.op_to_cam(&o));
             self.follow_preview(&d.att, op.as_ref(), &mut ov);
         }
-        if self.edit.crop.is_some() {
+        let joints = self.edit.sel_drag.is_none()
+            && self.ui.tool.selects()
+            && (self.edit.joint.is_some() || self.sel_connector().is_some());
+        if joints {
+            self.joint_overlay(&mut ov);
+        } else if self.edit.crop.is_some() {
             self.crop_overlay(&mut ov);
         } else if self.ui.tool.selects() && self.edit.text.is_none() {
             let boxed = match self.edit.sel_drag.as_ref() {

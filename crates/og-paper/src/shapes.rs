@@ -405,6 +405,52 @@ pub fn line_path(st: &ShapeStyle, g: &Geom) -> Vec<[f64; 2]> {
         return pts.clone();
     }
     let (a, b) = (pts[0], pts[pts.len() - 1]);
+    if pts.len() > 2 {
+        return match st.arrow {
+            ArrowType::Straight => pts.clone(),
+            // Through every joint: a Catmull-Rom curve.
+            ArrowType::Curved => {
+                let n = pts.len();
+                let at = |i: isize| pts[i.clamp(0, n as isize - 1) as usize];
+                let mut out = vec![pts[0]];
+                for i in 0..n - 1 {
+                    let (p0, p1, p2, p3) = (
+                        at(i as isize - 1),
+                        at(i as isize),
+                        at(i as isize + 1),
+                        at(i as isize + 2),
+                    );
+                    for k in 1..=12 {
+                        let t = k as f64 / 12.0;
+                        let (t2, t3) = (t * t, t * t * t);
+                        let f = |a: f64, b: f64, c: f64, d: f64| {
+                            0.5 * (2.0 * b
+                                + (-a + c) * t
+                                + (2.0 * a - 5.0 * b + 4.0 * c - d) * t2
+                                + (-a + 3.0 * b - 3.0 * c + d) * t3)
+                        };
+                        out.push([f(p0[0], p1[0], p2[0], p3[0]), f(p0[1], p1[1], p2[1], p3[1])]);
+                    }
+                }
+                out
+            }
+            // Square corners between each pair of points.
+            ArrowType::Elbow => {
+                let mut out = vec![pts[0]];
+                for w in pts.windows(2) {
+                    let (a, b) = (w[0], w[1]);
+                    let corner = if (b[0] - a[0]).abs() >= (b[1] - a[1]).abs() {
+                        [b[0], a[1]]
+                    } else {
+                        [a[0], b[1]]
+                    };
+                    out.push(corner);
+                    out.push(b);
+                }
+                out
+            }
+        };
+    }
     match st.arrow {
         ArrowType::Straight => pts.clone(),
         ArrowType::Curved => {
