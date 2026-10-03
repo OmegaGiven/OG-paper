@@ -39,7 +39,7 @@ every device, so old copies still merge.
 
 ### Merge copy and Save changes
 
-Send someone a copy (Save copy on the web makes an `.ogpt`). When they send
+Send someone a copy (Export > OG Paper copy makes an `.ogpt` on the web, an `.ogp` on desktop). When they send
 theirs back, Merge copy brings their work in; the view flies to what
 changed, which glows blue (new) or shows as a red ghost (removed). Save
 changes writes only what the other copy lacks since your last merge with it.

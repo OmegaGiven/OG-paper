@@ -123,7 +123,7 @@ Every way works from the ⚙ settings menu:
    (desktop) and send someone the edit or view link; they paste it under
    *Join* (or open the browser link). In a browser: **Host in this
    browser** makes one-time invite links.
-3. **Swap copies:** ⚙ > **Save copy**, send the file, and they use ⚙ >
+3. **Swap copies:** ⚙ > **Export** > **OG Paper copy**, send the file, and they use ⚙ >
    **Merge copy**: both sets of changes combine. **Sync folder** does this
    automatically through Syncthing, Dropbox, Drive or a USB stick.
 
