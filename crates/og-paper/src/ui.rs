@@ -335,7 +335,7 @@ impl AppItem {
             AppItem::Folder => "Sync folder",
             AppItem::Live => "Share live",
             AppItem::Pages => "Pages",
-            AppItem::LayoutMenu => "Layout",
+            AppItem::LayoutMenu => "UI",
             AppItem::New => "New canvas",
             AppItem::Open => "Open",
             AppItem::Save => "Save copy",
@@ -625,7 +625,6 @@ impl Default for UiState {
                 AppItem::Home,
                 AppItem::Search,
                 AppItem::LayoutMenu,
-                AppItem::Dark,
                 AppItem::Diagram,
                 AppItem::Hotkeys,
             ],
@@ -1050,6 +1049,7 @@ struct Geo {
     app: Pos2,
     /// The arcs the tool and settings fans open along (start, sweep).
     tool_arc: (f32, f32),
+    #[allow(dead_code)]
     app_arc: (f32, f32),
     /// Radial toolbar: its button and arc.
     bar: Pos2,
@@ -1145,7 +1145,7 @@ pub fn draw(ctx: &egui::Context, st: &mut UiState) -> Vec<Action> {
                 .any(|k| (0..hotbar::BAR).any(|i| on_widget(Id::new(("rbar_o", k, i)))));
         let hit = ctx.layer_id_at(pos).map(|l| l.id);
         let on = |names: &[&str]| hit.is_some_and(|id| names.iter().any(|n| id == Id::new(*n)));
-        if st.menu != Menu::None && !on_fan {
+        if st.menu != Menu::None && !on_fan && !on(&["app_menu_list"]) {
             st.menu = Menu::None;
         }
         if st.bar_menu && !on(&["toolbar_menu", "inventory", "quick_bar", "radial_bar"]) && !on_fan
@@ -2328,7 +2328,16 @@ fn slot(ui: &mut egui::Ui, st: &mut UiState, rect: Rect, which: Slots, i: usize,
         (Some(it), None) => preset_icon(p, rect.center(), rect.width() * 0.5, it, &st.egui_fonts),
         _ => {}
     }
-    if resp.clicked() {
+    if resp.clicked() && which == Slots::Hold && !(st.bag_open && st.held.is_some()) {
+        // The hold slot takes the tool in hand (using it as the main tool
+        // would defeat it).
+        st.hold = Some(current);
+        fx.changed = true;
+        fx.say = Some(format!(
+            "Hold tool: {} (right click, or press and hold)",
+            describe(&current)
+        ));
+    } else if resp.clicked() {
         if st.bag_open && st.held.is_some() {
             // Put down (or swap with what is here) what is in hand.
             let held = st.held.take();
@@ -2506,36 +2515,6 @@ fn rotate_icon(p: &egui::Painter, c: Pos2, r: f32, col: Color32) {
         vec![end - t * h + n * h * 0.6, end, end - t * h - n * h * 0.6],
         stroke,
     ));
-}
-
-fn bag_icon(p: &egui::Painter, c: Pos2, r: f32) {
-    let s = r * 0.42;
-    let st = Stroke::new((r * 0.08).max(1.2), INKY);
-    let pts = |v: &[Vec2]| v.iter().map(|q| c + *q * s).collect::<Vec<_>>();
-    p.add(Shape::closed_line(
-        pts(&[
-            vec2(-0.95, -0.35),
-            vec2(0.95, -0.35),
-            vec2(0.8, 0.95),
-            vec2(-0.8, 0.95),
-        ]),
-        st,
-    ));
-    p.add(Shape::line(
-        pts(&[
-            vec2(-0.45, -0.35),
-            vec2(-0.4, -0.85),
-            vec2(0.4, -0.85),
-            vec2(0.45, -0.35),
-        ]),
-        st,
-    ));
-    p.add(Shape::line(pts(&[vec2(-0.95, 0.15), vec2(0.95, 0.15)]), st));
-    p.rect_filled(
-        Rect::from_center_size(c + vec2(0.0, 0.15) * s, Vec2::splat(s * 0.35)),
-        1.0,
-        INKY,
-    );
 }
 
 /// The tool panel, bottom left: the current tool's settings (or the
@@ -3518,24 +3497,18 @@ fn u32c(c: Color32) -> u32 {
     u32::from_le_bytes([r, g, b, 255])
 }
 
-/// The settings button (top right) and its fan: a quarter circle down and
-/// left of it, like the tool fan, with the zoom depth shown under it.
+/// The settings button (top right) and its menu: a list of rows opening
+/// from the button toward the middle of the screen, with the zoom depth
+/// shown under the button.
 fn app_menu(ctx: &egui::Context, st: &mut UiState, g: &Geo, actions: &mut Vec<Action>) {
-    let open = ctx.animate_bool_with_time(Id::new("app_open"), st.menu == Menu::App, 0.12);
     let items = st.app_items.clone();
-    let slots = ring_slots(items.len(), g.r, g.app_arc.1);
-    let mut bbox = Rect::from_center_size(g.app, Vec2::splat(2.0 * g.r)).union(
-        Rect::from_center_size(g.app + vec2(0.0, g.r + 12.0), vec2(2.0 * g.r + 24.0, 18.0)),
-    );
-    if open > 0.0 {
-        let reach = fan_reach(&slots, g.r) * open + g.r * 1.2;
-        bbox = bbox.union(Rect::from_center_size(
-            g.app,
-            Vec2::splat(2.0 * (reach + 50.0)),
-        ));
-    }
-    let bbox = bbox.expand(4.0);
     let screen = ctx.content_rect();
+    let bbox = Rect::from_center_size(g.app, Vec2::splat(2.0 * g.r))
+        .union(Rect::from_center_size(
+            g.app + vec2(0.0, g.r + 12.0),
+            vec2(2.0 * g.r + 24.0, 18.0),
+        ))
+        .expand(4.0);
     egui::Area::new(Id::new("app_menu"))
         .order(Order::Foreground)
         .fixed_pos(bbox.min)
@@ -3543,73 +3516,6 @@ fn app_menu(ctx: &egui::Context, st: &mut UiState, g: &Geo, actions: &mut Vec<Ac
             ui.set_clip_rect(screen);
             ui.allocate_exact_size(bbox.size(), Sense::hover());
             let p = ui.painter().clone();
-            if open > 0.0 {
-                for (i, &item) in items.iter().enumerate() {
-                    // Along the arc toward the middle of the screen.
-                    let (radius, frac) = slots[i];
-                    let a = g.app_arc.0 + g.app_arc.1 * frac;
-                    let pc = g.app + Vec2::angled(a) * radius * open;
-                    let rr = g.r * 0.9 * open.max(0.3);
-                    let resp = ui.interact(
-                        Rect::from_center_size(pc, Vec2::splat(2.0 * rr)),
-                        Id::new(("app_item", i)),
-                        Sense::click(),
-                    );
-                    let active = (item == AppItem::Timeline && st.timeline_on)
-                        || (item == AppItem::Grid && st.grid != GridMode::Off)
-                        || (item == AppItem::Dark && st.dark)
-                        || (item == AppItem::Folder && st.folder_on)
-                        || (item == AppItem::Live && st.live.is_some())
-                        || (item == AppItem::Diagram && st.diagram)
-                        || (item == AppItem::RadialBar && st.radial_bar)
-                        || (item == AppItem::ShowTools && !st.hide_tools)
-                        || (item == AppItem::ShowPanel && !st.hide_panel)
-                        || (item == AppItem::ShowBar && !st.hide_bar);
-                    disc(
-                        &p,
-                        pc,
-                        rr,
-                        if resp.hovered() { Color32::WHITE } else { FACE },
-                        active,
-                    );
-                    app_icon(
-                        &p,
-                        pc,
-                        rr,
-                        item,
-                        st.grid,
-                        (st.hide_tools, st.hide_panel, st.hide_bar),
-                    );
-                    if open > 0.9 {
-                        let out = Vec2::angled(a);
-                        let name = match item {
-                            AppItem::ShowTools if st.hide_tools => "Tool button: hidden",
-                            AppItem::ShowTools => "Tool button: shown",
-                            AppItem::ShowPanel if st.hide_panel => "Tool panel: hidden",
-                            AppItem::ShowPanel => "Tool panel: shown",
-                            AppItem::ShowBar if st.hide_bar => "Quick toolbar: hidden",
-                            AppItem::ShowBar => "Quick toolbar: shown",
-                            AppItem::Folder if st.folder_on => "Sync folder: on",
-                            AppItem::Folder => "Sync folder: off",
-                            AppItem::Dark if st.dark => "Dark mode: on",
-                            AppItem::Dark => "Dark mode: off",
-                            AppItem::Diagram if st.diagram => "Diagram: on",
-                            AppItem::Diagram => "Diagram: off",
-                            AppItem::Grid => match st.grid {
-                                GridMode::Off => "Grid: off",
-                                GridMode::Lines => "Grid: lines",
-                                GridMode::Dots => "Grid: dots",
-                            },
-                            _ => item.name(),
-                        };
-                        label(&p, pc + out * (rr + 18.0) + vec2(0.0, 2.0), name);
-                    }
-                    if resp.clicked() {
-                        st.menu = Menu::None;
-                        actions.push(item.action());
-                    }
-                }
-            }
             let resp = ui.interact(
                 Rect::from_center_size(g.app, Vec2::splat(2.0 * g.r)),
                 Id::new("app_btn"),
@@ -3624,11 +3530,125 @@ fn app_menu(ctx: &egui::Context, st: &mut UiState, g: &Geo, actions: &mut Vec<Ac
                     Menu::App
                 };
             }
-            // Zoom depth under the button (hidden while the fan is out).
-            if open < 0.1 {
+            if st.menu != Menu::App {
                 let info = format!("10^{:.1}", st.zoom_log10 + 0.0);
                 label_right(&p, pos2(g.app.x + g.r, g.app.y + g.r + 12.0), &info);
             }
+        });
+    if st.menu != Menu::App {
+        return;
+    }
+    // The list opens away from the screen edges the button is near.
+    let row_h = if st.touch_ui { 40.0 } else { 32.0 };
+    let w = 250.0f32.min(screen.width() - 24.0);
+    let right = g.app.x > screen.center().x;
+    let below = g.app.y < screen.center().y;
+    let x = if right { g.app.x + g.r } else { g.app.x - g.r };
+    let y = if below {
+        g.app.y + g.r + 8.0
+    } else {
+        g.app.y - g.r - 8.0
+    };
+    let room = if below {
+        screen.bottom() - y
+    } else {
+        y - screen.top()
+    } - 12.0
+        - 16.0;
+    let h = (items.len() as f32 * row_h).min(room.max(row_h * 3.0));
+    let pivot = match (right, below) {
+        (true, true) => Align2::RIGHT_TOP,
+        (true, false) => Align2::RIGHT_BOTTOM,
+        (false, true) => Align2::LEFT_TOP,
+        (false, false) => Align2::LEFT_BOTTOM,
+    };
+    egui::Area::new(Id::new("app_menu_list"))
+        .order(Order::Foreground)
+        .pivot(pivot)
+        .fixed_pos(pos2(x, y))
+        .show(ctx, |ui| {
+            ui.style_mut().visuals = egui::Visuals::light();
+            egui::Frame::new()
+                .fill(FACE)
+                .stroke(Stroke::new(1.0, EDGE))
+                .corner_radius(12.0)
+                .inner_margin(6.0)
+                .shadow(egui::Shadow {
+                    offset: [0, 3],
+                    blur: 14,
+                    spread: 0,
+                    color: Color32::from_black_alpha(45),
+                })
+                .show(ui, |ui| {
+                    ui.set_width(w);
+                    // Scroll only when it does not fit, at exactly the room
+                    // there is (a scroll area left to size itself comes out
+                    // short).
+                    egui::ScrollArea::vertical()
+                        .id_salt("app_menu_scroll")
+                        .max_height(h)
+                        .min_scrolled_height(h)
+                        .auto_shrink([false, true])
+                        .show(ui, |ui| {
+                            ui.spacing_mut().item_spacing.y = 0.0;
+                            for (i, &item) in items.iter().enumerate() {
+                                let (rect, _) =
+                                    ui.allocate_exact_size(vec2(w, row_h), Sense::hover());
+                                let resp =
+                                    ui.interact(rect, Id::new(("app_item", i)), Sense::click());
+                                let p = ui.painter();
+                                if resp.hovered() {
+                                    p.rect_filled(rect, 8.0, Color32::from_rgb(240, 238, 232));
+                                }
+                                let r = row_h * 0.42;
+                                app_icon(
+                                    p,
+                                    pos2(rect.left() + row_h * 0.5, rect.center().y),
+                                    r,
+                                    item,
+                                    st.grid,
+                                    (st.hide_tools, st.hide_panel, st.hide_bar),
+                                );
+                                let on = match item {
+                                    AppItem::Timeline => Some(st.timeline_on),
+                                    AppItem::Folder => Some(st.folder_on),
+                                    AppItem::Live => Some(st.live.is_some()),
+                                    AppItem::Diagram => Some(st.diagram),
+                                    _ => None,
+                                };
+                                p.text(
+                                    pos2(rect.left() + row_h + 4.0, rect.center().y),
+                                    Align2::LEFT_CENTER,
+                                    item.name(),
+                                    egui::FontId::proportional(if st.touch_ui {
+                                        15.0
+                                    } else {
+                                        14.0
+                                    }),
+                                    INKY,
+                                );
+                                if let Some(on) = on {
+                                    // On / off, at the right.
+                                    let c = pos2(rect.right() - 18.0, rect.center().y);
+                                    let pill = Rect::from_center_size(c, vec2(26.0, 14.0));
+                                    p.rect_filled(
+                                        pill,
+                                        7.0,
+                                        if on { ACCENT } else { Color32::from_gray(205) },
+                                    );
+                                    p.circle_filled(
+                                        c + vec2(if on { 6.0 } else { -6.0 }, 0.0),
+                                        5.0,
+                                        Color32::WHITE,
+                                    );
+                                }
+                                if resp.clicked() {
+                                    st.menu = Menu::None;
+                                    actions.push(item.action());
+                                }
+                            }
+                        });
+                });
         });
 }
 
@@ -5404,7 +5424,7 @@ fn brush_section(
 
 /// Settings > Hotkeys: every tool, look and command with its key; tap a key
 /// to change it (then press the new one), × to clear it.
-/// Layout: what shows on screen, the background, and Edit layout.
+/// UI: what shows on screen, dark mode, the paper, and Edit layout.
 fn layout_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) {
     let screen = ctx.content_rect();
     let w = 340.0f32.min(screen.width() - 24.0);
@@ -5428,7 +5448,7 @@ fn layout_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>
                 .show(ui, |ui| {
                     ui.set_width(w);
                     ui.horizontal(|ui| {
-                        ui.strong("Layout");
+                        ui.strong("UI");
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui.button("×").on_hover_text("Close").clicked() {
                                 st.layout_open = false;
@@ -5472,6 +5492,13 @@ fn layout_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>
                         "Quick toolbar as a radial menu",
                         "A round button in the corner that fans out, instead of a bar",
                         Action::RadialBar,
+                    );
+                    tick(
+                        ui,
+                        st.dark,
+                        "Dark mode",
+                        "Flip the whole screen dark (saved files keep their colors)",
+                        Action::Dark,
                     );
                     ui.add_space(8.0);
                     ui.label(egui::RichText::new("Paper").strong());
@@ -6002,13 +6029,15 @@ fn radial_bar(ctx: &egui::Context, st: &mut UiState, g: &Geo) {
             ui.allocate_exact_size(bbox.size(), Sense::hover());
             let p = ui.painter().clone();
             if open > 0.0 {
-                // The slots, then Toolbars (which opens the inventory too)
-                // on the inner ring.
-                for i in 0..n + 1 {
+                // The slots, then on the inner ring Toolbars (which opens
+                // the inventory too) and the hold tool.
+                for i in 0..n + 2 {
                     let (radius, frac) = if i < n {
                         slots[i]
+                    } else if full {
+                        (g.r * 2.4, (i - n) as f32 * 0.5)
                     } else {
-                        (g.r * 2.4, if full { 0.0 } else { 0.5 })
+                        (g.r * 2.4, if i == n { 0.0 } else { 1.0 })
                     };
                     let a = g.bar_arc.0 + g.bar_arc.1 * frac;
                     let pc = g.bar + Vec2::angled(a) * radius * open;
@@ -6088,18 +6117,23 @@ fn radial_bar(ctx: &egui::Context, st: &mut UiState, g: &Geo) {
                             st.bag_open = st.bar_menu;
                         }
                     } else {
-                        disc(
-                            &p,
-                            pc,
-                            rr,
-                            if hover { Color32::WHITE } else { FACE },
-                            st.bag_open,
-                        );
-                        bag_icon(&p, pc, rr * 0.9);
-                        label_text = "Inventory".into();
+                        // The hold tool: tap to make it the tool in hand.
+                        disc(&p, pc, rr, if hover { Color32::WHITE } else { FACE }, false);
+                        p.circle_stroke(pc, rr - 3.0, Stroke::new(1.0, ACCENT));
+                        match st.hold {
+                            Some(h) => preset_icon(&p, pc, rr * 0.9, &h, &st.egui_fonts),
+                            None => {
+                                p.text(pc, Align2::CENTER_CENTER, "H", egui::FontId::proportional(rr * 0.8), ACCENT);
+                            }
+                        }
+                        label_text = match &st.hold {
+                            Some(h) => format!("Hold tool: {} (tap to use the current tool)", describe(h)),
+                            None => "Hold tool: tap to use the current tool on right click / press and hold".into(),
+                        };
                         if resp.clicked() {
-                            st.bag_open = !st.bag_open;
-                            st.bar_menu = false;
+                            st.hold = Some(current);
+                            changed = true;
+                            st.message = Some(format!("Hold tool: {}", describe(&current)));
                         }
                     }
                     if open > 0.9 && hover {

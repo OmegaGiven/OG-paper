@@ -471,7 +471,7 @@ export async function start({ mode = 'app' } = {}) {
   const standalone = matchMedia('(display-mode: fullscreen), (display-mode: standalone)').matches;
   const canFs = document.documentElement.requestFullscreen && !standalone;
   const syncMenu = () => {
-    const items = ['pages', 'new', 'open', 'import', 'merge', 'changes', 'folder', 'live', 'export', 'paste', 'library', 'picture', 'search', 'bookmarks', 'timeline', 'layout', 'dark', 'diagram', 'hotkeys'];
+    const items = ['pages', 'new', 'open', 'import', 'merge', 'changes', 'folder', 'live', 'export', 'paste', 'library', 'picture', 'search', 'bookmarks', 'timeline', 'layout', 'diagram', 'hotkeys'];
     if (canFs && !document.fullscreenElement) items.push('fullscreen');
     if (isTry) items.push('tour');
     og_set_menu(items.join(','));
