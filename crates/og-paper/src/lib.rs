@@ -110,6 +110,9 @@ enum Gesture {
     Select,
     /// A bucket tap: where it went down (fills on release, unless it moved).
     Bucket([f64; 2]),
+    /// A text tap: where it went down. Lifting without moving makes (or
+    /// edits) a text there; moving first pans instead.
+    Text([f64; 2]),
     /// Moving a canvas being imported.
     Import,
 }
@@ -480,7 +483,7 @@ impl App {
             Tool::Shapes => Gesture::Shape,
             Tool::Select | Tool::Lasso => Gesture::Select,
             Tool::Bucket => Gesture::Bucket(p),
-            Tool::Text => Gesture::None,
+            Tool::Text => Gesture::Text(p),
             _ => Gesture::Ink,
         };
         if self.tl_view.is_some()
@@ -515,9 +518,6 @@ impl App {
             Gesture::Pick => self.pick_preview(p),
             Gesture::Shape => self.shape_begin(p),
             Gesture::Select => self.select_begin(p),
-            Gesture::None if self.ui.tool == Tool::Text && self.tl_view.is_none() => {
-                self.text_begin(p)
-            }
             _ => {}
         }
     }
@@ -548,6 +548,14 @@ impl App {
             Gesture::Bucket(a) => {
                 if dist(a, to) > TAP_SLOP_PT * self.ppp() {
                     self.gesture = Gesture::None;
+                }
+            }
+            // Past a tap's slop it is a pan, from where it went down.
+            Gesture::Text(a) => {
+                if dist(a, to) > TAP_SLOP_PT * self.ppp() {
+                    self.gesture = Gesture::Pan;
+                    self.cam.pan_px(to[0] - a[0], to[1] - a[1]);
+                    self.view_changed();
                 }
             }
             Gesture::None => {}
@@ -675,6 +683,7 @@ impl App {
             Gesture::Shape => self.shape_end(cancel),
             Gesture::Select => self.select_end(cancel),
             Gesture::Bucket(p) if !cancel && self.tl_view.is_none() => self.bucket_fill(p),
+            Gesture::Text(p) if !cancel && self.tl_view.is_none() => self.text_begin(p),
             _ => {}
         }
         self.gesture = Gesture::None;

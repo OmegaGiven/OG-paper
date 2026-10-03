@@ -542,6 +542,9 @@ pub struct UiState {
     pub bag_open: bool,
     /// A saved tool picked up in the inventory, to put in another slot.
     pub held: Option<Preset>,
+    /// Where the tool being dragged came from (it goes back there if
+    /// dropped off the slots).
+    drag_src: Option<(Slots, usize)>,
     /// The slots changed: the app saves them.
     pub presets_dirty: bool,
 }
@@ -680,6 +683,7 @@ impl Default for UiState {
             bar_rename: None,
             bag_open: false,
             held: None,
+            drag_src: None,
             presets_dirty: false,
         }
     }
@@ -1609,6 +1613,13 @@ fn quick_bar(ctx: &egui::Context, st: &mut UiState, g: &Geo) {
         p.circle_stroke(c, s * 0.45, Stroke::new(1.5, ACCENT));
         preset_icon(&p, c, s * 0.45, &h, &st.egui_fonts);
     }
+    // A drag let go off the slots: the tool goes back.
+    if st.drag_src.is_some() && ctx.input(|i| i.pointer.any_released()) {
+        if let Some((w, j)) = st.drag_src.take() {
+            *slot_mut(st, w, j) = st.held.take();
+            fx.changed = true;
+        }
+    }
     if fx.changed {
         hotbar::grow_inventory(&mut st.inventory);
         st.presets_dirty = true;
@@ -2215,7 +2226,35 @@ fn slot_mut(st: &mut UiState, which: Slots, i: usize) -> &mut Option<Preset> {
 /// One slot: draws it and handles taps.
 fn slot(ui: &mut egui::Ui, st: &mut UiState, rect: Rect, which: Slots, i: usize, fx: &mut SlotFx) {
     let current = fx.current;
-    let resp = ui.interact(rect, Id::new(("slot", which, i)), Sense::click());
+    // With the inventory open tools can be dragged between slots.
+    let sense = if st.bag_open {
+        Sense::click_and_drag()
+    } else {
+        Sense::click()
+    };
+    let resp = ui.interact(rect, Id::new(("slot", which, i)), sense);
+    if st.bag_open && resp.drag_started() && st.held.is_none() {
+        if let Some(it) = slot_mut(st, which, i).take() {
+            st.held = Some(it);
+            st.drag_src = Some((which, i));
+            fx.changed = true;
+        }
+    }
+    // Dropped here: it goes in, and what was here goes where it came from.
+    let released = ui.input(|inp| inp.pointer.any_released());
+    let over = ui
+        .input(|inp| inp.pointer.interact_pos())
+        .is_some_and(|p| rect.contains(p));
+    if released && over {
+        if let Some((w, j)) = st.drag_src.take() {
+            let held = st.held.take();
+            let prev = std::mem::replace(slot_mut(st, which, i), held);
+            if prev.is_some() {
+                *slot_mut(st, w, j) = prev;
+            }
+            fx.changed = true;
+        }
+    }
     let item = *slot_mut(st, which, i);
     let p = ui.painter();
     let on = !st.bag_open && item.is_some_and(|it| it == current);

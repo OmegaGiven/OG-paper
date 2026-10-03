@@ -7,7 +7,7 @@
 import init, {
   og_load, og_demo, og_blank, og_status, og_requests, og_set_menu, og_text_request, og_text_done, og_font_add,
   og_copy, og_paste_own, og_paste_image, og_paste_text, og_pdf_page,
-  og_bookmark_add, og_bookmark_go, og_bookmark_remove, og_bookmark_rename, og_bookmark_to_bar,
+  og_home, og_bookmark_add, og_bookmark_go, og_bookmark_remove, og_bookmark_rename, og_bookmark_to_bar,
   og_search, og_search_results, og_search_go, og_export, og_export_take, og_has_selection,
   og_sticker_take, og_sticker_svg, og_sticker_place, og_import, og_merge, og_changes_take, og_merge_quiet, og_set_folder, og_net_url, og_net_take, og_net_open, og_net_recv, og_net_closed, og_join, og_poke, og_rtc_host, og_rtc_closing, og_view_token, og_relay_share, og_dir_requests, og_page_arg, og_set_pages,
   og_timeline, og_timeline_range, og_timeline_restore, og_snapshot_request, og_snapshot_take,
@@ -286,7 +286,13 @@ export async function start({ mode = 'app' } = {}) {
   cards.bookmarks.append(
     el('p', {}, 'Save the current view, then tap a bookmark to fly back to it — across any zoom depth.'),
     el('form', { class: 'og-row' }, '<input name="name" placeholder="Name this view" maxlength="60" autocomplete="off"><button class="og-btn primary">Save view</button>'),
-    el('ul', { class: 'og-list' }));
+    el('ul', { class: 'og-list og-home' }, '<li><button class="go" data-home>Home<small>where the canvas starts</small></button></li>'),
+    el('ul', { class: 'og-list og-marks' }));
+  // Home is always there, above your own bookmarks.
+  cards.bookmarks.querySelector('[data-home]').onclick = () => {
+    og_home();
+    if (matchMedia('(max-width: 700px)').matches) show(null);
+  };
 
   // ---- search ----
   cards.search = card('Search text');
@@ -465,7 +471,7 @@ export async function start({ mode = 'app' } = {}) {
   const standalone = matchMedia('(display-mode: fullscreen), (display-mode: standalone)').matches;
   const canFs = document.documentElement.requestFullscreen && !standalone;
   const syncMenu = () => {
-    const items = ['pages', 'new', 'open', 'import', 'merge', 'changes', 'folder', 'live', 'export', 'paste', 'library', 'picture', 'search', 'bookmarks', 'timeline', 'home', 'layout', 'dark', 'diagram', 'hotkeys'];
+    const items = ['pages', 'new', 'open', 'import', 'merge', 'changes', 'folder', 'live', 'export', 'paste', 'library', 'picture', 'search', 'bookmarks', 'timeline', 'layout', 'dark', 'diagram', 'hotkeys'];
     if (canFs && !document.fullscreenElement) items.push('fullscreen');
     if (isTry) items.push('tour');
     og_set_menu(items.join(','));
@@ -569,7 +575,7 @@ export async function start({ mode = 'app' } = {}) {
     form.name.value = '';
   };
   let ownMarksFrom = Infinity;
-  const markList = cards.bookmarks.querySelector('.og-list');
+  const markList = cards.bookmarks.querySelector('.og-marks');
   markList.onclick = e => {
     const b = e.target.closest('button');
     if (!b) return;
