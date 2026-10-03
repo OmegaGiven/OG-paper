@@ -869,6 +869,8 @@ pub enum Action {
     RtcPanel,
     /// Share through the relay typed in Share live.
     RelayShare,
+    /// New keys: links handed out so far stop working.
+    NewLinks,
     /// Stop hosting, or leave a shared canvas.
     NetStop,
     /// Join by the link typed in Share live.
@@ -5304,6 +5306,15 @@ fn live_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) 
                                 actions.push(Action::RtcPanel);
                             }
                             ui.add_space(6.0);
+                            let can_rotate = info.hosting || (!info.links.is_empty() && !info.view_only);
+                            if can_rotate
+                                && ui
+                                    .button("New links")
+                                    .on_hover_text("Links handed out so far stop working (people need the new ones)")
+                                    .clicked()
+                            {
+                                actions.push(Action::NewLinks);
+                            }
                             if ui
                                 .button(if info.hosting { "Stop hosting" } else { "Leave" })
                                 .clicked()

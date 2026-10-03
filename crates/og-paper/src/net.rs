@@ -413,7 +413,7 @@ impl App {
 
     fn send(&mut self, conn: u64, m: &Msg) {
         let Some(n) = self.net.as_mut() else { return };
-        let changes = matches!(m, Msg::Changes(_));
+        let changes = matches!(m, Msg::Changes(_) | Msg::Images(_));
         let mut b = n.keys.seal(&m.encode(), changes);
         // To a relay: changes are kept, the rest only passed on.
         if matches!(&n.role, Role::Guest(g) if g.relay) {
@@ -513,7 +513,8 @@ impl App {
         }
         let ours = self.share.log.version().clone();
         for (id, v) in targets {
-            let (bytes, count) = self.changes_since(&v);
+            let relay = self.relay_guest();
+            let (bytes, count) = self.changes_since(&v, relay);
             if count > 0 {
                 self.send(id, &Msg::Changes(bytes));
             }
@@ -625,10 +626,12 @@ impl App {
                     return;
                 };
                 match Msg::decode(&plain) {
-                    // Changes count only when signed by an edit key.
-                    Ok(Msg::Changes(_)) if !signed => {
+                    // Changes and pictures count only when signed by an edit key.
+                    Ok(Msg::Changes(_) | Msg::Images(_)) if !signed => {
                         log::warn!("unsigned changes dropped");
                     }
+                    Ok(Msg::NeedImages(ids)) => self.send_images(id, &ids),
+                    Ok(Msg::Images(all)) => self.take_images(all),
                     Ok(m) if host => self.host_msg(id, m),
                     Ok(m) => self.guest_msg(m),
                     Err(e) => log::warn!("bad message: {e}"),
@@ -738,6 +741,7 @@ impl App {
                     if let Some(v) = self.merge_quiet(s.scene, s.objs, s.share) {
                         self.set_their(id, &v);
                     }
+                    self.ask_images(id);
                 }
             }
             m @ (Msg::Presence { .. } | Msg::Wet { .. }) => {
@@ -808,6 +812,9 @@ impl App {
                             }
                         }
                     }
+                    if !self.relay_guest() {
+                        self.ask_images(0);
+                    }
                 }
             }
             Msg::Error(t) => {
@@ -825,7 +832,7 @@ impl App {
                 self.redraw();
             }
             m @ (Msg::Presence { .. } | Msg::Wet { .. }) => self.peer_msg(&m),
-            Msg::Hello { .. } => {}
+            Msg::Hello { .. } | Msg::NeedImages(_) | Msg::Images(_) => {}
         }
     }
 
@@ -1021,6 +1028,91 @@ impl App {
         self.relay_share(addr, &t);
     }
 
+    /// Ask `conn` for pictures the canvas shows but this copy lacks.
+    fn ask_images(&mut self, conn: u64) {
+        let mut want: Vec<u64> = Vec::new();
+        for g in &self.objs.groups {
+            if let crate::objects::ObjData::Image { id, .. } = g.data {
+                if !self.objs.images.contains_key(&id) && !want.contains(&id) {
+                    want.push(id);
+                }
+            }
+        }
+        if !want.is_empty() {
+            self.send(conn, &Msg::NeedImages(want));
+        }
+    }
+
+    /// Send `conn` the pictures it asked for that this copy has.
+    fn send_images(&mut self, conn: u64, ids: &[u64]) {
+        let all: Vec<(u64, Vec<u8>)> = ids
+            .iter()
+            .filter_map(|id| self.objs.images.get(id).map(|a| (*id, a.bytes.to_vec())))
+            .collect();
+        if !all.is_empty() {
+            self.send(conn, &Msg::Images(all));
+        }
+    }
+
+    /// Pictures arrived: keep those whose content matches their id.
+    fn take_images(&mut self, all: Vec<(u64, Vec<u8>)>) {
+        for (id, b) in all {
+            if crate::images::id_of(&b) != id || self.objs.images.contains_key(&id) {
+                continue;
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(f) = &self.file {
+                let _ = f.put_image(id, &b);
+            }
+            if let Ok(a) = crate::images::load(b) {
+                self.objs.images.insert(id, a);
+                if let Some(g) = self.gpu.as_mut() {
+                    g.forget_picture(id);
+                }
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        crate::web::touch();
+        self.redraw();
+    }
+
+    /// New keys: everyone with an old link is cut off and needs a new one.
+    pub(crate) fn new_links(&mut self) {
+        let (host_port, relay_addr) = match self.net.as_ref().map(|n| &n.role) {
+            Some(Role::Host(h)) => (Some(h.port), None),
+            Some(Role::Guest(g)) if g.relay => (None, Some(g.link.url.clone())),
+            _ => (None, None),
+        };
+        match (host_port, relay_addr) {
+            #[cfg(not(target_arch = "wasm32"))]
+            (Some(port), _) if port != 0 => {
+                let mut p = crate::prefs::load();
+                p.remove(&format!("host.{:032x}", self.share.canvas));
+                crate::prefs::save(&p);
+                self.host_start(port);
+                self.say("New links made: the old ones no longer work");
+            }
+            // A browser host: invites carry the keys; start afresh.
+            (Some(_), _) => {
+                self.net_stop();
+                #[cfg(target_arch = "wasm32")]
+                crate::web::emit("rtc");
+                self.say("Hosting stopped: new invites use new keys");
+            }
+            (None, Some(addr)) => {
+                #[cfg(not(target_arch = "wasm32"))]
+                self.relay_share_new(&addr);
+                #[cfg(target_arch = "wasm32")]
+                {
+                    self.ui.relay_text = Some(addr);
+                    crate::web::emit("relay-new");
+                }
+                self.say("New relay links made: the old ones no longer get changes");
+            }
+            _ => {}
+        }
+    }
+
     fn relay_guest(&self) -> bool {
         matches!(self.net.as_ref().map(|n| &n.role), Some(Role::Guest(g)) if g.relay)
     }
@@ -1044,7 +1136,7 @@ impl App {
         *pushed = usize::MAX;
         let big = g.backlog_bytes > CHECKPOINT_AFTER && keys.can_edit();
         if big {
-            let (bytes, _) = self.changes_since(&Version::default());
+            let (bytes, _) = self.changes_since(&Version::default(), true);
             let sealed = self
                 .net
                 .as_ref()

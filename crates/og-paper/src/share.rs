@@ -444,12 +444,14 @@ impl App {
     /// there was no merge yet (a full copy is then the way to share).
     pub(crate) fn changes_copy(&self) -> Option<(Vec<u8>, usize)> {
         let seen = self.share.seen.as_ref()?;
-        Some(self.changes_since(seen))
+        Some(self.changes_since(seen, true))
     }
 
     /// A changes-only copy of what a copy at `seen` lacks, and how many
     /// changes it holds (0: nothing to send).
-    pub(crate) fn changes_since(&self, seen: &Version) -> (Vec<u8>, usize) {
+    /// Picture files go along only with `images` (live connections ask
+    /// for the ones they lack instead).
+    pub(crate) fn changes_since(&self, seen: &Version, images: bool) -> (Vec<u8>, usize) {
         let events = self.share.log.missing(seen);
         let replaces: Vec<Replace> = self
             .share
@@ -488,7 +490,7 @@ impl App {
                 .collect();
             if strokes.len() == g.strokes.len() && !strokes.is_empty() {
                 if let crate::objects::ObjData::Image { id, .. } = g.data {
-                    if let Some(a) = self.objs.images.get(&id) {
+                    if let Some(a) = self.objs.images.get(&id).filter(|_| images) {
                         objs.images.insert(id, a.clone());
                     }
                 }

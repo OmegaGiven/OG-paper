@@ -18,6 +18,8 @@
 //!   cell's units), addr, point count u32, points (f32 x, y each)
 //! - 6 Gone: peer u64 (left)
 //! - 7 Error: text (the sender closes after it)
+//! - 8 Need pictures: count u32, ids u64 (pictures a copy lacks)
+//! - 9 Pictures: count u32; each id u64, file as bytes
 
 use num_bigint::BigInt;
 use ogpaper_core::sync::Version;
@@ -58,6 +60,10 @@ pub enum Msg {
     },
     Gone(u64),
     Error(String),
+    /// Pictures this side lacks (live changes leave the files out).
+    NeedImages(Vec<u64>),
+    /// Picture files: id (content hash) and bytes.
+    Images(Vec<(u64, Vec<u8>)>),
 }
 
 struct W(Vec<u8>);
@@ -223,6 +229,21 @@ impl Msg {
                 w.u8(7);
                 w.str(t);
             }
+            Msg::NeedImages(ids) => {
+                w.u8(8);
+                w.u32(ids.len() as u32);
+                for id in ids {
+                    w.u64(*id);
+                }
+            }
+            Msg::Images(all) => {
+                w.u8(9);
+                w.u32(all.len() as u32);
+                for (id, b) in all {
+                    w.u64(*id);
+                    w.bytes(b);
+                }
+            }
         }
         w.0
     }
@@ -277,6 +298,28 @@ impl Msg {
             }
             6 => Msg::Gone(r.u64()?),
             7 => Msg::Error(r.str()?),
+            8 => {
+                let n = r.u32()? as usize;
+                if n > (b.len() - r.at) / 8 {
+                    return Err("short message".into());
+                }
+                let mut ids = Vec::with_capacity(n);
+                for _ in 0..n {
+                    ids.push(r.u64()?);
+                }
+                Msg::NeedImages(ids)
+            }
+            9 => {
+                let n = r.u32()? as usize;
+                if n > (b.len() - r.at) / 12 {
+                    return Err("short message".into());
+                }
+                let mut all = Vec::with_capacity(n);
+                for _ in 0..n {
+                    all.push((r.u64()?, r.bytes()?));
+                }
+                Msg::Images(all)
+            }
             t => return Err(format!("unknown message {t}")),
         })
     }
@@ -333,6 +376,8 @@ mod tests {
             },
             Msg::Gone(4),
             Msg::Error("no".into()),
+            Msg::NeedImages(vec![1, u64::MAX]),
+            Msg::Images(vec![(7, vec![1, 2, 3]), (8, vec![])]),
         ];
         for m in all {
             assert_eq!(Msg::decode(&m.encode()).unwrap(), m);

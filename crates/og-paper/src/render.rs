@@ -824,6 +824,11 @@ impl Renderer {
         }
     }
 
+    /// Forget a picture's upload, or that it was missing (it just came in).
+    pub fn forget_picture(&mut self, id: u64) {
+        self.img_tex.remove(&id);
+    }
+
     /// Replace everything on the GPU with `scene` (new/open).
     pub fn reset(&mut self, scene: &Scene) {
         self.img_tex.clear();

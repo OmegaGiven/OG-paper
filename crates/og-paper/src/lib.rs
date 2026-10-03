@@ -1255,6 +1255,7 @@ impl App {
             }
             #[cfg(target_arch = "wasm32")]
             Action::RelayShare => web::emit("relay-new"),
+            Action::NewLinks => self.new_links(),
             Action::LivePanel => {
                 self.ui.live_open = !self.ui.live_open;
                 self.ui.menu = ui::Menu::None;
