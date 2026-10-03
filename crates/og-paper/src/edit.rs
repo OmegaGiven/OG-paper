@@ -57,6 +57,10 @@ pub struct TextEdit {
     pub group: Option<u32>,
     /// Editing a table's cells (as tab-separated text).
     pub table: bool,
+    /// The camera `at` and `size` are in (it may move while typing).
+    pub cam: ogpaper_core::Camera,
+    /// The text tool's size before editing an existing text, to put back.
+    pub prev_size: Option<f32>,
 }
 
 /// Editing state kept by the app.
@@ -333,6 +337,8 @@ impl App {
             text: String::new(),
             group: None,
             table: false,
+            cam: self.cam.clone(),
+            prev_size: None,
         });
         self.text_open_editor();
     }
@@ -361,8 +367,10 @@ impl App {
             let d = rot2([-geom.half[0], -geom.half[1]], geom.rot);
             [geom.center[0] + d[0], geom.center[1] + d[1]]
         };
-        // The text panel shows this text's settings, so new texts continue
-        // in the same style.
+        // The text panel shows this text's settings while it is open; the
+        // size goes back afterwards, so new texts keep yours (this one may
+        // have been written at another zoom).
+        let prev_size = Some(self.ui.text_size);
         self.ui.text = style;
         self.ui.text_size = (size * self.cam.ppc() / self.ppp()) as f32;
         self.edit.text = Some(TextEdit {
@@ -373,6 +381,8 @@ impl App {
             text,
             group: Some(g),
             table,
+            cam: self.cam.clone(),
+            prev_size,
         });
         self.text_open_editor();
     }
@@ -420,6 +430,9 @@ impl App {
         let Some(t) = self.edit.text.take() else {
             return;
         };
+        if let Some(s) = t.prev_size {
+            self.ui.text_size = s;
+        }
         let text = t.text.trim_end().to_string();
         let mut removed = Vec::new();
         let mut z = None;
@@ -469,7 +482,10 @@ impl App {
                 seed,
             }
         };
+        // In the camera the text was started in, whatever it is now.
+        let now = std::mem::replace(&mut self.cam, t.cam.clone());
         let (g, ids) = self.add_group(&data, z);
+        self.cam = now;
         if t.group.is_some() {
             self.edit.selection = vec![ObjRef::Group(g)];
         }
@@ -477,7 +493,9 @@ impl App {
     }
 
     pub(crate) fn text_cancel(&mut self) {
-        self.edit.text = None;
+        if let Some(s) = self.edit.text.take().and_then(|t| t.prev_size) {
+            self.ui.text_size = s;
+        }
         self.ui.text_edit = None;
         self.redraw();
     }
