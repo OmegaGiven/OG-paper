@@ -462,7 +462,7 @@ export async function start({ mode = 'app' } = {}) {
   const standalone = matchMedia('(display-mode: fullscreen), (display-mode: standalone)').matches;
   const canFs = document.documentElement.requestFullscreen && !standalone;
   const syncMenu = () => {
-    const items = ['new', 'open', 'save', 'export', 'paste', 'library', 'picture', 'search', 'bookmarks', 'timeline', 'home', 'grid', 'diagram', 'layout', 'radialbar', 'showtools', 'showpanel', 'showbar', 'hotkeys'];
+    const items = ['new', 'open', 'save', 'export', 'paste', 'library', 'picture', 'search', 'bookmarks', 'timeline', 'home', 'grid', 'dark', 'diagram', 'layout', 'radialbar', 'showtools', 'showpanel', 'showbar', 'hotkeys'];
     if (canFs && !document.fullscreenElement) items.push('fullscreen');
     if (isTry) items.push('tour');
     og_set_menu(items.join(','));
@@ -928,6 +928,9 @@ export async function start({ mode = 'app' } = {}) {
   function tick() {
     const s = status();
     if (s.ready) loading.hidden = true;
+    // Dark mode: the page and the cards over the canvas flip with it.
+    if (s.ready && document.documentElement.classList.contains('dark') !== !!s.dark)
+      document.documentElement.classList.toggle('dark', !!s.dark);
     for (const r of JSON.parse(og_requests())) {
       if (r === 'save') download();
       else if (r === 'open') openCopy();

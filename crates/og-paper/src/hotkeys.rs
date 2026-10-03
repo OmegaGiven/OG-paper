@@ -169,6 +169,7 @@ pub fn bindings() -> Vec<Binding> {
         ("cmd.library", "Library", Some("ctrl+l")),
         ("cmd.home", "Fly home", None),
         ("cmd.grid", "Grid", Some("ctrl+g")),
+        ("cmd.dark", "Dark mode", None),
         ("cmd.diagram", "Diagram mode", None),
         ("cmd.layout", "Edit layout", None),
         ("cmd.fullscreen", "Full screen", Some("f11")),

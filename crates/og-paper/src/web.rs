@@ -215,6 +215,7 @@ pub fn og_set_menu(items: &str) {
                 "layout" => AppItem::Layout,
                 "hotkeys" => AppItem::Hotkeys,
                 "radialbar" => AppItem::RadialBar,
+                "dark" => AppItem::Dark,
                 "showtools" => AppItem::ShowTools,
                 "showpanel" => AppItem::ShowPanel,
                 "showbar" => AppItem::ShowBar,

@@ -19,6 +19,10 @@
            width: calc(100vw - env(safe-area-inset-right));
            height: calc(100vh - env(safe-area-inset-bottom));
            height: calc(100dvh - env(safe-area-inset-bottom)); }
+  /* Dark mode (the app flips its own drawing): the page, and everything
+     drawn over the canvas, get the same flip - lightness reversed, hues kept. */
+  html.dark, html.dark body { background: #0e0d0a; }
+  html.dark body > :not(canvas):not(script) { filter: invert(1) hue-rotate(180deg); }
 </style>
 </head>
 <body>

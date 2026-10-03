@@ -253,6 +253,7 @@ pub enum AppItem {
     ShowBar,
     /// Background grid: off, lines, dots.
     Grid,
+    Dark,
     New,
     Open,
     Save,
@@ -280,6 +281,7 @@ impl AppItem {
             AppItem::ShowPanel => "Tool panel",
             AppItem::ShowBar => "Quick toolbar",
             AppItem::Grid => "Grid",
+            AppItem::Dark => "Dark mode",
             AppItem::New => "New canvas",
             AppItem::Open => "Open",
             AppItem::Save => "Save copy",
@@ -306,6 +308,7 @@ impl AppItem {
             AppItem::ShowPanel => Action::ShowPanel,
             AppItem::ShowBar => Action::ShowBar,
             AppItem::Grid => Action::Grid,
+            AppItem::Dark => Action::Dark,
             AppItem::New => Action::New,
             AppItem::Open => Action::Open,
             AppItem::Save => Action::SaveAs,
@@ -370,6 +373,8 @@ pub struct UiState {
     /// The quick toolbar as a fan from the bottom-right corner (tools move
     /// bottom left, their settings top right).
     pub radial_bar: bool,
+    /// Dark mode: the whole screen drawn with its lightness flipped.
+    pub dark: bool,
     /// Hidden by the person (Settings): the tool button, the tool panel,
     /// the quick toolbar.
     pub hide_tools: bool,
@@ -534,6 +539,7 @@ impl Default for UiState {
                 AppItem::Home,
                 AppItem::Search,
                 AppItem::Grid,
+                AppItem::Dark,
                 AppItem::Diagram,
                 AppItem::Layout,
                 AppItem::RadialBar,
@@ -546,6 +552,7 @@ impl Default for UiState {
             hide_panel: false,
             hide_bar: false,
             radial_bar: false,
+            dark: false,
             queued: Vec::new(),
             views: Default::default(),
             view_now: None,
@@ -835,6 +842,7 @@ pub enum Action {
     TextCancel,
     /// Cycle the background grid: off, lines, dots.
     Grid,
+    Dark,
     /// Open the text search.
     Search,
     /// Export the view or selection as a picture or PDF.
@@ -3176,6 +3184,7 @@ fn app_menu(ctx: &egui::Context, st: &mut UiState, g: &Geo, actions: &mut Vec<Ac
                     );
                     let active = (item == AppItem::Timeline && st.timeline_on)
                         || (item == AppItem::Grid && st.grid != GridMode::Off)
+                        || (item == AppItem::Dark && st.dark)
                         || (item == AppItem::Diagram && st.diagram)
                         || (item == AppItem::RadialBar && st.radial_bar)
                         || (item == AppItem::ShowTools && !st.hide_tools)
@@ -3205,6 +3214,8 @@ fn app_menu(ctx: &egui::Context, st: &mut UiState, g: &Geo, actions: &mut Vec<Ac
                             AppItem::ShowPanel => "Tool panel: shown",
                             AppItem::ShowBar if st.hide_bar => "Quick toolbar: hidden",
                             AppItem::ShowBar => "Quick toolbar: shown",
+                            AppItem::Dark if st.dark => "Dark mode: on",
+                            AppItem::Dark => "Dark mode: off",
                             AppItem::Diagram if st.diagram => "Diagram: on",
                             AppItem::Diagram => "Diagram: off",
                             AppItem::Grid => match st.grid {
@@ -3319,6 +3330,11 @@ fn app_icon(
                     }
                 }
             }
+        }
+        AppItem::Dark => {
+            // A crescent moon.
+            p.circle_filled(c, s * 0.85, INKY);
+            p.circle_filled(c + vec2(0.45, -0.35) * s, s * 0.72, FACE);
         }
         AppItem::RadialBar => {
             // A quarter fan of slots around a corner button.

@@ -240,6 +240,12 @@ pub struct GridGpu {
 pub struct Renderer {
     /// Background grid to draw under the ink this frame, if any.
     pub grid: Option<GridGpu>,
+    /// Dark mode: the frame is drawn off screen, then flipped onto it.
+    pub dark: bool,
+    flip_pipe: wgpu::RenderPipeline,
+    flip_bgl: wgpu::BindGroupLayout,
+    /// The off-screen frame (its size) and its bind group, made on demand.
+    flip_tex: Option<(wgpu::Texture, wgpu::BindGroup, [u32; 2])>,
     grid_pipe: wgpu::RenderPipeline,
     grid_buf: wgpu::Buffer,
     grid_bind: wgpu::BindGroup,
@@ -697,9 +703,66 @@ impl Renderer {
             multiview_mask: None,
             cache: None,
         });
+        // Dark mode's flip pass: reads the off-screen frame texel by texel.
+        let flip_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("flip"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            }],
+        });
+        let flip_src = format!(
+            "const SRGB: bool = {};\n{}",
+            format.is_srgb(),
+            include_str!("flip.wgsl")
+        );
+        let flip_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("flip"),
+            source: wgpu::ShaderSource::Wgsl(flip_src.into()),
+        });
+        let flip_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("flip"),
+            bind_group_layouts: &[Some(&flip_bgl)],
+            immediate_size: 0,
+        });
+        let flip_pipe = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("flip"),
+            layout: Some(&flip_layout),
+            vertex: wgpu::VertexState {
+                module: &flip_shader,
+                entry_point: Some("vs_flip"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &flip_shader,
+                entry_point: Some("fs_flip"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
         let egui = egui_wgpu::Renderer::new(&device, format, egui_wgpu::RendererOptions::default());
         Ok(Self {
             grid: None,
+            dark: false,
+            flip_pipe,
+            flip_bgl,
+            flip_tex: None,
             grid_pipe,
             grid_buf,
             grid_bind,
@@ -852,9 +915,45 @@ impl Renderer {
                 return false;
             }
         };
-        let view = frame
+        let screen_view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
+        // Dark mode: draw into an off-screen frame of the same size and
+        // format, flipped onto the screen at the end.
+        let size = [self.config.width, self.config.height];
+        if !self.dark {
+            self.flip_tex = None;
+        } else if self.flip_tex.as_ref().is_none_or(|t| t.2 != size) {
+            let tex = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("dark frame"),
+                size: wgpu::Extent3d {
+                    width: size[0],
+                    height: size[1],
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: self.config.format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            let tv = tex.create_view(&wgpu::TextureViewDescriptor::default());
+            let bind = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("flip"),
+                layout: &self.flip_bgl,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&tv),
+                }],
+            });
+            self.flip_tex = Some((tex, bind, size));
+        }
+        let view = match &self.flip_tex {
+            Some((t, _, _)) => t.create_view(&wgpu::TextureViewDescriptor::default()),
+            None => screen_view.clone(),
+        };
         self.queue.write_buffer(
             &self.globals,
             0,
@@ -1105,6 +1204,27 @@ impl Renderer {
                 pass.draw(0..(MAX_SEG * 6) as u32, 0..hl.len() as u32);
             }
             self.egui.render(&mut pass, &ui.prims, &screen);
+        }
+        if let Some((_, bind, _)) = &self.flip_tex {
+            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("flip"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &screen_view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&self.flip_pipe);
+            pass.set_bind_group(0, bind, &[]);
+            pass.draw(0..3, 0..1);
         }
         self.queue.submit(extra.into_iter().chain([enc.finish()]));
         self.queue.present(frame);

@@ -172,6 +172,7 @@ impl App {
         ui.grid = ui::GridMode::from_key(prefs.get("grid").map_or("off", |s| s.as_str()));
         ui.diagram = prefs.get("diagram").is_some_and(|v| v == "on");
         ui.radial_bar = prefs.get("radialbar").is_some_and(|v| v == "on");
+        ui.dark = prefs.get("dark").is_some_and(|v| v == "on");
         ui.hide_tools = prefs.get("hide_tools").is_some_and(|v| v == "on");
         ui.hide_panel = prefs.get("hide_panel").is_some_and(|v| v == "on");
         ui.hide_bar = prefs.get("hide_bar").is_some_and(|v| v == "on");
@@ -915,6 +916,16 @@ impl App {
                 prefs::save(&p);
                 self.redraw();
             }
+            Action::Dark => {
+                self.ui.dark = !self.ui.dark;
+                let mut p = prefs::load();
+                p.insert(
+                    "dark".into(),
+                    if self.ui.dark { "on" } else { "off" }.into(),
+                );
+                prefs::save(&p);
+                self.redraw();
+            }
             Action::RadialBar => {
                 self.ui.radial_bar = !self.ui.radial_bar;
                 self.ui.menu = ui::Menu::None;
@@ -1487,6 +1498,7 @@ impl App {
             "cmd.library" => self.action(Action::Library),
             "cmd.home" => self.action(Action::Home),
             "cmd.grid" => self.action(Action::Grid),
+            "cmd.dark" => self.action(Action::Dark),
             "cmd.diagram" => self.action(Action::Diagram),
             "cmd.layout" => self.action(Action::EditLayout),
             "cmd.fullscreen" => self.action(Action::FullScreen),
@@ -1990,7 +2002,7 @@ impl App {
             -99.0
         };
         web::set_status(format!(
-            "{{\"ready\":true,\"zoom\":{:.3},\"strokes\":{},\"drawn\":{},\"erased\":{},\"undos\":{},\"deepDraw\":{:.2},\"flying\":{},\"dirty\":{},\"bookmarks\":[{}],\"timeline\":{}}}",
+            "{{\"ready\":true,\"zoom\":{:.3},\"strokes\":{},\"drawn\":{},\"erased\":{},\"undos\":{},\"deepDraw\":{:.2},\"flying\":{},\"dirty\":{},\"bookmarks\":[{}],\"timeline\":{},\"dark\":{}}}",
             self.cam.log10_zoom(),
             self.scene.strokes.iter().filter(|s| !s.deleted).count(),
             st.drawn,
@@ -2001,6 +2013,7 @@ impl App {
             web::is_dirty(),
             marks.join(","),
             tl,
+            self.ui.dark,
         ));
         if self.fly.is_some() {
             self.redraw();
@@ -2201,6 +2214,7 @@ impl App {
             }
         });
         self.gpu.as_mut().expect("gpu").grid = grid;
+        self.gpu.as_mut().expect("gpu").dark = self.ui.dark;
         let paint = UiPaint {
             prims,
             textures: out.textures_delta,
