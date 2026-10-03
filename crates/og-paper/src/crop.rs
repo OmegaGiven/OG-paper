@@ -158,7 +158,9 @@ impl App {
             crop: *crop,
             drag: None,
         });
-        self.say("Drag the edges or corners to crop; Enter or Done to finish");
+        if self.ui.hints {
+            self.say("Drag the edges or corners to crop; Enter or Done to finish");
+        }
         self.redraw();
     }
 

@@ -455,6 +455,8 @@ pub struct UiState {
     /// The quick toolbar as a fan from the bottom-right corner (tools move
     /// bottom left, their settings top right).
     pub radial_bar: bool,
+    /// Helper text (how-to lines) shows.
+    pub hints: bool,
     /// Dark mode: the whole screen drawn with its lightness flipped.
     pub dark: bool,
     /// Another canvas is being placed (shows Place / Cancel).
@@ -664,6 +666,7 @@ impl Default for UiState {
             hide_bar: false,
             radial_bar: false,
             dark: false,
+            hints: true,
             importing: false,
             folder_on: false,
             live: None,
@@ -1039,6 +1042,8 @@ pub enum Action {
     /// Cycle the background grid: off, lines, dots.
     Grid,
     Dark,
+    /// Show or hide helper text.
+    Hints,
     /// Open the text search.
     Search,
     /// Export the view or selection as a picture or PDF.
@@ -1172,6 +1177,7 @@ fn geo(ctx: &egui::Context, st: &UiState) -> Geo {
 /// Draw the UI; returns actions for the app to perform.
 pub fn draw(ctx: &egui::Context, st: &mut UiState) -> Vec<Action> {
     let mut actions = Vec::new();
+    HINTS.store(st.hints, std::sync::atomic::Ordering::Relaxed);
     // A press anywhere but on an open menu closes it (on the canvas, the
     // app also skips drawing for that tap). What is where comes from the
     // last frame: the fans' own buttons and items, the panels' areas.
@@ -1949,11 +1955,7 @@ fn inventory_at(
                             }
                         });
                     });
-                    ui.label(
-                        egui::RichText::new("Drag a tool to a slot — here or in a toolbar — or onto 🗑 to throw it away. Tap one to use it.")
-                            .small()
-                            .weak(),
-                    );
+                    help(ui, "Drag a tool to a slot — here or in a toolbar — or onto 🗑 to throw it away. Tap one to use it.");
                     ui.add_space(6.0);
                     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                         let (all, _) = ui.allocate_exact_size(vec2(inner, rows as f32 * (s + gap) - gap), Sense::hover());
@@ -2061,13 +2063,7 @@ fn toolbar_menu(
                             fx.changed = true;
                         }
                         if !vert {
-                            ui.label(
-                                egui::RichText::new(
-                                    "Tick to keep showing · tap a number to use it",
-                                )
-                                .small()
-                                .weak(),
-                            );
+                            help(ui, "Tick to keep showing · tap a number to use it");
                         }
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui.button("×").on_hover_text("Close").clicked() {
@@ -2839,6 +2835,17 @@ fn tool_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) 
     }
 }
 
+/// Whether helper text shows (UI > Helper text), set each frame.
+static HINTS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// A line of helper text: how to use something. Hidden when helper text
+/// is off.
+fn help(ui: &mut egui::Ui, text: &str) {
+    if HINTS.load(std::sync::atomic::Ordering::Relaxed) {
+        ui.label(egui::RichText::new(text).small().weak());
+    }
+}
+
 fn heading(ui: &mut egui::Ui, text: &str) {
     ui.add_space(4.0);
     ui.label(egui::RichText::new(text).small().weak());
@@ -2994,11 +3001,7 @@ fn fill_section(
         6.0,
         Color32::from_rgba_unmultiplied(r, g, b, a),
     );
-    ui.label(
-        egui::RichText::new("Tap inside a closed outline to fill it.")
-            .small()
-            .weak(),
-    );
+    help(ui, "Tap inside a closed outline to fill it.");
     heading(ui, "Close gaps");
     ui.horizontal(|ui| {
         for (v, name, tip) in [
@@ -3379,12 +3382,9 @@ fn portal_section(
     });
     heading(ui, "Outline width");
     ui.add(egui::Slider::new(&mut st.shape_width, 0.0..=24.0).suffix(" px"));
-    ui.label(
-        egui::RichText::new(
-            "Select a portal to go there. A portal that shows itself makes a tunnel.",
-        )
-        .small()
-        .weak(),
+    help(
+        ui,
+        "Select a portal to go there. A portal that shows itself makes a tunnel.",
     );
     false
 }
@@ -3397,7 +3397,7 @@ fn select_actions(
     actions: &mut Vec<Action>,
 ) {
     if cropping {
-        ui.label("Drag the edges or corners; drag inside to slide.");
+        help(ui, "Drag the edges or corners; drag inside to slide.");
         ui.horizontal(|ui| {
             if ui.button("Done").on_hover_text("Enter").clicked() {
                 actions.push(Action::CropDone);
@@ -3572,7 +3572,11 @@ fn text_editor(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>)
                         .desired_width(240.0)
                         // Tab types a tab: tables are edited as tab-separated cells.
                         .lock_focus(true)
-                        .hint_text("Type, then Done (Ctrl+Enter)"),
+                        .hint_text(if HINTS.load(std::sync::atomic::Ordering::Relaxed) {
+                            "Type, then Done (Ctrl+Enter)"
+                        } else {
+                            ""
+                        }),
                 );
                 resp.request_focus();
                 let done_key = ui.input(|i| i.key_pressed(egui::Key::Enter) && i.modifiers.command);
@@ -5068,7 +5072,7 @@ fn library_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action
                         );
                         return;
                     }
-                    ui.label(egui::RichText::new("Click to place a copy").small().weak());
+                    help(ui, "Click to place a copy");
                     let cell = 96.0;
                     egui::ScrollArea::vertical().max_height(screen.height() * 0.6).show(ui, |ui| {
                         ui.horizontal_wrapped(|ui| {
@@ -5667,10 +5671,9 @@ fn plugins_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action
                     });
                     if st.plugins.is_empty() {
                         ui.label(
-                            egui::RichText::new("No plugins yet. A plugin adds buttons that draw or arrange things for you; it runs sealed off, with no access to your files or the network.")
-                                .small()
-                                .weak(),
+                            egui::RichText::new("No plugins yet.").small().weak(),
                         );
+                        help(ui, "A plugin adds buttons that draw or arrange things for you; it runs sealed off, with no access to your files or the network.");
                     }
                     for (i, p) in st.plugins.iter().enumerate() {
                         ui.add_space(6.0);
@@ -5710,11 +5713,7 @@ fn plugins_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action
                             actions.push(Action::PackExport);
                         }
                     });
-                    ui.label(
-                        egui::RichText::new("Automations and other programs use the server's API instead (docs/PLUGINS.md).")
-                            .small()
-                            .weak(),
-                    );
+                    help(ui, "Automations and other programs use the server's API instead (docs/PLUGINS.md).");
                 });
         });
 }
@@ -5787,6 +5786,13 @@ fn layout_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>
                         "Quick toolbar as a radial menu",
                         "A round button in the corner that fans out, instead of a bar",
                         Action::RadialBar,
+                    );
+                    tick(
+                        ui,
+                        st.hints,
+                        "Helper text",
+                        "The how-to lines in panels and over the text box",
+                        Action::Hints,
                     );
                     tick(
                         ui,
@@ -5907,13 +5913,7 @@ fn pages_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>)
                         ui.add_space(10.0);
                         ui.label(egui::RichText::new("Servers").strong());
                         if st.servers.is_empty() {
-                            ui.label(
-                                egui::RichText::new(
-                                    "Add a server (og-paper --serve-dir, e.g. on a NAS) by its server link to see and open its pages.",
-                                )
-                                .small()
-                                .weak(),
-                            );
+                            help(ui, "Add a server (og-paper --serve-dir, e.g. on a NAS) by its server link to see and open its pages.");
                         }
                         for (i, s) in st.servers.iter().enumerate() {
                             ui.add_space(4.0);
@@ -5960,11 +5960,7 @@ fn pages_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>)
                                 actions.push(Action::AddServer);
                             }
                         });
-                        ui.label(
-                            egui::RichText::new("Opening a server page keeps a copy here; it reconnects whenever you open it, and what you did offline goes up.")
-                                .small()
-                                .weak(),
-                        );
+                        help(ui, "Opening a server page keeps a copy here; it reconnects whenever you open it, and what you did offline goes up.");
                     };
                     if tall {
                         egui::ScrollArea::vertical()
@@ -6032,11 +6028,7 @@ fn live_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) 
                                 {
                                     actions.push(Action::RtcPanel);
                                 }
-                                ui.label(
-                                    egui::RichText::new("A server host (desktop app or og-paper --serve) lets people come and go any time.")
-                                        .small()
-                                        .weak(),
-                                );
+                                help(ui, "A server host (desktop app or og-paper --serve) lets people come and go any time.");
                             } else if ui
                                 .button("Host this canvas")
                                 .on_hover_text("Others join with a link; everyone keeps a copy")
@@ -6107,13 +6099,7 @@ fn live_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) 
                                     });
                                     ui.label(egui::RichText::new(link).small().monospace().weak());
                                 }
-                                ui.label(
-                                    egui::RichText::new(
-                                        "Browsers on https pages need a wss:// address (e.g. Tailscale serve in front of this port).",
-                                    )
-                                    .small()
-                                    .weak(),
-                                );
+                                help(ui, "Browsers on https pages need a wss:// address (e.g. Tailscale serve in front of this port).");
                             }
                             if info.hosting {
                                 ui.add_space(6.0);
@@ -6182,11 +6168,7 @@ fn hotkeys_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action
                             }
                         });
                     });
-                    ui.label(
-                        egui::RichText::new("Tap a key to change it, then press the new key (Esc cancels, Backspace clears).")
-                            .small()
-                            .weak(),
-                    );
+                    help(ui, "Tap a key to change it, then press the new key (Esc cancels, Backspace clears).");
                     ui.add_space(4.0);
                     let all = crate::hotkeys::bindings();
                     egui::ScrollArea::vertical().max_height(screen.height() * 0.7).show(ui, |ui| {
@@ -6223,14 +6205,8 @@ fn hotkeys_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action
                         }
                         ui.add_space(8.0);
                         ui.label(egui::RichText::new("Fixed keys").strong());
-                        ui.label(
-                            egui::RichText::new(
-                                "1–9 quick bar slots · Alt+1–9 toolbars · [ ] cycle toolbars · Ctrl+C / X / V copy, cut, paste · \
-                                 Ctrl+A select all · Ctrl+D duplicate · Ctrl+Y redo · Delete · arrows nudge · Esc · Enter · Home · Space pan",
-                            )
-                            .small()
-                            .weak(),
-                        );
+                        help(ui, "1–9 quick bar slots · Alt+1–9 toolbars · [ ] cycle toolbars · Ctrl+C / X / V copy, cut, paste · \
+                                 Ctrl+A select all · Ctrl+D duplicate · Ctrl+Y redo · Delete · arrows nudge · Esc · Enter · Home · Space pan");
                     });
                 });
         });

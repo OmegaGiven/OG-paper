@@ -938,6 +938,8 @@ export async function start({ mode = 'app' } = {}) {
     const hint = el('div', { class: 'og-text-hint' }, req.table
       ? 'Tab between cells · Enter for a new row · Ctrl+Enter or tap away to finish · Esc to cancel'
       : 'Enter for a new line · Ctrl+Enter or tap away to finish · Esc to cancel');
+    // UI > Helper text off: no hint.
+    if (status().hints === false) hint.hidden = true;
     hint.style.left = `${req.x}px`;
     hint.style.top = `${Math.max(4, req.y - 26)}px`;
     // Fit the text: shrink first, then measure (scrollWidth never reports

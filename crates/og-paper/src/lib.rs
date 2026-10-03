@@ -246,6 +246,7 @@ impl App {
         ui.diagram = prefs.get("diagram").is_some_and(|v| v == "on");
         ui.radial_bar = prefs.get("radialbar").is_some_and(|v| v == "on");
         ui.dark = prefs.get("dark").is_some_and(|v| v == "on");
+        ui.hints = prefs.get("hints").is_none_or(|v| v != "off");
         ui.hide_tools = prefs.get("hide_tools").is_some_and(|v| v == "on");
         ui.hide_panel = prefs.get("hide_panel").is_some_and(|v| v == "on");
         ui.hide_bar = prefs.get("hide_bar").is_some_and(|v| v == "on");
@@ -1210,6 +1211,16 @@ impl App {
                 let v = if *flag { "on" } else { "off" };
                 let mut p = prefs::load();
                 p.insert(key.into(), v.into());
+                prefs::save(&p);
+                self.redraw();
+            }
+            Action::Hints => {
+                self.ui.hints = !self.ui.hints;
+                let mut p = prefs::load();
+                p.insert(
+                    "hints".into(),
+                    if self.ui.hints { "on" } else { "off" }.into(),
+                );
                 prefs::save(&p);
                 self.redraw();
             }
@@ -2613,7 +2624,7 @@ impl App {
             -99.0
         };
         web::set_status(format!(
-            "{{\"ready\":true,\"zoom\":{:.3},\"strokes\":{},\"drawn\":{},\"erased\":{},\"undos\":{},\"deepDraw\":{:.2},\"flying\":{},\"dirty\":{},\"bookmarks\":[{}],\"timeline\":{},\"dark\":{},\"canvas\":\"{:032x}\",\"peer\":\"{:016x}\",\"net\":{},\"name\":{},\"passes\":{}}}",
+            "{{\"ready\":true,\"zoom\":{:.3},\"strokes\":{},\"drawn\":{},\"erased\":{},\"undos\":{},\"deepDraw\":{:.2},\"flying\":{},\"dirty\":{},\"bookmarks\":[{}],\"timeline\":{},\"dark\":{},\"canvas\":\"{:032x}\",\"peer\":\"{:016x}\",\"net\":{},\"name\":{},\"passes\":{},\"hints\":{}}}",
             self.cam.log10_zoom(),
             self.scene.strokes.iter().filter(|s| !s.deleted).count(),
             st.drawn,
@@ -2630,6 +2641,7 @@ impl App {
             web::json_str(&self.live_info().map(|l| l.state).unwrap_or_default()),
             web::json_str(&self.ui.file_name),
             self.portal_passes,
+            self.ui.hints,
         ));
         if self.fly.is_some() {
             self.redraw();
