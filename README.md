@@ -47,6 +47,8 @@ Proprietary infinite-canvas apps such as Endless Paper keep your work in undocum
 - **Bookmarks** (web): save a view, then fly back to it with one tap, across any zoom depth.
 - **Timeline** (web): every stroke is time-stamped; scrub or play back the canvas as it was at any moment, narrow it to a window of time with the left handle to see one session's work on its own, and restore a moment.
 - **Try mode** (web): a demo canvas with 15 worlds nested inside dots, down to 10^45, and a guided checklist.
+- **Sharing and sync:** every copy of a canvas merges with the others — Merge copy, Save changes, a shared sync folder, live drawing with a host (desktop, headless `og-paper --serve`, or Docker), with no server between browsers (WebRTC), or through a relay (`og-paper --relay`) for people who come and go. Offline work applies when you reconnect; frames are sealed end to end and view links cannot edit. See [`docs/SHARING.md`](docs/SHARING.md).
+- **Import canvas, dark mode:** bring another saved canvas in and drag it into place (exact at any depth); flip the whole screen dark.
 
 File formats (`.ogp` 0.3, shapes, text, tables and pictures, the timeline log, bookmarks, `.ogpt` v3) are documented in [`docs/DESIGN.md`](docs/DESIGN.md#implemented-today-ogp-format-03).
 
@@ -54,7 +56,7 @@ File formats (`.ogp` 0.3, shapes, text, tables and pictures, the timeline log, b
 
 - **Save to / open from** the cloud: Save and Open fan out to device, Google Drive, Dropbox or OneDrive, signed in from the page with no project server.
 - `.ogpt` copies in the desktop app, and `.ogp` in the web app, so both share one format; bookmarks and the timeline on desktop.
-- Vector SVG pictures, textured brushes, layers, frames and presenting, multi-device sync — see [`docs/PHASE1.md`](docs/PHASE1.md) and the [to-do list](docs/DESIGN.md#future-to-do).
+- Vector SVG pictures, textured brushes, layers, frames and presenting — see [`docs/PHASE1.md`](docs/PHASE1.md) and the [to-do list](docs/DESIGN.md#future-to-do).
 
 ## Stack
 
