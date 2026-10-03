@@ -237,7 +237,7 @@ pub fn og_set_menu(items: &str) {
                 "paste" => AppItem::Paste,
                 "library" => AppItem::Library,
                 "diagram" => AppItem::Diagram,
-                "layout" => AppItem::Layout,
+                "layout" => AppItem::LayoutMenu,
                 "hotkeys" => AppItem::Hotkeys,
                 "radialbar" => AppItem::RadialBar,
                 "import" => AppItem::Import,

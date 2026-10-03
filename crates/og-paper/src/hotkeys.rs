@@ -177,6 +177,7 @@ pub fn bindings() -> Vec<Binding> {
         ("cmd.dark", "Dark mode", None),
         ("cmd.diagram", "Diagram mode", None),
         ("cmd.layout", "Edit layout", None),
+        ("cmd.layoutmenu", "Layout window", None),
         ("cmd.fullscreen", "Full screen", Some("f11")),
         ("cmd.hotkeys", "Hotkeys", Some("ctrl+k")),
     ] {

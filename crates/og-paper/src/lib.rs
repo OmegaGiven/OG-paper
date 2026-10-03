@@ -1285,6 +1285,21 @@ impl App {
             Action::RelayShare => web::emit("relay-new"),
             Action::NewLinks => self.new_links(),
             Action::PagesPanel => self.pages_toggle(),
+            Action::LayoutMenu => {
+                self.ui.layout_open = !self.ui.layout_open;
+                self.ui.menu = ui::Menu::None;
+            }
+            Action::SetGrid(code) => {
+                self.ui.grid = match code {
+                    1 => ui::GridMode::Lines,
+                    2 => ui::GridMode::Dots,
+                    _ => ui::GridMode::Off,
+                };
+                let mut p = prefs::load();
+                p.insert("grid".into(), self.ui.grid.key().into());
+                prefs::save(&p);
+                self.redraw();
+            }
             Action::AddServer => {
                 let t = self.ui.add_server_text.clone();
                 self.add_server(&t);
@@ -1886,6 +1901,7 @@ impl App {
             "cmd.import" => self.action(Action::Import),
             "cmd.merge" => self.action(Action::MergeCopy),
             "cmd.pages" => self.action(Action::PagesPanel),
+            "cmd.layoutmenu" => self.action(Action::LayoutMenu),
             "cmd.changes" => self.action(Action::SaveChanges),
             "cmd.folder" => self.action(Action::SyncFolder),
             "cmd.search" => self.action(Action::Search),

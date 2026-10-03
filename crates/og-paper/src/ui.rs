@@ -280,7 +280,8 @@ pub enum AppItem {
     Library,
     /// Diagram mode: lines and arrows stick to objects.
     Diagram,
-    /// Move the controls around.
+    /// Move the controls around (now inside the Layout window).
+    #[allow(dead_code)]
     Layout,
     /// Set your own keys.
     Hotkeys,
@@ -299,6 +300,7 @@ pub enum AppItem {
     Folder,
     Live,
     Pages,
+    LayoutMenu,
     New,
     Open,
     Save,
@@ -333,6 +335,7 @@ impl AppItem {
             AppItem::Folder => "Sync folder",
             AppItem::Live => "Share live",
             AppItem::Pages => "Pages",
+            AppItem::LayoutMenu => "Layout",
             AppItem::New => "New canvas",
             AppItem::Open => "Open",
             AppItem::Save => "Save copy",
@@ -366,6 +369,7 @@ impl AppItem {
             AppItem::Folder => Action::SyncFolder,
             AppItem::Live => Action::LivePanel,
             AppItem::Pages => Action::PagesPanel,
+            AppItem::LayoutMenu => Action::LayoutMenu,
             AppItem::New => Action::New,
             AppItem::Open => Action::Open,
             AppItem::Save => Action::SaveAs,
@@ -442,6 +446,7 @@ pub struct UiState {
     pub join_text: String,
     pub relay_text: Option<String>,
     pub pages_open: bool,
+    pub layout_open: bool,
     pub local_pages: Vec<LocalPage>,
     pub servers: Vec<ServerView>,
     pub add_server_text: String,
@@ -615,14 +620,9 @@ impl Default for UiState {
                 AppItem::Picture,
                 AppItem::Home,
                 AppItem::Search,
-                AppItem::Grid,
+                AppItem::LayoutMenu,
                 AppItem::Dark,
                 AppItem::Diagram,
-                AppItem::Layout,
-                AppItem::RadialBar,
-                AppItem::ShowTools,
-                AppItem::ShowPanel,
-                AppItem::ShowBar,
                 AppItem::Hotkeys,
             ],
             hide_tools: false,
@@ -637,6 +637,7 @@ impl Default for UiState {
             join_text: String::new(),
             relay_text: None,
             pages_open: false,
+            layout_open: false,
             local_pages: Vec::new(),
             servers: Vec::new(),
             add_server_text: String::new(),
@@ -907,6 +908,10 @@ pub enum Action {
     NewLinks,
     /// Open or close Pages (this device's pages and the servers').
     PagesPanel,
+    /// Open or close the Layout window (what shows, grid, edit layout).
+    LayoutMenu,
+    /// The background: 0 plain paper, 1 grid lines, 2 dots.
+    SetGrid(u8),
     OpenLocal(usize),
     NewLocal,
     DeleteLocal(usize),
@@ -1147,6 +1152,9 @@ pub fn draw(ctx: &egui::Context, st: &mut UiState) -> Vec<Action> {
         if st.pages_open && !on(&["pages"]) && !on_fan {
             st.pages_open = false;
         }
+        if st.layout_open && !on(&["layout_menu"]) && !on_fan {
+            st.layout_open = false;
+        }
     }
     if st.layout_edit {
         layout_editor(ctx, st);
@@ -1342,6 +1350,9 @@ pub fn draw(ctx: &egui::Context, st: &mut UiState) -> Vec<Action> {
     }
     if st.pages_open {
         pages_panel(ctx, st, &mut actions);
+    }
+    if st.layout_open {
+        layout_panel(ctx, st, &mut actions);
     }
     actions.append(&mut st.queued);
 
@@ -3544,6 +3555,27 @@ fn app_icon(
                 }
             }
         }
+        AppItem::LayoutMenu => {
+            // Four tiles: a layout.
+            p.rect_stroke(
+                Rect::from_min_max(c + vec2(-0.9, -0.9) * s, c + vec2(-0.1, -0.1) * s),
+                2.0,
+                st,
+                egui::StrokeKind::Middle,
+            );
+            p.rect_stroke(
+                Rect::from_min_max(c + vec2(0.1, -0.9) * s, c + vec2(0.9, -0.1) * s),
+                2.0,
+                st,
+                egui::StrokeKind::Middle,
+            );
+            p.rect_stroke(
+                Rect::from_min_max(c + vec2(-0.9, 0.1) * s, c + vec2(0.9, 0.9) * s),
+                2.0,
+                st,
+                egui::StrokeKind::Middle,
+            );
+        }
         AppItem::Pages => {
             // A stack of pages.
             line(&[vec2(-0.55, -0.95), vec2(0.75, -0.95), vec2(0.75, 0.55)]);
@@ -5219,6 +5251,103 @@ fn brush_section(
 
 /// Settings > Hotkeys: every tool, look and command with its key; tap a key
 /// to change it (then press the new one), × to clear it.
+/// Layout: what shows on screen, the background, and Edit layout.
+fn layout_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) {
+    let screen = ctx.content_rect();
+    let w = 340.0f32.min(screen.width() - 24.0);
+    egui::Area::new(Id::new("layout_menu"))
+        .order(Order::Foreground)
+        .pivot(Align2::CENTER_CENTER)
+        .fixed_pos(screen.center())
+        .show(ctx, |ui| {
+            ui.style_mut().visuals = egui::Visuals::light();
+            egui::Frame::new()
+                .fill(FACE)
+                .stroke(Stroke::new(1.0, EDGE))
+                .corner_radius(12.0)
+                .inner_margin(12.0)
+                .shadow(egui::Shadow {
+                    offset: [0, 3],
+                    blur: 14,
+                    spread: 0,
+                    color: Color32::from_black_alpha(45),
+                })
+                .show(ui, |ui| {
+                    ui.set_width(w);
+                    ui.horizontal(|ui| {
+                        ui.strong("Layout");
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button("×").on_hover_text("Close").clicked() {
+                                st.layout_open = false;
+                            }
+                        });
+                    });
+                    ui.add_space(4.0);
+                    ui.label(egui::RichText::new("Show").strong());
+                    // Each tick changes it at once (and is remembered).
+                    let mut tick =
+                        |ui: &mut egui::Ui, on: bool, text: &str, hint: &str, a: Action| {
+                            let mut v = on;
+                            if ui.checkbox(&mut v, text).on_hover_text(hint).changed() {
+                                actions.push(a);
+                            }
+                        };
+                    tick(
+                        ui,
+                        !st.hide_tools,
+                        "Tool button",
+                        "The round button that opens the tools",
+                        Action::ShowTools,
+                    );
+                    tick(
+                        ui,
+                        !st.hide_panel,
+                        "Tool panel",
+                        "The current tool's settings",
+                        Action::ShowPanel,
+                    );
+                    tick(
+                        ui,
+                        !st.hide_bar,
+                        "Quick toolbar",
+                        "Your saved tools",
+                        Action::ShowBar,
+                    );
+                    tick(
+                        ui,
+                        st.radial_bar,
+                        "Quick toolbar as a radial menu",
+                        "A round button in the corner that fans out, instead of a bar",
+                        Action::RadialBar,
+                    );
+                    ui.add_space(8.0);
+                    ui.label(egui::RichText::new("Paper").strong());
+                    ui.horizontal(|ui| {
+                        for (code, label, mode) in [
+                            (0u8, "Plain", GridMode::Off),
+                            (1, "Grid lines", GridMode::Lines),
+                            (2, "Dots", GridMode::Dots),
+                        ] {
+                            if ui.selectable_label(st.grid == mode, label).clicked()
+                                && st.grid != mode
+                            {
+                                actions.push(Action::SetGrid(code));
+                            }
+                        }
+                    });
+                    ui.add_space(10.0);
+                    if ui
+                        .button("Edit layout: move the buttons…")
+                        .on_hover_text("Drag the controls anywhere; fans open toward the middle")
+                        .clicked()
+                    {
+                        st.layout_open = false;
+                        actions.push(Action::EditLayout);
+                    }
+                });
+        });
+}
+
 /// "5 min ago" and such.
 fn ago(ms: u64) -> String {
     if ms == 0 {
