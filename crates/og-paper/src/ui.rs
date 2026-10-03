@@ -1911,10 +1911,28 @@ fn inventory_at(
                             }
                             let bin = ui
                                 .add_enabled(st.held.is_some(), egui::Button::new("🗑"))
-                                .on_hover_text("Throw away the tool in hand");
+                                .on_hover_text("Throw away the tool in hand (or drag a tool here)");
                             if bin.clicked() {
                                 st.held = None;
                                 fx.changed = true;
+                            }
+                            // A tool dragged onto the bin is thrown away.
+                            if st.drag_src.is_some() {
+                                let at = ui.input(|i| i.pointer.interact_pos());
+                                if at.is_some_and(|p| bin.rect.expand(6.0).contains(p)) {
+                                    ui.painter().rect_stroke(
+                                        bin.rect.expand(3.0),
+                                        6.0,
+                                        Stroke::new(2.0, Color32::from_rgb(200, 40, 60)),
+                                        egui::StrokeKind::Outside,
+                                    );
+                                    if ui.input(|i| i.pointer.any_released()) {
+                                        st.drag_src = None;
+                                        st.held = None;
+                                        fx.changed = true;
+                                        fx.say = Some("Thrown away".into());
+                                    }
+                                }
                             }
                             if ui
                                 .button(if narrow { "+" } else { "+ Save current" })
@@ -1932,7 +1950,7 @@ fn inventory_at(
                         });
                     });
                     ui.label(
-                        egui::RichText::new("Tap a tool to pick it up, then tap a slot — here or in a toolbar — to put it there.")
+                        egui::RichText::new("Drag a tool to a slot — here or in a toolbar — or onto 🗑 to throw it away. Tap one to use it.")
                             .small()
                             .weak(),
                     );
