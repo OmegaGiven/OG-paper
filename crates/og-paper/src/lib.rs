@@ -28,7 +28,10 @@ mod objects;
 mod pdf;
 mod prefs;
 mod presence;
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+mod relay;
 mod render;
+mod seal;
 mod search;
 mod shapes;
 mod share;
@@ -1245,6 +1248,13 @@ impl App {
                 self.ui.live_open = false;
                 web::emit("rtc");
             }
+            #[cfg(not(target_arch = "wasm32"))]
+            Action::RelayShare => {
+                let addr = self.ui.relay_text.clone().unwrap_or_default();
+                self.relay_share_new(&addr);
+            }
+            #[cfg(target_arch = "wasm32")]
+            Action::RelayShare => web::emit("relay-new"),
             Action::LivePanel => {
                 self.ui.live_open = !self.ui.live_open;
                 self.ui.menu = ui::Menu::None;
@@ -2211,7 +2221,11 @@ impl App {
             Cmd::Folder(on) => self.ui.folder_on = on,
             Cmd::Net(e) => self.net_event(e),
             Cmd::Join(link) => self.join(&link),
-            Cmd::RtcHost(e, v) => self.host_start_rtc(e, v),
+            Cmd::RtcHost(e) => self.host_start_rtc(e),
+            Cmd::RelayShare(key) => {
+                let addr = self.ui.relay_text.clone().unwrap_or_default();
+                self.relay_share(&addr, &key);
+            }
             Cmd::Poke => {}
             Cmd::Merge(bytes, quiet) => match snapshot::decode(&bytes, BASE_PX) {
                 Ok(s) if quiet => {
@@ -2918,6 +2932,13 @@ pub fn serve(path: PathBuf, port: u16, public: Option<String>) {
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
+}
+
+/// `og-paper --relay [--port N] [--data DIR]`: keep and pass on sealed
+/// changes for shared canvases (see `relay`).
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+pub fn relay(port: u16, dir: PathBuf) {
+    relay::run(port, dir);
 }
 
 /// True on touch-first browsers (phones, tablets): bigger toolbar targets.

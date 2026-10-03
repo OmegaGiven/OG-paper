@@ -52,7 +52,9 @@ pub enum Cmd {
     /// Join a shared canvas by its link (from the page address).
     Join(String),
     /// Host in the browser (WebRTC) with these edit and view keys.
-    RtcHost(String, String),
+    RtcHost(String),
+    /// Share through the relay in Share live with this new edit key.
+    RelayShare(String),
     /// Just wake up (a timer of the page's: the connection may retry).
     Poke,
     /// Export: format, only the selection, paper background.
@@ -380,8 +382,22 @@ pub fn og_rtc_closing() -> Vec<u32> {
 /// Start hosting this canvas in the browser (WebRTC; the page makes the
 /// invites and puts these keys in them).
 #[wasm_bindgen]
-pub fn og_rtc_host(edit_key: String, view_key: String) {
-    push(Cmd::RtcHost(edit_key, view_key));
+pub fn og_rtc_host(edit_key: String) {
+    push(Cmd::RtcHost(edit_key));
+}
+
+/// Share through a relay with this new edit key (the page makes it).
+#[wasm_bindgen]
+pub fn og_relay_share(edit_key: String) {
+    push(Cmd::RelayShare(edit_key));
+}
+
+/// The view key that goes with an edit key (for view-only invites).
+#[wasm_bindgen]
+pub fn og_view_token(edit_key: String) -> String {
+    crate::seal::Keys::parse(&edit_key)
+        .map(|k| k.view_token())
+        .unwrap_or_default()
 }
 
 /// Where a "net-connect" request should connect.

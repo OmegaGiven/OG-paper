@@ -9,7 +9,7 @@ import init, {
   og_copy, og_paste_own, og_paste_image, og_paste_text, og_pdf_page,
   og_bookmark_add, og_bookmark_go, og_bookmark_remove, og_bookmark_rename, og_bookmark_to_bar,
   og_search, og_search_results, og_search_go, og_export, og_export_take, og_has_selection,
-  og_sticker_take, og_sticker_svg, og_sticker_place, og_import, og_merge, og_changes_take, og_merge_quiet, og_set_folder, og_net_url, og_net_take, og_net_open, og_net_recv, og_net_closed, og_join, og_poke, og_rtc_host, og_rtc_closing,
+  og_sticker_take, og_sticker_svg, og_sticker_place, og_import, og_merge, og_changes_take, og_merge_quiet, og_set_folder, og_net_url, og_net_take, og_net_open, og_net_recv, og_net_closed, og_join, og_poke, og_rtc_host, og_rtc_closing, og_view_token, og_relay_share,
   og_timeline, og_timeline_range, og_timeline_restore, og_snapshot_request, og_snapshot_take,
 } from './pkg/og_paper.js';
 
@@ -666,12 +666,14 @@ export async function start({ mode = 'app' } = {}) {
     for (const pc of Object.values(rtc.pcs)) try { pc.close(); } catch (e) {}
     rtc.pcs = {}; rtc.chans = {};
   }
+  // An edit key: 'e' + 32 random bytes, base64url (see seal.rs).
   function randKey() {
-    return Array.from(crypto.getRandomValues(new Uint8Array(16))).map(b => b.toString(16).padStart(2, '0')).join('');
+    const b = crypto.getRandomValues(new Uint8Array(32));
+    return 'e' + btoa(String.fromCharCode(...b)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
   }
   let rtcKeys = null;
   async function rtcInvite(view) {
-    if (!rtcKeys) { rtcKeys = { edit: randKey(), view: randKey() }; og_rtc_host(rtcKeys.edit, rtcKeys.view); }
+    if (!rtcKeys) { const edit = randKey(); rtcKeys = { edit, view: og_view_token(edit) }; og_rtc_host(edit); }
     const id = rtc.next++;
     const pc = new RTCPeerConnection({ iceServers: ICE });
     rtc.pcs[id] = pc;
@@ -746,12 +748,14 @@ export async function start({ mode = 'app' } = {}) {
     const key = 'og-joined:' + location.hash.split('&k=')[0];
     let known = null;
     try { known = localStorage.getItem(key); } catch (e) {}
-    if (st.strokes > 0 && known !== st.canvas &&
+    // A relay link names its canvas: already this one, nothing to ask.
+    const sameCanvas = known === st.canvas || location.hash.includes('&c=' + st.canvas);
+    if (st.strokes > 0 && !sameCanvas &&
         !confirm('Joining a shared canvas replaces the canvas in this browser. Download a copy of this one first if you want to keep it.\n\nJoin now?')) return;
     og_join(location.href);
     const remember = setInterval(() => {
       const s2 = status();
-      if (s2.net && s2.net.startsWith('Live')) {
+      if (s2.net && (s2.net.startsWith('Live') || s2.net.startsWith('Synced'))) {
         try { localStorage.setItem(key, s2.canvas); } catch (e) {}
         clearInterval(remember);
       }
@@ -1189,6 +1193,7 @@ export async function start({ mode = 'app' } = {}) {
       else if (r === 'net-connect') netConnect(og_net_url());
       else if (r === 'net-close') { netClose(); rtcStop(); }
       else if (r === 'rtc') show('rtc');
+      else if (r === 'relay-new') og_relay_share(randKey());
       else if (r === 'rtc-stop') { rtcStop(); rtcKeys = null; }
       else if (r === 'rtc-close') for (const c of og_rtc_closing()) { try { rtc.chans[c]?.close(); rtc.pcs[c]?.close(); } catch (e) {} }
       else if (r === 'merge') { importPicker.dataset.mode = 'merge'; importPicker.value = ''; importPicker.click(); }

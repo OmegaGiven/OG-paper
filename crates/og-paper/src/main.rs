@@ -9,9 +9,24 @@ fn main() {}
 /// `og-paper [canvas.ogp]` — opens (or creates) the given canvas.
 /// `og-paper --serve canvas.ogp [--port N] [--public wss://host]` — hosts
 /// it with no window (`--public`: the address guests reach it by, for links).
+/// `og-paper --relay [--port N] [--data DIR]` — a relay for shared canvases.
 #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 fn main() {
     let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    let opt = |name: &str| {
+        args.iter()
+            .position(|a| a == name)
+            .and_then(|i| args.get(i + 1))
+            .and_then(|p| p.to_str().map(String::from))
+    };
+    if args.first().is_some_and(|a| a == "--relay") {
+        let port = opt("--port").and_then(|p| p.parse().ok()).unwrap_or(8993);
+        let dir = opt("--data")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| "og-paper-relay".into());
+        og_paper::relay(port, dir);
+        return;
+    }
     if args.first().is_some_and(|a| a == "--serve") {
         let Some(path) = args.get(1) else {
             eprintln!("usage: og-paper --serve canvas.ogp [--port N]");

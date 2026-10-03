@@ -48,6 +48,8 @@ pub enum Ev {
 
 pub struct Net {
     pub role: Role,
+    /// The link's keys: every frame is sealed with them (see `seal`).
+    keys: crate::seal::Keys,
     /// The log size when changes were last pushed.
     pushed: usize,
 }
@@ -59,8 +61,9 @@ pub enum Role {
 
 pub struct Host {
     pub port: u16,
-    pub edit_key: String,
-    pub view_key: String,
+    /// The link keys handed out (edit: can draw; view: only look).
+    pub edit_token: String,
+    pub view_token: String,
     pub conns: HashMap<u64, Conn>,
     link: HostLink,
 }
@@ -132,7 +135,13 @@ pub enum GuestState {
 
 pub struct Guest {
     pub url: String,
-    pub key: String,
+    /// Through a relay (no host): no hello, frames filed under a room.
+    pub relay: bool,
+    /// The link joined by (relay guests hand it on; see `live_info`).
+    link: Link,
+    /// What the relay's stored frames held (relay guests), and their size.
+    backlog: Version,
+    backlog_bytes: usize,
     pub state: GuestState,
     /// What the host has (as far as we know); None until welcomed.
     their: Option<Version>,
@@ -143,42 +152,67 @@ pub struct Guest {
     client: Option<native::Client>,
 }
 
+/// A relay's word that its stored frames have all been sent.
+pub const READY: &[u8] = b"READY";
+/// Past this much stored, a relay guest that can edit sends one full copy
+/// for the relay to keep instead of everything before.
+const CHECKPOINT_AFTER: usize = 1 << 20;
+
+/// Sent in the clear to a connection whose frames the host cannot open.
+const BAD_KEY: &[u8] = b"OG-PAPER:BAD-KEY";
+
 /// The address a WebRTC guest has (its page holds the channel).
 pub const RTC: &str = "rtc";
 
-/// A link split into the WebSocket address and its key. Takes
-/// `rtc?k=KEY` (a WebRTC invite, joined by the page), or
-/// `ws(s)://host:port/?k=KEY`, or a web app address with
-/// `#join=ws(s)://host:port&k=KEY`.
-pub fn parse_link(link: &str) -> Option<(String, String)> {
-    let link = link.trim();
-    if let Some(k) = link.strip_prefix("rtc?k=") {
-        return Some((RTC.to_string(), k.to_string()));
-    }
-    let (url, key) = if let Some(i) = link.find("#join=") {
-        let rest = &link[i + 6..];
-        match rest.split_once("&k=") {
-            Some((u, k)) => (u.to_string(), k.to_string()),
-            None => (rest.to_string(), String::new()),
-        }
-    } else {
-        match link.split_once("?k=") {
-            Some((u, k)) => (u.to_string(), k.to_string()),
-            None => (link.to_string(), String::new()),
-        }
-    };
-    let url = url.trim_end_matches('/').to_string();
-    (url.starts_with("ws://") || url.starts_with("wss://")).then_some((url, key))
+/// What a share link says.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Link {
+    /// The WebSocket address (or [`RTC`]).
+    pub url: String,
+    /// Its key (see `seal`).
+    pub key: String,
+    /// The canvas, for relay links (a relay does not know it).
+    pub canvas: Option<u128>,
+    /// A relay (stores sealed changes) rather than a host.
+    pub relay: bool,
 }
 
-/// A random key for links.
-pub fn new_key() -> String {
-    // The random low halves of two ids (their top bits are a timestamp).
-    format!(
-        "{:016x}{:016x}",
-        crate::uid::new() as u64,
-        crate::uid::new() as u64
-    )
+/// Read a share link: `ws(s)://host:port/?k=KEY`, a relay's
+/// `ws(s)://host:port/relay?k=KEY&c=CANVAS`, either inside a web app
+/// address as `#join=<address>&k=KEY[&c=CANVAS]`, or a WebRTC invite's
+/// `rtc?k=KEY`.
+pub fn parse_link(link: &str) -> Option<Link> {
+    let link = link.trim();
+    if let Some(k) = link.strip_prefix("rtc?k=") {
+        return Some(Link {
+            url: RTC.into(),
+            key: k.into(),
+            canvas: None,
+            relay: false,
+        });
+    }
+    let (url, params) = if let Some(i) = link.find("#join=") {
+        let rest = &link[i + 6..];
+        rest.split_once('&').unwrap_or((rest, ""))
+    } else {
+        link.split_once('?').unwrap_or((link, ""))
+    };
+    let param = |name: &str| {
+        params
+            .split('&')
+            .find_map(|p| p.strip_prefix(name).and_then(|v| v.strip_prefix('=')))
+            .map(str::to_string)
+    };
+    let url = url.trim_end_matches('/').to_string();
+    if !(url.starts_with("ws://") || url.starts_with("wss://")) {
+        return None;
+    }
+    Some(Link {
+        relay: url.ends_with("/relay"),
+        canvas: param("c").and_then(|c| u128::from_str_radix(&c, 16).ok()),
+        key: param("k").unwrap_or_default(),
+        url,
+    })
 }
 
 /// This machine's address on its network, as others would reach it.
@@ -214,16 +248,18 @@ impl App {
         };
         let mut prefs = crate::prefs::load();
         let k = format!("host.{:032x}", self.share.canvas);
-        let keys = prefs.get(&k).cloned().unwrap_or_default();
-        let (edit_key, view_key) = match keys.split_once(',') {
-            Some((e, v)) if e.len() == 32 && v.len() == 32 => (e.to_string(), v.to_string()),
+        let keys = match prefs.get(&k).and_then(|t| crate::seal::Keys::parse(t)) {
+            Some(keys) if keys.can_edit() => (prefs[&k].clone(), keys),
             _ => {
-                let pair = (new_key(), new_key());
-                prefs.insert(k, format!("{},{}", pair.0, pair.1));
+                let t = crate::seal::Keys::edit_token(&crate::seal::random_secret());
+                prefs.insert(k, t.clone());
                 crate::prefs::save(&prefs);
-                pair
+                let keys = crate::seal::Keys::parse(&t).expect("new key");
+                (t, keys)
             }
         };
+        let (edit_token, keys) = keys;
+        let view_token = keys.view_token();
         let port = server.port;
         // The host's policy holds on every copy while it hosts.
         let code = crate::prefs::load()
@@ -234,11 +270,12 @@ impl App {
         self.net = Some(Net {
             role: Role::Host(Host {
                 port,
-                edit_key,
-                view_key,
+                edit_token,
+                view_token,
                 conns: HashMap::new(),
                 link: HostLink::Server(server),
             }),
+            keys,
             pushed: 0,
         });
         self.ensure_file();
@@ -268,15 +305,37 @@ impl App {
 
     /// Join a shared canvas by its link.
     pub(crate) fn join(&mut self, link: &str) {
-        let Some((url, key)) = parse_link(link) else {
+        let Some(parsed) = parse_link(link) else {
             self.say("That is not a share link (it starts with ws:// or wss://)");
             return;
         };
+        let Link {
+            url,
+            key,
+            canvas,
+            relay,
+        } = parsed.clone();
+        let Some(keys) = crate::seal::Keys::parse(&key) else {
+            self.say("That link's key is incomplete: copy the whole link again");
+            return;
+        };
         self.net_stop();
+        // A relay link names its canvas: start a copy of it here if new.
+        if let Some(c) = canvas.filter(|c| relay && *c != self.share.canvas) {
+            self.switch_to_shared(c, "");
+        }
+        if relay {
+            self.view_only = !keys.can_edit();
+            self.share.log.policy = Policy::Newest;
+        }
         self.net = Some(Net {
+            keys,
             role: Role::Guest(Guest {
                 url,
-                key,
+                relay,
+                link: parsed,
+                backlog: Version::default(),
+                backlog_bytes: 0,
                 state: GuestState::Connecting,
                 their: None,
                 edit: true,
@@ -300,6 +359,8 @@ impl App {
         };
         g.state = GuestState::Connecting;
         g.their = None;
+        g.backlog = Version::default();
+        g.backlog_bytes = 0;
         // A WebRTC invite: the page holds the channel; nothing to dial.
         if g.url == RTC {
             return;
@@ -315,16 +376,22 @@ impl App {
     /// Host from this browser with no server: guests come in through
     /// WebRTC invites the page makes (with these keys inside).
     #[cfg(target_arch = "wasm32")]
-    pub(crate) fn host_start_rtc(&mut self, edit_key: String, view_key: String) {
+    pub(crate) fn host_start_rtc(&mut self, edit_token: String) {
         self.net_stop();
+        let Some(keys) = crate::seal::Keys::parse(&edit_token).filter(|k| k.can_edit()) else {
+            self.say("Could not start hosting: bad key");
+            return;
+        };
+        let view_token = keys.view_token();
         self.net = Some(Net {
             role: Role::Host(Host {
                 port: 0,
-                edit_key,
-                view_key,
+                edit_token,
+                view_token,
                 conns: HashMap::new(),
                 link: HostLink::Rtc,
             }),
+            keys,
             pushed: 0,
         });
         self.say("Hosting in this browser: invite people from Share live (keep this tab open)");
@@ -345,7 +412,24 @@ impl App {
     }
 
     fn send(&mut self, conn: u64, m: &Msg) {
-        let b = m.encode();
+        let Some(n) = self.net.as_mut() else { return };
+        let changes = matches!(m, Msg::Changes(_));
+        let mut b = n.keys.seal(&m.encode(), changes);
+        // To a relay: changes are kept, the rest only passed on.
+        if matches!(&n.role, Role::Guest(g) if g.relay) {
+            let mut f = if changes {
+                b"PUT ".to_vec()
+            } else {
+                b"EPH ".to_vec()
+            };
+            f.extend_from_slice(&b);
+            b = f;
+        }
+        self.send_raw(conn, b);
+    }
+
+    /// Send bytes as they are (sealed already, or a relay's plain frames).
+    fn send_raw(&mut self, conn: u64, b: Vec<u8>) {
         let Some(n) = self.net.as_mut() else { return };
         match &mut n.role {
             Role::Host(h) => h.link.send(conn, b),
@@ -476,30 +560,80 @@ impl App {
                     );
                     return;
                 }
-                // A guest's connection opened: say hello.
+                // A guest's connection opened: say hello (to a relay: which
+                // room).
                 let _ = id;
+                let room = match self.net.as_ref() {
+                    Some(n) if matches!(&n.role, Role::Guest(g) if g.relay) => Some(n.keys.room()),
+                    _ => None,
+                };
+                if let Some(room) = room {
+                    let mut f = b"ROOM".to_vec();
+                    f.extend_from_slice(&room);
+                    self.send_raw(0, f);
+                    return;
+                }
                 let hello = Msg::Hello {
                     canvas: self.share.canvas,
                     peer: self.share.clock.peer(),
                     version: self.share.log.version().clone(),
-                    key: match self.net.as_ref().map(|n| &n.role) {
-                        Some(Role::Guest(g)) => g.key.clone(),
-                        _ => String::new(),
+                    // Only a claim, for the host's list: edits are checked by
+                    // their signatures.
+                    key: if self.net.as_ref().is_some_and(|n| n.keys.can_edit()) {
+                        "edit".into()
+                    } else {
+                        "view".into()
                     },
                     name: crate::presence::my_name(),
                 };
                 self.send(0, &hello);
             }
-            Ev::Data(id, b) => match Msg::decode(&b) {
-                Ok(m) => {
-                    if self.net.as_ref().is_some_and(|n| n.is_host()) {
-                        self.host_msg(id, m);
-                    } else {
-                        self.guest_msg(m);
+            Ev::Data(_, b) if b == READY && self.relay_guest() => self.relay_ready(),
+            Ev::Data(id, b) => {
+                let host = self.net.as_ref().is_some_and(|n| n.is_host());
+                if let Some(Net {
+                    role: Role::Guest(g),
+                    ..
+                }) = self.net.as_mut()
+                {
+                    if g.relay && g.state != GuestState::Live {
+                        g.backlog_bytes += b.len();
                     }
                 }
-                Err(e) => log::warn!("bad message: {e}"),
-            },
+                let opened = self.net.as_ref().and_then(|n| n.keys.open(&b));
+                let Some((plain, signed)) = opened else {
+                    if host {
+                        // Not our key: tell it plainly (it cannot read us).
+                        if let Some(Net {
+                            role: Role::Host(h),
+                            ..
+                        }) = self.net.as_ref()
+                        {
+                            h.link.send(id, BAD_KEY.to_vec());
+                            h.link.close(id);
+                        }
+                    } else if b == BAD_KEY {
+                        if let Some(Net {
+                            role: Role::Guest(g),
+                            ..
+                        }) = self.net.as_mut()
+                        {
+                            g.state = GuestState::Refused;
+                        }
+                        self.say("The host did not accept this link's key: ask for a new link");
+                    }
+                    return;
+                };
+                match Msg::decode(&plain) {
+                    // Changes count only when signed by an edit key.
+                    Ok(Msg::Changes(_)) if !signed => {
+                        log::warn!("unsigned changes dropped");
+                    }
+                    Ok(m) if host => self.host_msg(id, m),
+                    Ok(m) => self.guest_msg(m),
+                    Err(e) => log::warn!("bad message: {e}"),
+                }
+            }
             Ev::Closed(id, why) => {
                 let host = self.net.as_ref().is_some_and(|n| n.is_host());
                 if host {
@@ -558,15 +692,7 @@ impl App {
                 else {
                     return;
                 };
-                let edit = key == h.edit_key;
-                if !edit && key != h.view_key {
-                    h.link.send(
-                        id,
-                        Msg::Error("That link's key is not valid for this canvas".into()).encode(),
-                    );
-                    h.link.close(id);
-                    return;
-                }
+                let edit = key == "edit";
                 if let Some(c) = h.conns.get_mut(&id) {
                     c.peer = peer;
                     c.name = name.clone();
@@ -603,7 +729,7 @@ impl App {
             Msg::Changes(b) => {
                 let can = matches!(
                     self.net.as_ref().map(|n| &n.role),
-                    Some(Role::Host(h)) if h.conns.get(&id).is_some_and(|c| c.edit && c.their.is_some())
+                    Some(Role::Host(h)) if h.conns.get(&id).is_some_and(|c| c.their.is_some())
                 );
                 if !can {
                     return;
@@ -643,6 +769,7 @@ impl App {
                 if let Some(Net {
                     role: Role::Guest(g),
                     pushed,
+                    ..
                 }) = self.net.as_mut()
                 {
                     let first = g.host == 0;
@@ -671,6 +798,15 @@ impl App {
                 if let Ok(s) = crate::snapshot::decode(&b, crate::BASE_PX) {
                     if let Some(v) = self.merge_quiet(s.scene, s.objs, s.share) {
                         self.set_their(0, &v);
+                        if let Some(Net {
+                            role: Role::Guest(g),
+                            ..
+                        }) = self.net.as_mut()
+                        {
+                            if g.relay {
+                                g.backlog.join(&v);
+                            }
+                        }
                     }
                 }
             }
@@ -780,16 +916,60 @@ impl App {
                         vec![]
                     } else {
                         vec![
-                            ("Edit link (apps)".into(), format!("{ws}/?k={}", h.edit_key)),
-                            ("View link (apps)".into(), format!("{ws}/?k={}", h.view_key)),
+                            (
+                                "Edit link (apps)".into(),
+                                format!("{ws}/?k={}", h.edit_token),
+                            ),
+                            (
+                                "View link (apps)".into(),
+                                format!("{ws}/?k={}", h.view_token),
+                            ),
                             (
                                 "Edit link (browser)".into(),
-                                format!("{}#join={ws}&k={}", WEB_APP, h.edit_key),
+                                format!("{}#join={ws}&k={}", WEB_APP, h.edit_token),
                             ),
                         ]
                     },
                     policy: self.share.log.policy.code(),
                     view_only: false,
+                }
+            }
+            Role::Guest(g) if g.relay => {
+                let base = g.link.url.clone();
+                let c = self.share.canvas;
+                let mut links = Vec::new();
+                if n.keys.can_edit() {
+                    links.push((
+                        "Edit link (apps)".into(),
+                        format!("{base}?k={}&c={c:032x}", g.link.key),
+                    ));
+                    links.push((
+                        "Edit link (browser)".into(),
+                        format!("{WEB_APP}#join={base}&k={}&c={c:032x}", g.link.key),
+                    ));
+                }
+                links.push((
+                    "View link (apps)".into(),
+                    format!("{base}?k={}&c={c:032x}", n.keys.view_token()),
+                ));
+                crate::ui::LiveInfo {
+                    hosting: false,
+                    state: match g.state {
+                        GuestState::Live => "Synced through the relay".into(),
+                        GuestState::Connecting => "Connecting to the relay…".into(),
+                        GuestState::Offline(_) => {
+                            "Relay unreachable: your changes sync when back".into()
+                        }
+                        GuestState::Refused => "The relay closed the connection".into(),
+                    },
+                    people: self
+                        .peers
+                        .values()
+                        .map(|p| (p.peer, display_name(&p.name)))
+                        .collect(),
+                    links,
+                    policy: 0,
+                    view_only: self.view_only,
                 }
             }
             Role::Guest(g) => crate::ui::LiveInfo {
@@ -819,6 +999,74 @@ impl App {
         })
     }
 
+    /// Share this canvas through the relay at `addr` with a new key (the
+    /// edit token; the page makes it on the web).
+    pub(crate) fn relay_share(&mut self, addr: &str, edit_token: &str) {
+        let addr = addr.trim().trim_end_matches('/').trim_end_matches("/relay");
+        if !(addr.starts_with("ws://") || addr.starts_with("wss://")) {
+            self.say("A relay address starts with ws:// or wss://");
+            return;
+        }
+        let mut p = crate::prefs::load();
+        p.insert("relay".into(), addr.to_string());
+        crate::prefs::save(&p);
+        let link = format!("{addr}/relay?k={edit_token}&c={:032x}", self.share.canvas);
+        self.join(&link);
+    }
+
+    /// Share through a relay with a fresh key (desktop makes it here).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn relay_share_new(&mut self, addr: &str) {
+        let t = crate::seal::Keys::edit_token(&crate::seal::random_secret());
+        self.relay_share(addr, &t);
+    }
+
+    fn relay_guest(&self) -> bool {
+        matches!(self.net.as_ref().map(|n| &n.role), Some(Role::Guest(g)) if g.relay)
+    }
+
+    /// The relay sent everything it kept: send it what it lacks (all done
+    /// here since), and compact what it keeps when that has grown big.
+    fn relay_ready(&mut self) {
+        let Some(Net {
+            role: Role::Guest(g),
+            pushed,
+            keys,
+        }) = self.net.as_mut()
+        else {
+            return;
+        };
+        let first = g.host == 0;
+        g.host = 1;
+        g.state = GuestState::Live;
+        g.their = Some(g.backlog.clone());
+        g.edit = keys.can_edit();
+        *pushed = usize::MAX;
+        let big = g.backlog_bytes > CHECKPOINT_AFTER && keys.can_edit();
+        if big {
+            let (bytes, _) = self.changes_since(&Version::default());
+            let sealed = self
+                .net
+                .as_ref()
+                .map(|n| n.keys.seal(&Msg::Changes(bytes).encode(), true))
+                .unwrap_or_default();
+            let mut f = b"CKPT".to_vec();
+            f.extend_from_slice(&sealed);
+            self.send_raw(0, f);
+            let v = self.share.log.version().clone();
+            self.set_their(0, &v);
+        }
+        self.say(if first {
+            "Synced through the relay"
+        } else {
+            "Back online: synced"
+        });
+        if let Some(m) = self.my_presence() {
+            self.send(0, &m);
+        }
+        self.redraw();
+    }
+
     /// Whether a connection needs frequent wake-ups.
     pub(crate) fn net_active(&self) -> bool {
         self.net.is_some()
@@ -840,7 +1088,7 @@ pub fn display_name(n: &str) -> String {
 /// Native transports: a WebSocket server (host) and client (guest), each
 /// connection on its own thread, talking to the app through channels.
 #[cfg(not(target_arch = "wasm32"))]
-mod native {
+pub(crate) mod native {
     use std::collections::HashMap;
     use std::io::ErrorKind;
     use std::net::{TcpListener, TcpStream};
@@ -1046,15 +1294,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn links_parse_in_both_forms() {
+    fn links_parse_in_every_form() {
+        let l = parse_link("ws://10.0.0.5:8991/?k=abc").unwrap();
         assert_eq!(
-            parse_link("ws://10.0.0.5:8991/?k=abc"),
-            Some(("ws://10.0.0.5:8991".into(), "abc".into()))
+            (l.url.as_str(), l.key.as_str(), l.relay),
+            ("ws://10.0.0.5:8991", "abc", false)
         );
-        assert_eq!(
-            parse_link(" https://x.github.io/OG-paper/app/#join=wss://h.ts.net&k=K1 "),
-            Some(("wss://h.ts.net".into(), "K1".into()))
-        );
+        let l = parse_link(" https://x.github.io/OG-paper/app/#join=wss://h.ts.net&k=K1 ").unwrap();
+        assert_eq!((l.url.as_str(), l.key.as_str()), ("wss://h.ts.net", "K1"));
+        let l = parse_link("wss://go:8993/relay?k=e1&c=ff").unwrap();
+        assert!(l.relay && l.canvas == Some(255) && l.key == "e1");
+        let l = parse_link("https://a/app/#join=ws://r:1/relay&k=e2&c=10").unwrap();
+        assert!(l.relay && l.canvas == Some(16) && l.key == "e2");
+        assert_eq!(parse_link("rtc?k=e3").unwrap().url, RTC);
         assert_eq!(parse_link("http://example.com"), None);
     }
 }

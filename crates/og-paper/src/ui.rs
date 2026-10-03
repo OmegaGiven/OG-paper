@@ -415,6 +415,7 @@ pub struct UiState {
     pub live: Option<LiveInfo>,
     pub live_open: bool,
     pub join_text: String,
+    pub relay_text: Option<String>,
     pub name_text: Option<String>,
     /// Hidden by the person (Settings): the tool button, the tool panel,
     /// the quick toolbar.
@@ -604,6 +605,7 @@ impl Default for UiState {
             live: None,
             live_open: false,
             join_text: String::new(),
+            relay_text: None,
             name_text: None,
             queued: Vec::new(),
             views: Default::default(),
@@ -865,6 +867,8 @@ pub enum Action {
     HostStart,
     /// The browser's no-server hosting card (WebRTC invites).
     RtcPanel,
+    /// Share through the relay typed in Share live.
+    RelayShare,
     /// Stop hosting, or leave a shared canvas.
     NetStop,
     /// Join by the link typed in Share live.
@@ -5214,6 +5218,23 @@ fn live_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) 
                             {
                                 actions.push(Action::HostStart);
                             }
+                            ui.add_space(6.0);
+                            ui.label(
+                                egui::RichText::new("Or through a relay (keeps changes for people who come and go; it cannot read them):")
+                                    .small(),
+                            );
+                            let relay = st.relay_text.get_or_insert_with(|| {
+                                crate::prefs::load()
+                                    .get("relay")
+                                    .cloned()
+                                    .unwrap_or_else(|| "ws://localhost:8993".into())
+                            });
+                            ui.horizontal(|ui| {
+                                ui.add(egui::TextEdit::singleline(relay).desired_width(w - 130.0));
+                                if ui.button("Share via relay").clicked() {
+                                    actions.push(Action::RelayShare);
+                                }
+                            });
                             ui.add_space(6.0);
                             ui.horizontal(|ui| {
                                 ui.add(
