@@ -1607,6 +1607,9 @@ fn toolbar_menu(
     let screen = ctx.content_rect();
     let n = hotbar::BAR;
     let check = if st.touch_ui { 30.0 } else { 24.0 };
+    // Beside a vertical quick bar (portrait) each toolbar is a column;
+    // else a row. `w` is a toolbar's length along it.
+    let vert = side == Side::Right;
     let w = check + 6.0 + (n + 1) as f32 * (s + gap) + s;
     let x = (bars.left() - check - 6.0).clamp(
         screen.left() + 8.0,
@@ -1620,9 +1623,14 @@ fn toolbar_menu(
     let (pivot, at) = match side {
         Side::Above => (Align2::LEFT_BOTTOM, pos2(x, bars.top() - 10.0)),
         Side::Below => (Align2::LEFT_TOP, pos2(x, bars.bottom() + 10.0)),
+        // Level with the bar, its slots in line with the bar's slots.
         Side::Right => (
-            Align2::LEFT_CENTER,
-            pos2(bars.right() + 10.0, bars.center().y),
+            Align2::LEFT_TOP,
+            pos2(
+                bars.right() + 10.0,
+                (bars.top() - 10.0 - (if st.touch_ui { 34.0 } else { 28.0 }) - check - 6.0)
+                    .max(screen.top() + 8.0),
+            ),
         ),
     };
     egui::Area::new(Id::new("toolbar_menu"))
@@ -1643,6 +1651,13 @@ fn toolbar_menu(
                     color: Color32::from_black_alpha(40),
                 })
                 .show(ui, |ui| {
+                    if vert {
+                        // As wide as its columns (at least the header), but
+                        // never wider than the room right of the bar.
+                        let cols = st.toolbars.len() as f32 * (s + gap) - gap;
+                        let room_w = screen.right() - at.x - 12.0 - 20.0;
+                        ui.set_max_width(cols.max(150.0).min(room_w));
+                    }
                     ui.horizontal(|ui| {
                         if ui
                             .button("+ Add toolbar")
@@ -1655,11 +1670,15 @@ fn toolbar_menu(
                             st.switch_bar(k);
                             fx.changed = true;
                         }
-                        ui.label(
-                            egui::RichText::new("Tick to keep showing · tap a number to use it")
+                        if !vert {
+                            ui.label(
+                                egui::RichText::new(
+                                    "Tick to keep showing · tap a number to use it",
+                                )
                                 .small()
                                 .weak(),
-                        );
+                            );
+                        }
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui.button("×").on_hover_text("Close").clicked() {
                                 st.bar_menu = false;
@@ -1669,109 +1688,130 @@ fn toolbar_menu(
                     ui.add_space(4.0);
                     let mut gone = None;
                     let total = st.toolbars.len();
-                    egui::ScrollArea::vertical()
-                        .max_height((room - 60.0).max(s + gap))
-                        .show(ui, |ui| {
-                            let (all, _) = ui.allocate_exact_size(
-                                vec2(w, total as f32 * (s + gap) - gap),
-                                Sense::hover(),
-                            );
-                            // Newest on top.
-                            for (row, k) in (0..total).rev().enumerate() {
-                                let ry = all.top() + row as f32 * (s + gap);
-                                let active = k == st.active_bar;
-                                // Shown tick (the active one always shows).
-                                let cr = Rect::from_center_size(
-                                    pos2(all.left() + check * 0.5, ry + s * 0.5),
-                                    Vec2::splat(check),
-                                );
-                                let resp =
-                                    ui.interact(cr, Id::new(("bar_shown", k)), Sense::click());
-                                let on = active || st.toolbars[k].shown;
-                                let p = ui.painter();
-                                p.rect_filled(
-                                    cr.shrink(3.0),
-                                    5.0,
-                                    if on { ACCENT } else { Color32::WHITE },
-                                );
-                                p.rect_stroke(
-                                    cr.shrink(3.0),
-                                    5.0,
-                                    Stroke::new(1.2, if on { ACCENT } else { EDGE }),
-                                    egui::StrokeKind::Inside,
-                                );
-                                if on {
-                                    let c = cr.center();
-                                    let d = check * 0.18;
-                                    p.add(Shape::line(
-                                        vec![
-                                            c + vec2(-d * 1.2, 0.0),
-                                            c + vec2(-d * 0.2, d),
-                                            c + vec2(d * 1.4, -d),
-                                        ],
-                                        Stroke::new(2.0, Color32::WHITE),
-                                    ));
-                                }
-                                if resp.clicked() && !active {
-                                    st.toolbars[k].shown = !st.toolbars[k].shown;
-                                    fx.changed = true;
-                                }
-                                resp.on_hover_text(if active {
-                                    "The active toolbar always shows"
+                    let across = total as f32 * (s + gap) - gap;
+                    let area = if vert {
+                        egui::ScrollArea::horizontal()
+                    } else {
+                        egui::ScrollArea::vertical().max_height((room - 60.0).max(s + gap))
+                    };
+                    area.show(ui, |ui| {
+                        let (all, _) = ui.allocate_exact_size(
+                            if vert {
+                                vec2(across, w)
+                            } else {
+                                vec2(w, across)
+                            },
+                            Sense::hover(),
+                        );
+                        // Newest on top (in columns: nearest the bar).
+                        for (row, k) in (0..total).rev().enumerate() {
+                            // Where item `along` (px from the toolbar's
+                            // start) of this toolbar goes.
+                            let at = |along: f32| -> Pos2 {
+                                let off = row as f32 * (s + gap);
+                                if vert {
+                                    pos2(all.left() + off, all.top() + along)
                                 } else {
-                                    "Show this toolbar in the quick bar"
-                                });
-                                let x0 = all.left() + check + 6.0;
-                                let nr = Rect::from_min_size(pos2(x0, ry), Vec2::splat(s));
-                                if number_button(ui, st, nr, k, false, active) && !active {
-                                    st.switch_bar(k);
+                                    pos2(all.left() + along, all.top() + off)
                                 }
-                                for i in 0..n {
-                                    let r = Rect::from_min_size(
-                                        pos2(x0 + (i + 1) as f32 * (s + gap), ry),
-                                        Vec2::splat(s),
-                                    );
-                                    slot(ui, st, r, Slots::Row(k), i, fx);
-                                }
-                                // Delete.
-                                let dr = Rect::from_min_size(
-                                    pos2(x0 + (n + 1) as f32 * (s + gap), ry),
+                            };
+                            let active = k == st.active_bar;
+                            // Shown tick (the active one always shows).
+                            let cr = Rect::from_center_size(
+                                at(check * 0.5)
+                                    + if vert {
+                                        vec2(s * 0.5, 0.0)
+                                    } else {
+                                        vec2(0.0, s * 0.5)
+                                    },
+                                Vec2::splat(check),
+                            );
+                            let resp = ui.interact(cr, Id::new(("bar_shown", k)), Sense::click());
+                            let on = active || st.toolbars[k].shown;
+                            let p = ui.painter();
+                            p.rect_filled(
+                                cr.shrink(3.0),
+                                5.0,
+                                if on { ACCENT } else { Color32::WHITE },
+                            );
+                            p.rect_stroke(
+                                cr.shrink(3.0),
+                                5.0,
+                                Stroke::new(1.2, if on { ACCENT } else { EDGE }),
+                                egui::StrokeKind::Inside,
+                            );
+                            if on {
+                                let c = cr.center();
+                                let d = check * 0.18;
+                                p.add(Shape::line(
+                                    vec![
+                                        c + vec2(-d * 1.2, 0.0),
+                                        c + vec2(-d * 0.2, d),
+                                        c + vec2(d * 1.4, -d),
+                                    ],
+                                    Stroke::new(2.0, Color32::WHITE),
+                                ));
+                            }
+                            if resp.clicked() && !active {
+                                st.toolbars[k].shown = !st.toolbars[k].shown;
+                                fx.changed = true;
+                            }
+                            resp.on_hover_text(if active {
+                                "The active toolbar always shows"
+                            } else {
+                                "Show this toolbar in the quick bar"
+                            });
+                            let x0 = check + 6.0;
+                            let nr = Rect::from_min_size(at(x0), Vec2::splat(s));
+                            if number_button(ui, st, nr, k, false, active) && !active {
+                                st.switch_bar(k);
+                            }
+                            for i in 0..n {
+                                let r = Rect::from_min_size(
+                                    at(x0 + (i + 1) as f32 * (s + gap)),
                                     Vec2::splat(s),
                                 );
-                                let resp = ui.interact(dr, Id::new(("bar_del", k)), Sense::click());
-                                let can = total > 1;
-                                let p = ui.painter();
-                                p.rect_filled(
-                                    dr,
-                                    8.0,
-                                    if resp.hovered() && can {
-                                        Color32::from_rgb(255, 235, 238)
-                                    } else {
-                                        FACE
-                                    },
-                                );
-                                p.rect_stroke(
-                                    dr,
-                                    8.0,
-                                    Stroke::new(1.0, EDGE),
-                                    egui::StrokeKind::Inside,
-                                );
-                                bin_icon(
-                                    p,
-                                    dr.center(),
-                                    s * 0.5,
-                                    if can { INKY } else { Color32::from_gray(190) },
-                                );
-                                if resp.clicked() && can {
-                                    gone = Some(k);
-                                }
-                                resp.on_hover_text(if can {
-                                    "Delete this toolbar (its tools are not kept)"
-                                } else {
-                                    "The last toolbar stays"
-                                });
+                                slot(ui, st, r, Slots::Row(k), i, fx);
                             }
-                        });
+                            // Delete.
+                            let dr = Rect::from_min_size(
+                                at(x0 + (n + 1) as f32 * (s + gap)),
+                                Vec2::splat(s),
+                            );
+                            let resp = ui.interact(dr, Id::new(("bar_del", k)), Sense::click());
+                            let can = total > 1;
+                            let p = ui.painter();
+                            p.rect_filled(
+                                dr,
+                                8.0,
+                                if resp.hovered() && can {
+                                    Color32::from_rgb(255, 235, 238)
+                                } else {
+                                    FACE
+                                },
+                            );
+                            p.rect_stroke(
+                                dr,
+                                8.0,
+                                Stroke::new(1.0, EDGE),
+                                egui::StrokeKind::Inside,
+                            );
+                            bin_icon(
+                                p,
+                                dr.center(),
+                                s * 0.5,
+                                if can { INKY } else { Color32::from_gray(190) },
+                            );
+                            if resp.clicked() && can {
+                                gone = Some(k);
+                            }
+                            resp.on_hover_text(if can {
+                                "Delete this toolbar (its tools are not kept)"
+                            } else {
+                                "The last toolbar stays"
+                            });
+                        }
+                    });
                     if let Some(k) = gone {
                         if k == st.active_bar {
                             st.switch_bar(if k + 1 < st.toolbars.len() {
