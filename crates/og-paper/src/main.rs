@@ -7,7 +7,8 @@
 fn main() {}
 
 /// `og-paper [canvas.ogp]` — opens (or creates) the given canvas.
-/// `og-paper --serve canvas.ogp [--port N]` — hosts it with no window.
+/// `og-paper --serve canvas.ogp [--port N] [--public wss://host]` — hosts
+/// it with no window (`--public`: the address guests reach it by, for links).
 #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 fn main() {
     let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
@@ -22,7 +23,12 @@ fn main() {
             .and_then(|i| args.get(i + 1))
             .and_then(|p| p.to_str()?.parse().ok())
             .unwrap_or(8991);
-        og_paper::serve(path.into(), port);
+        let public = args
+            .iter()
+            .position(|a| a == "--public")
+            .and_then(|i| args.get(i + 1))
+            .and_then(|p| p.to_str().map(String::from));
+        og_paper::serve(path.into(), port, public);
         return;
     }
     og_paper::run_desktop(args.into_iter().next().map(std::path::PathBuf::from));

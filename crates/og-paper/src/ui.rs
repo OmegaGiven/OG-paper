@@ -863,6 +863,8 @@ pub enum Action {
     LivePanel,
     /// Host this canvas (desktop).
     HostStart,
+    /// The browser's no-server hosting card (WebRTC invites).
+    RtcPanel,
     /// Stop hosting, or leave a shared canvas.
     NetStop,
     /// Join by the link typed in Share live.
@@ -1090,6 +1092,13 @@ pub fn draw(ctx: &egui::Context, st: &mut UiState) -> Vec<Action> {
         if st.live_open && !on(&["live"]) && !on_fan {
             st.live_open = false;
         }
+    }
+    if st.layout_edit {
+        layout_editor(ctx, st);
+        return actions;
+    }
+    if st.importing {
+        import_bar(ctx, &mut actions);
     }
     let g = geo(ctx, st);
     let t = ctx.animate_bool_with_time(Id::new("tools_open"), st.menu == Menu::Tools, 0.12);
@@ -5186,8 +5195,15 @@ fn live_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) 
                             );
                             ui.add_space(4.0);
                             if web {
+                                if ui
+                                    .button("Host in this browser (no server)")
+                                    .on_hover_text("Invite people with one-time links; keep this tab open")
+                                    .clicked()
+                                {
+                                    actions.push(Action::RtcPanel);
+                                }
                                 ui.label(
-                                    egui::RichText::new("Hosting needs the desktop app (or og-paper --serve).")
+                                    egui::RichText::new("A server host (desktop app or og-paper --serve) lets people come and go any time.")
                                         .small()
                                         .weak(),
                                 );
@@ -5262,6 +5278,9 @@ fn live_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) 
                                         }
                                     }
                                 });
+                            }
+                            if web && info.hosting && ui.button("Invite someone…").clicked() {
+                                actions.push(Action::RtcPanel);
                             }
                             ui.add_space(6.0);
                             if ui

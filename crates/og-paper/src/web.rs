@@ -51,6 +51,8 @@ pub enum Cmd {
     Net(crate::net::Ev),
     /// Join a shared canvas by its link (from the page address).
     Join(String),
+    /// Host in the browser (WebRTC) with these edit and view keys.
+    RtcHost(String, String),
     /// Just wake up (a timer of the page's: the connection may retry).
     Poke,
     /// Export: format, only the selection, paper background.
@@ -99,7 +101,8 @@ thread_local! {
     static EXPORT: RefCell<Option<Result<Vec<u8>, String>>> = RefCell::default();
     static CHANGES: RefCell<Option<Vec<u8>>> = RefCell::default();
     static NET_URL: RefCell<String> = RefCell::default();
-    static NET_OUT: RefCell<std::collections::VecDeque<Vec<u8>>> = RefCell::default();
+    static RTC_CLOSE: RefCell<Vec<u64>> = RefCell::default();
+    static NET_OUT: RefCell<std::collections::VecDeque<(u64, Vec<u8>)>> = RefCell::default();
     static SEARCH_OUT: RefCell<String> = RefCell::new("[]".into());
     static HAS_SELECTION: Cell<bool> = const { Cell::new(false) };
 }
@@ -356,9 +359,29 @@ pub fn net_close() {
     emit("net-close");
 }
 
-/// Queue a frame for the live connection.
-pub fn net_send(b: Vec<u8>) {
-    NET_OUT.with(|o| o.borrow_mut().push_back(b));
+/// Queue a frame for connection `conn` (0: the WebSocket, or a guest's
+/// WebRTC channel; others: a hosted guest's channel).
+pub fn net_send(conn: u64, b: Vec<u8>) {
+    NET_OUT.with(|o| o.borrow_mut().push_back((conn, b)));
+}
+
+/// Drop a hosted guest's WebRTC channel.
+pub fn rtc_close(conn: u64) {
+    RTC_CLOSE.with(|c| c.borrow_mut().push(conn));
+    emit("rtc-close");
+}
+
+/// Channels to close (see "rtc-close" requests).
+#[wasm_bindgen]
+pub fn og_rtc_closing() -> Vec<u32> {
+    RTC_CLOSE.with(|c| c.borrow_mut().drain(..).map(|x| x as u32).collect())
+}
+
+/// Start hosting this canvas in the browser (WebRTC; the page makes the
+/// invites and puts these keys in them).
+#[wasm_bindgen]
+pub fn og_rtc_host(edit_key: String, view_key: String) {
+    push(Cmd::RtcHost(edit_key, view_key));
 }
 
 /// Where a "net-connect" request should connect.
@@ -367,25 +390,31 @@ pub fn og_net_url() -> String {
     NET_URL.with(|u| u.borrow().clone())
 }
 
-/// The next frame to send on the live connection, if any.
+/// The next frame to send, if any: its connection (u32 LE) then the frame.
 #[wasm_bindgen]
 pub fn og_net_take() -> Option<Vec<u8>> {
-    NET_OUT.with(|o| o.borrow_mut().pop_front())
+    NET_OUT.with(|o| {
+        o.borrow_mut().pop_front().map(|(c, b)| {
+            let mut v = (c as u32).to_le_bytes().to_vec();
+            v.extend_from_slice(&b);
+            v
+        })
+    })
 }
 
 #[wasm_bindgen]
-pub fn og_net_open() {
-    push(Cmd::Net(crate::net::Ev::Open(0)));
+pub fn og_net_open(conn: u32) {
+    push(Cmd::Net(crate::net::Ev::Open(conn as u64)));
 }
 
 #[wasm_bindgen]
-pub fn og_net_recv(bytes: Vec<u8>) {
-    push(Cmd::Net(crate::net::Ev::Data(0, bytes)));
+pub fn og_net_recv(conn: u32, bytes: Vec<u8>) {
+    push(Cmd::Net(crate::net::Ev::Data(conn as u64, bytes)));
 }
 
 #[wasm_bindgen]
-pub fn og_net_closed(why: String) {
-    push(Cmd::Net(crate::net::Ev::Closed(0, why)));
+pub fn og_net_closed(conn: u32, why: String) {
+    push(Cmd::Net(crate::net::Ev::Closed(conn as u64, why)));
 }
 
 /// Join a shared canvas by its link.

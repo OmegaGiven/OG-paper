@@ -137,6 +137,10 @@ pub struct App {
     view_only: bool,
     /// Serving with no window (`--serve`): no view to share.
     headless: bool,
+    /// The address guests use, when it is not this machine's own (a proxy,
+    /// a container): links are built from it.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    public_addr: Option<String>,
     /// Syncing through a shared folder (desktop).
     #[cfg(not(target_arch = "wasm32"))]
     folder: Option<folder::Folder>,
@@ -230,6 +234,7 @@ impl App {
             follow: None,
             view_only: false,
             headless: false,
+            public_addr: None,
             #[cfg(not(target_arch = "wasm32"))]
             folder: None,
             objs: objects::Objects::default(),
@@ -1235,6 +1240,11 @@ impl App {
                     self.import_file(p);
                 }
             }
+            #[cfg(target_arch = "wasm32")]
+            Action::RtcPanel => {
+                self.ui.live_open = false;
+                web::emit("rtc");
+            }
             Action::LivePanel => {
                 self.ui.live_open = !self.ui.live_open;
                 self.ui.menu = ui::Menu::None;
@@ -2201,6 +2211,7 @@ impl App {
             Cmd::Folder(on) => self.ui.folder_on = on,
             Cmd::Net(e) => self.net_event(e),
             Cmd::Join(link) => self.join(&link),
+            Cmd::RtcHost(e, v) => self.host_start_rtc(e, v),
             Cmd::Poke => {}
             Cmd::Merge(bytes, quiet) => match snapshot::decode(&bytes, BASE_PX) {
                 Ok(s) if quiet => {
@@ -2886,10 +2897,11 @@ pub fn run_desktop(open: Option<PathBuf>) {
 /// `og-paper --serve canvas.ogp [--port N]`: host a canvas with no window
 /// (a homelab, a container). Prints the links, then serves until stopped.
 #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
-pub fn serve(path: PathBuf, port: u16) {
+pub fn serve(path: PathBuf, port: u16, public: Option<String>) {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     let mut app = App::new(None);
     app.headless = true;
+    app.public_addr = public;
     app.open_file(path);
     app.host_start(port);
     if let Some(info) = app.live_info() {

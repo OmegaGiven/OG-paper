@@ -53,18 +53,63 @@ pub struct Net {
 }
 
 pub enum Role {
-    #[cfg(not(target_arch = "wasm32"))]
     Host(Host),
     Guest(Guest),
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 pub struct Host {
     pub port: u16,
     pub edit_key: String,
     pub view_key: String,
     pub conns: HashMap<u64, Conn>,
-    server: native::Server,
+    link: HostLink,
+}
+
+/// How a host reaches its guests: its WebSocket server (desktop), or the
+/// page's WebRTC data channels (a browser hosting with no server).
+pub enum HostLink {
+    #[cfg(not(target_arch = "wasm32"))]
+    Server(native::Server),
+    #[cfg(target_arch = "wasm32")]
+    Rtc,
+}
+
+impl HostLink {
+    fn send(&self, id: u64, b: Vec<u8>) {
+        match self {
+            #[cfg(not(target_arch = "wasm32"))]
+            HostLink::Server(s) => s.send(id, b),
+            #[cfg(target_arch = "wasm32")]
+            HostLink::Rtc => crate::web::net_send(id, b),
+        }
+    }
+
+    fn close(&self, id: u64) {
+        match self {
+            #[cfg(not(target_arch = "wasm32"))]
+            HostLink::Server(s) => s.close(id),
+            #[cfg(target_arch = "wasm32")]
+            HostLink::Rtc => crate::web::rtc_close(id),
+        }
+    }
+
+    fn poll(&self) -> Vec<Ev> {
+        match self {
+            #[cfg(not(target_arch = "wasm32"))]
+            HostLink::Server(s) => s.poll(),
+            #[cfg(target_arch = "wasm32")]
+            HostLink::Rtc => Vec::new(),
+        }
+    }
+
+    fn stop(self) {
+        match self {
+            #[cfg(not(target_arch = "wasm32"))]
+            HostLink::Server(s) => s.stop(),
+            #[cfg(target_arch = "wasm32")]
+            HostLink::Rtc => crate::web::emit("rtc-stop"),
+        }
+    }
 }
 
 pub struct Conn {
@@ -98,11 +143,18 @@ pub struct Guest {
     client: Option<native::Client>,
 }
 
+/// The address a WebRTC guest has (its page holds the channel).
+pub const RTC: &str = "rtc";
+
 /// A link split into the WebSocket address and its key. Takes
+/// `rtc?k=KEY` (a WebRTC invite, joined by the page), or
 /// `ws(s)://host:port/?k=KEY`, or a web app address with
 /// `#join=ws(s)://host:port&k=KEY`.
 pub fn parse_link(link: &str) -> Option<(String, String)> {
     let link = link.trim();
+    if let Some(k) = link.strip_prefix("rtc?k=") {
+        return Some((RTC.to_string(), k.to_string()));
+    }
     let (url, key) = if let Some(i) = link.find("#join=") {
         let rest = &link[i + 6..];
         match rest.split_once("&k=") {
@@ -143,11 +195,7 @@ pub fn local_ip() -> String {
 
 impl Net {
     pub fn is_host(&self) -> bool {
-        #[cfg(not(target_arch = "wasm32"))]
-        if matches!(self.role, Role::Host(_)) {
-            return true;
-        }
-        false
+        matches!(self.role, Role::Host(_))
     }
 }
 
@@ -189,7 +237,7 @@ impl App {
                 edit_key,
                 view_key,
                 conns: HashMap::new(),
-                server,
+                link: HostLink::Server(server),
             }),
             pushed: 0,
         });
@@ -252,6 +300,10 @@ impl App {
         };
         g.state = GuestState::Connecting;
         g.their = None;
+        // A WebRTC invite: the page holds the channel; nothing to dial.
+        if g.url == RTC {
+            return;
+        }
         #[cfg(not(target_arch = "wasm32"))]
         {
             g.client = Some(native::Client::connect(g.url.clone()));
@@ -260,12 +312,29 @@ impl App {
         crate::web::net_connect(&g.url);
     }
 
+    /// Host from this browser with no server: guests come in through
+    /// WebRTC invites the page makes (with these keys inside).
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn host_start_rtc(&mut self, edit_key: String, view_key: String) {
+        self.net_stop();
+        self.net = Some(Net {
+            role: Role::Host(Host {
+                port: 0,
+                edit_key,
+                view_key,
+                conns: HashMap::new(),
+                link: HostLink::Rtc,
+            }),
+            pushed: 0,
+        });
+        self.say("Hosting in this browser: invite people from Share live (keep this tab open)");
+    }
+
     /// Stop hosting or leave.
     pub(crate) fn net_stop(&mut self) {
         let Some(n) = self.net.take() else { return };
         match n.role {
-            #[cfg(not(target_arch = "wasm32"))]
-            Role::Host(h) => h.server.stop(),
+            Role::Host(h) => h.link.stop(),
             Role::Guest(_g) => {
                 #[cfg(target_arch = "wasm32")]
                 crate::web::net_close();
@@ -279,15 +348,14 @@ impl App {
         let b = m.encode();
         let Some(n) = self.net.as_mut() else { return };
         match &mut n.role {
-            #[cfg(not(target_arch = "wasm32"))]
-            Role::Host(h) => h.server.send(conn, b),
+            Role::Host(h) => h.link.send(conn, b),
             Role::Guest(_g) => {
                 #[cfg(not(target_arch = "wasm32"))]
                 if let Some(c) = &_g.client {
                     c.send(b);
                 }
                 #[cfg(target_arch = "wasm32")]
-                crate::web::net_send(b);
+                crate::web::net_send(0, b);
             }
         }
     }
@@ -295,7 +363,6 @@ impl App {
     /// Send to every guest (host) or the host (guest), except `but`.
     pub(crate) fn broadcast(&mut self, m: &Msg, but: Option<u64>) {
         let targets: Vec<u64> = match self.net.as_ref().map(|n| &n.role) {
-            #[cfg(not(target_arch = "wasm32"))]
             Some(Role::Host(h)) => h
                 .conns
                 .iter()
@@ -315,8 +382,7 @@ impl App {
     pub(crate) fn net_tick(&mut self) {
         let Some(n) = self.net.as_mut() else { return };
         let evs: Vec<Ev> = match &mut n.role {
-            #[cfg(not(target_arch = "wasm32"))]
-            Role::Host(h) => h.server.poll(),
+            Role::Host(h) => h.link.poll(),
             Role::Guest(_g) => {
                 #[cfg(not(target_arch = "wasm32"))]
                 {
@@ -348,7 +414,6 @@ impl App {
         let Some(n) = self.net.as_ref() else { return };
         let len = self.share.log.len();
         let targets: Vec<(u64, Version)> = match &n.role {
-            #[cfg(not(target_arch = "wasm32"))]
             Role::Host(h) => h
                 .conns
                 .iter()
@@ -379,7 +444,6 @@ impl App {
     fn set_their(&mut self, id: u64, v: &Version) {
         let Some(n) = self.net.as_mut() else { return };
         match &mut n.role {
-            #[cfg(not(target_arch = "wasm32"))]
             Role::Host(h) => {
                 if let Some(t) = h.conns.get_mut(&id).and_then(|c| c.their.as_mut()) {
                     t.join(v);
@@ -396,7 +460,6 @@ impl App {
     pub(crate) fn net_event(&mut self, e: Ev) {
         match e {
             Ev::Open(id) => {
-                #[cfg(not(target_arch = "wasm32"))]
                 if let Some(Net {
                     role: Role::Host(h),
                     ..
@@ -440,7 +503,6 @@ impl App {
             Ev::Closed(id, why) => {
                 let host = self.net.as_ref().is_some_and(|n| n.is_host());
                 if host {
-                    #[cfg(not(target_arch = "wasm32"))]
                     if let Some(Net {
                         role: Role::Host(h),
                         ..
@@ -461,7 +523,12 @@ impl App {
                 {
                     if g.state != GuestState::Refused {
                         let was_live = g.state == GuestState::Live;
-                        g.state = GuestState::Offline(Instant::now() + RETRY);
+                        g.state = if g.url == RTC {
+                            // A WebRTC channel cannot redial: a new invite does.
+                            GuestState::Refused
+                        } else {
+                            GuestState::Offline(Instant::now() + RETRY)
+                        };
                         self.peers.clear();
                         if was_live {
                             self.say(format!(
@@ -476,7 +543,6 @@ impl App {
 
     #[cfg_attr(target_arch = "wasm32", allow(unused_variables))]
     fn host_msg(&mut self, id: u64, m: Msg) {
-        #[cfg(not(target_arch = "wasm32"))]
         match m {
             Msg::Hello {
                 peer,
@@ -494,11 +560,11 @@ impl App {
                 };
                 let edit = key == h.edit_key;
                 if !edit && key != h.view_key {
-                    h.server.send(
+                    h.link.send(
                         id,
                         Msg::Error("That link's key is not valid for this canvas".into()).encode(),
                     );
-                    h.server.close(id);
+                    h.link.close(id);
                     return;
                 }
                 if let Some(c) = h.conns.get_mut(&id) {
@@ -678,13 +744,23 @@ impl App {
     pub(crate) fn live_info(&self) -> Option<crate::ui::LiveInfo> {
         let n = self.net.as_ref()?;
         Some(match &n.role {
-            #[cfg(not(target_arch = "wasm32"))]
             Role::Host(h) => {
-                let ip = local_ip();
-                let ws = format!("ws://{ip}:{}", h.port);
+                let rtc = h.port == 0;
+                #[cfg(not(target_arch = "wasm32"))]
+                let ws = self
+                    .public_addr
+                    .clone()
+                    .map(|a| a.trim_end_matches('/').to_string())
+                    .unwrap_or_else(|| format!("ws://{}:{}", local_ip(), h.port));
+                #[cfg(target_arch = "wasm32")]
+                let ws = String::new();
                 crate::ui::LiveInfo {
                     hosting: true,
-                    state: format!("Hosting on port {}", h.port),
+                    state: if rtc {
+                        "Hosting in this browser (no server)".into()
+                    } else {
+                        format!("Hosting on port {}", h.port)
+                    },
                     people: h
                         .conns
                         .values()
@@ -700,14 +776,18 @@ impl App {
                             )
                         })
                         .collect(),
-                    links: vec![
-                        ("Edit link (apps)".into(), format!("{ws}/?k={}", h.edit_key)),
-                        ("View link (apps)".into(), format!("{ws}/?k={}", h.view_key)),
-                        (
-                            "Edit link (browser)".into(),
-                            format!("{}#join={ws}&k={}", WEB_APP, h.edit_key),
-                        ),
-                    ],
+                    links: if rtc {
+                        vec![]
+                    } else {
+                        vec![
+                            ("Edit link (apps)".into(), format!("{ws}/?k={}", h.edit_key)),
+                            ("View link (apps)".into(), format!("{ws}/?k={}", h.view_key)),
+                            (
+                                "Edit link (browser)".into(),
+                                format!("{}#join={ws}&k={}", WEB_APP, h.edit_key),
+                            ),
+                        ]
+                    },
                     policy: self.share.log.policy.code(),
                     view_only: false,
                 }
@@ -722,6 +802,9 @@ impl App {
                         if g.edit { "" } else { " (view only)" }
                     ),
                     GuestState::Offline(_) => "Offline: your changes sync when back".into(),
+                    GuestState::Refused if g.url == RTC => {
+                        "Disconnected: ask the host for a new invite".into()
+                    }
                     GuestState::Refused => "Refused: ask for a new link".into(),
                 },
                 people: self

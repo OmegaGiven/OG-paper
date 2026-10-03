@@ -9,7 +9,7 @@ import init, {
   og_copy, og_paste_own, og_paste_image, og_paste_text, og_pdf_page,
   og_bookmark_add, og_bookmark_go, og_bookmark_remove, og_bookmark_rename, og_bookmark_to_bar,
   og_search, og_search_results, og_search_go, og_export, og_export_take, og_has_selection,
-  og_sticker_take, og_sticker_svg, og_sticker_place, og_import, og_merge, og_changes_take, og_merge_quiet, og_set_folder, og_net_url, og_net_take, og_net_open, og_net_recv, og_net_closed, og_join, og_poke,
+  og_sticker_take, og_sticker_svg, og_sticker_place, og_import, og_merge, og_changes_take, og_merge_quiet, og_set_folder, og_net_url, og_net_take, og_net_open, og_net_recv, og_net_closed, og_join, og_poke, og_rtc_host, og_rtc_closing,
   og_timeline, og_timeline_range, og_timeline_restore, og_snapshot_request, og_snapshot_take,
 } from './pkg/og_paper.js';
 
@@ -623,22 +623,118 @@ export async function start({ mode = 'app' } = {}) {
   function netConnect(url) {
     netClose();
     let w;
-    try { w = new WebSocket(url); } catch (e) { og_net_closed(String(e.message || e)); setTimeout(og_poke, 3200); return; }
+    try { w = new WebSocket(url); } catch (e) { og_net_closed(0, String(e.message || e)); setTimeout(og_poke, 3200); return; }
     w.binaryType = 'arraybuffer';
     ws = w;
-    w.onopen = () => og_net_open();
-    w.onmessage = e => og_net_recv(new Uint8Array(e.data));
+    w.onopen = () => og_net_open(0);
+    w.onmessage = e => og_net_recv(0, new Uint8Array(e.data));
     w.onclose = e => {
       if (ws !== w) return;
       ws = null;
-      og_net_closed(e.reason || (location.protocol === 'https:' && url.startsWith('ws:') ? 'an https page needs a wss:// address' : 'connection closed'));
+      og_net_closed(0, e.reason || (location.protocol === 'https:' && url.startsWith('ws:') ? 'an https page needs a wss:// address' : 'connection closed'));
       setTimeout(og_poke, 3200);
     };
   }
+  // Frames come tagged with their connection: 0 is the WebSocket (or, for
+  // a guest, its WebRTC channel); others are hosted guests' channels.
   function netFlush() {
-    if (!ws || ws.readyState !== 1) return;
-    for (let b = og_net_take(); b; b = og_net_take()) ws.send(b);
+    for (let b = og_net_take(); b; b = og_net_take()) {
+      const conn = b[0] | (b[1] << 8) | (b[2] << 16) | (b[3] << 24);
+      const frame = b.subarray(4);
+      if (conn === 0 && ws && ws.readyState === 1) ws.send(frame);
+      else if (rtc.chans[conn] && rtc.chans[conn].readyState === 'open') rtc.chans[conn].send(frame);
+    }
   }
+  // ---- no-server live (WebRTC): one-time invites, set up by link ----
+  const rtc = { pcs: {}, chans: {}, next: 1 };
+  const ICE = [{ urls: 'stun:stun.l.google.com:19302' }];
+  const pack = o => btoa(unescape(encodeURIComponent(JSON.stringify(o)))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  const unpack = t => JSON.parse(decodeURIComponent(escape(atob(t.trim().replace(/-/g, '+').replace(/_/g, '/')))));
+  const iceDone = pc => new Promise(r => {
+    if (pc.iceGatheringState === 'complete') return r();
+    pc.addEventListener('icegatheringstatechange', () => pc.iceGatheringState === 'complete' && r());
+    setTimeout(r, 4000);
+  });
+  function wireChannel(ch, id) {
+    ch.binaryType = 'arraybuffer';
+    rtc.chans[id] = ch;
+    ch.onopen = () => og_net_open(id);
+    ch.onmessage = e => og_net_recv(id, new Uint8Array(e.data));
+    ch.onclose = () => { delete rtc.chans[id]; og_net_closed(id, 'closed'); };
+  }
+  function rtcStop() {
+    for (const pc of Object.values(rtc.pcs)) try { pc.close(); } catch (e) {}
+    rtc.pcs = {}; rtc.chans = {};
+  }
+  function randKey() {
+    return Array.from(crypto.getRandomValues(new Uint8Array(16))).map(b => b.toString(16).padStart(2, '0')).join('');
+  }
+  let rtcKeys = null;
+  async function rtcInvite(view) {
+    if (!rtcKeys) { rtcKeys = { edit: randKey(), view: randKey() }; og_rtc_host(rtcKeys.edit, rtcKeys.view); }
+    const id = rtc.next++;
+    const pc = new RTCPeerConnection({ iceServers: ICE });
+    rtc.pcs[id] = pc;
+    wireChannel(pc.createDataChannel('og-paper', { ordered: true }), id);
+    await pc.setLocalDescription(await pc.createOffer());
+    await iceDone(pc);
+    return { id, link: location.origin + location.pathname + '#rtc=' + pack({ sdp: pc.localDescription.sdp, k: view ? rtcKeys.view : rtcKeys.edit }) };
+  }
+  async function rtcAnswer(id, code) {
+    const o = unpack(code);
+    await rtc.pcs[id].setRemoteDescription({ type: 'answer', sdp: o.sdp });
+  }
+  async function rtcJoin(blob) {
+    const o = unpack(blob);
+    rtcStop();
+    const pc = new RTCPeerConnection({ iceServers: ICE });
+    rtc.pcs[0] = pc;
+    pc.ondatachannel = e => wireChannel(e.channel, 0);
+    await pc.setRemoteDescription({ type: 'offer', sdp: o.sdp });
+    await pc.setLocalDescription(await pc.createAnswer());
+    await iceDone(pc);
+    og_join('rtc?k=' + o.k);
+    return pack({ sdp: pc.localDescription.sdp });
+  }
+  cards.rtc = card('Draw together, no server');
+  cards.rtc.append(
+    el('p', {}, 'Invite someone with a one-time link. They open it and send you back a reply code; paste it here. Keep this tab open while you draw together.'),
+    el('div', { class: 'og-row' }, '<button class="og-btn primary" data-act="edit">New invite (can draw)</button><button class="og-btn" data-act="view">New invite (view only)</button>'),
+    el('ul', { class: 'og-list og-invites' }));
+  const invites = cards.rtc.querySelector('.og-invites');
+  for (const b of cards.rtc.querySelectorAll('[data-act]')) b.onclick = async () => {
+    const view = b.dataset.act === 'view';
+    const inv = await rtcInvite(view);
+    const li = el('li', {}, `<div><b>Invite ${inv.id}${view ? ' (view only)' : ''}</b></div>
+      <div class="og-row"><input readonly value="${esc(inv.link)}"><button class="og-btn" data-c>Copy</button></div>
+      <div class="og-row"><input placeholder="Paste their reply code" data-r><button class="og-btn primary" data-go>Connect</button></div>`);
+    li.querySelector('[data-c]').onclick = () => { navigator.clipboard?.writeText(inv.link); say('Invite copied: send it to them'); };
+    li.querySelector('[data-go]').onclick = async () => {
+      try { await rtcAnswer(inv.id, li.querySelector('[data-r]').value); say('Connecting…'); li.remove(); }
+      catch (e) { say('That reply code did not work: ask them to copy it again'); }
+    };
+    invites.prepend(li);
+  };
+  cards.rtcReply = card('Joining: send this back');
+  cards.rtcReply.append(
+    el('p', {}, 'Send this reply code to the person who invited you. You are connected as soon as they paste it.'),
+    el('div', { class: 'og-row' }, '<input readonly data-code><button class="og-btn primary" data-c>Copy</button>'));
+  cards.rtcReply.querySelector('[data-c]').onclick = () => {
+    navigator.clipboard?.writeText(cards.rtcReply.querySelector('[data-code]').value);
+    say('Reply code copied');
+  };
+  let rtcJoined = false;
+  setInterval(async () => {
+    if (rtcJoined || !location.hash.startsWith('#rtc=') || !status().ready) return;
+    rtcJoined = true;
+    const st = status();
+    if (st.strokes > 0 && !confirm('Joining a shared canvas replaces the canvas in this browser. Download a copy of this one first if you want to keep it.\n\nJoin now?')) return;
+    try {
+      const code = await rtcJoin(location.hash.slice(5));
+      cards.rtcReply.querySelector('[data-code]').value = code;
+      show('rtcReply');
+    } catch (e) { say('That invite did not work: ask for a new one'); }
+  }, 500);
   // A share link opened in the browser: join (asking first if it would
   // replace a different canvas that has drawing in it).
   let joinDone = false;
@@ -1091,7 +1187,10 @@ export async function start({ mode = 'app' } = {}) {
       }
       else if (r === 'folder') folderToggle();
       else if (r === 'net-connect') netConnect(og_net_url());
-      else if (r === 'net-close') netClose();
+      else if (r === 'net-close') { netClose(); rtcStop(); }
+      else if (r === 'rtc') show('rtc');
+      else if (r === 'rtc-stop') { rtcStop(); rtcKeys = null; }
+      else if (r === 'rtc-close') for (const c of og_rtc_closing()) { try { rtc.chans[c]?.close(); rtc.pcs[c]?.close(); } catch (e) {} }
       else if (r === 'merge') { importPicker.dataset.mode = 'merge'; importPicker.value = ''; importPicker.click(); }
       else if (r === 'new') newCanvas();
       else if (r === 'bookmarks') show('bookmarks');
