@@ -337,7 +337,10 @@ export async function start({ mode = 'app' } = {}) {
       '<button class="og-btn primary" data-f="png">PNG</button><button class="og-btn" data-f="jpg">JPEG</button><button class="og-btn" data-f="svg">SVG</button><button class="og-btn" data-f="pdf">PDF</button>'),
     el('label', { class: 'og-opt' }, '<input type="checkbox" name="sel"> Only the selection'),
     el('label', { class: 'og-opt' }, '<input type="checkbox" name="bg" checked> Paper background (off = transparent PNG/SVG)'),
-    el('label', { class: 'og-opt' }, 'Picture size <select name="scale"><option value="1">1×</option><option value="2" selected>2×</option><option value="4">4×</option></select>'));
+    el('label', { class: 'og-opt' }, 'Picture size <select name="scale"><option value="1">1×</option><option value="2" selected>2×</option><option value="4">4×</option></select>'),
+    el('p', {}, 'Or keep the whole canvas, to open, merge or share later:'),
+    el('div', { class: 'og-row' }, '<button class="og-btn" data-act="copy">OG Paper copy (.ogpt)</button>'));
+  cards.export.querySelector('[data-act=copy]').onclick = () => { download(); show(null); };
   const xSel = cards.export.querySelector('[name=sel]');
   const xBg = cards.export.querySelector('[name=bg]');
   const xScale = cards.export.querySelector('[name=scale]');
@@ -462,7 +465,7 @@ export async function start({ mode = 'app' } = {}) {
   const standalone = matchMedia('(display-mode: fullscreen), (display-mode: standalone)').matches;
   const canFs = document.documentElement.requestFullscreen && !standalone;
   const syncMenu = () => {
-    const items = ['pages', 'new', 'open', 'import', 'merge', 'changes', 'folder', 'live', 'save', 'export', 'paste', 'library', 'picture', 'search', 'bookmarks', 'timeline', 'home', 'layout', 'dark', 'diagram', 'hotkeys'];
+    const items = ['pages', 'new', 'open', 'import', 'merge', 'changes', 'folder', 'live', 'export', 'paste', 'library', 'picture', 'search', 'bookmarks', 'timeline', 'home', 'layout', 'dark', 'diagram', 'hotkeys'];
     if (canFs && !document.fullscreenElement) items.push('fullscreen');
     if (isTry) items.push('tour');
     og_set_menu(items.join(','));

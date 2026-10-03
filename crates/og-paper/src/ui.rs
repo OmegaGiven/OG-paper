@@ -613,7 +613,6 @@ impl Default for UiState {
                 AppItem::Changes,
                 AppItem::Folder,
                 AppItem::Live,
-                AppItem::Save,
                 AppItem::Export,
                 AppItem::Paste,
                 AppItem::Library,

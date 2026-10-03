@@ -1411,20 +1411,7 @@ impl App {
                     if p.extension().is_none() {
                         p.set_extension("ogp");
                     }
-                    match OgpFile::create(&p).and_then(|f| f.put_all(&self.scene).map(|_| f)) {
-                        Ok(f) => {
-                            self.file = Some(f);
-                            self.groups_saved = 0;
-                            self.persist_groups();
-                            self.persist_share();
-                            let f = self.file.take().expect("file");
-                            let _ = f.put_view(&self.cam);
-                            self.ui.file_name = file_label(&p);
-                            self.say(format!("Saved to {}", p.display()));
-                            self.file = Some(f);
-                        }
-                        Err(e) => self.say(format!("Save failed: {e}")),
-                    }
+                    self.save_as(p);
                 }
             }
             #[cfg(target_arch = "wasm32")]
@@ -1505,8 +1492,28 @@ impl App {
             .collect();
     }
 
-    /// Save the selection (if any) or the view as PNG, JPEG, SVG or PDF; the
-    /// format follows the file name's extension.
+    /// Save the canvas as a new file at `p` and keep working in it.
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+    fn save_as(&mut self, p: PathBuf) {
+        match OgpFile::create(&p).and_then(|f| f.put_all(&self.scene).map(|_| f)) {
+            Ok(f) => {
+                self.file = Some(f);
+                self.groups_saved = 0;
+                self.persist_groups();
+                self.persist_share();
+                let f = self.file.take().expect("file");
+                let _ = f.put_view(&self.cam);
+                self.ui.file_name = file_label(&p);
+                self.say(format!("Saved to {}", p.display()));
+                self.file = Some(f);
+                self.remember_file();
+            }
+            Err(e) => self.say(format!("Save failed: {e}")),
+        }
+    }
+
+    /// Save the selection (if any) or the view as PNG, JPEG, SVG or PDF, or
+    /// the whole canvas as a new .ogp; the format follows the file name.
     #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
     fn export_dialog(&mut self) {
         let sel = self.ui.tool.selects() && !self.edit.selection.is_empty();
@@ -1516,11 +1523,17 @@ impl App {
             .add_filter("JPEG picture", &["jpg", "jpeg"])
             .add_filter("SVG drawing", &["svg"])
             .add_filter("PDF document", &["pdf"])
+            .add_filter("OG Paper canvas (a full copy)", &["ogp"])
             .set_file_name(name)
             .save_file()
         else {
             return;
         };
+        // A canvas copy: what Save copy did.
+        if p.extension().is_some_and(|e| e == "ogp") {
+            self.save_as(p);
+            return;
+        }
         let fmt = p
             .extension()
             .and_then(|e| export::Format::from_key(&e.to_string_lossy()))
