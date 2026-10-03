@@ -586,6 +586,23 @@ impl UiState {
         self.bar_rename = None;
     }
 
+    /// Esc: close every menu and panel that is open (not the tool panel).
+    /// False when nothing was.
+    pub fn close_all(&mut self) -> bool {
+        let any = self.menu != Menu::None
+            || self.bar_menu
+            || self.bag_open
+            || self.search_open
+            || self.lib_open
+            || self.keys_open;
+        self.close_menus();
+        self.bag_open = false;
+        self.search_open = false;
+        self.lib_open = false;
+        self.keys_open = false;
+        any
+    }
+
     /// The current tool and its settings.
     pub fn preset(&self) -> Preset {
         let mut p = Preset::tool(self.tool);
@@ -1970,7 +1987,7 @@ fn tool_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) 
     // Bottom left by default (in thumb reach on phones, out of the way on
     // desktops); any corner via Edit layout.
     let pc = if st.radial_bar {
-        crate::layout::Corner::TopRight
+        crate::layout::Corner::TopLeft
     } else {
         st.layout.panel
     };
@@ -1982,10 +1999,11 @@ fn tool_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) 
     };
     let corner = vec2(
         if pc.is_right() { -m } else { m },
-        if pc.is_top() {
-            m + if touch { 70.0 } else { 60.0 }
-        } else {
-            -m
+        // Top right sits under the settings button.
+        match pc {
+            crate::layout::Corner::TopRight => m + if touch { 70.0 } else { 60.0 },
+            crate::layout::Corner::TopLeft => m,
+            _ => -m,
         },
     );
     // Open by default where there is room; tucked away on phones.
@@ -4611,9 +4629,35 @@ fn radial_bar(ctx: &egui::Context, st: &mut UiState, g: &Geo) {
     let open = ctx.animate_bool_with_time(Id::new("bar_open"), st.menu == Menu::Bar, 0.12);
     let n = st.hotbar.len();
     let slots = ring_slots(n + 2, g.r, g.bar_arc.1);
+    // Other toolbars ticked to show: a ring each, further out.
+    let others: Vec<usize> = (0..st.toolbars.len())
+        .filter(|&k| k != st.active_bar && st.toolbars[k].shown)
+        .collect();
+    let inner = slots.iter().map(|s| s.0).fold(0.0, f32::max);
+    let step = 2.0 * g.r * 0.9 + 16.0;
+    let full = g.bar_arc.1 >= TAU - 1e-3;
+    let mut outer: Vec<(usize, usize, f32, f32)> = Vec::new(); // (bar, slot, radius, frac)
+    for (j, &k) in others.iter().enumerate() {
+        let m = st.toolbars[k].slots.len();
+        let radius = inner + (j + 1) as f32 * step;
+        for i in 0..m {
+            let frac = if full {
+                i as f32 / m as f32
+            } else if m > 1 {
+                i as f32 / (m - 1) as f32
+            } else {
+                0.5
+            };
+            outer.push((k, i, radius, frac));
+        }
+    }
     let mut bbox = Rect::from_center_size(g.bar, Vec2::splat(2.0 * g.r));
     if open > 0.0 {
-        let reach = fan_reach(&slots, g.r) * open + g.r * 1.2;
+        let far = outer
+            .iter()
+            .map(|o| o.2)
+            .fold(fan_reach(&slots, g.r), |a, b| a.max(b + g.r));
+        let reach = far * open + g.r * 1.2;
         bbox = bbox.union(Rect::from_center_size(
             g.bar,
             Vec2::splat(2.0 * (reach + 30.0)),
@@ -4730,6 +4774,86 @@ fn radial_bar(ctx: &egui::Context, st: &mut UiState, g: &Geo) {
                             pc + Vec2::angled(a) * (rr + 16.0) + vec2(0.0, 2.0),
                             &label_text,
                         );
+                    }
+                }
+                // The other shown toolbars' slots, a ring each.
+                for &(k, i, radius, frac) in &outer {
+                    let a = g.bar_arc.0 + g.bar_arc.1 * frac;
+                    let pc = g.bar + Vec2::angled(a) * radius * open;
+                    let rr = g.r * 0.82 * open.max(0.3);
+                    let resp = ui.interact(
+                        Rect::from_center_size(pc, Vec2::splat(2.0 * rr)),
+                        Id::new(("rbar_o", k, i)),
+                        Sense::click(),
+                    );
+                    let hover = resp.hovered();
+                    let item = st.toolbars[k].slots[i];
+                    disc(
+                        &p,
+                        pc,
+                        rr,
+                        if hover { Color32::WHITE } else { FACE },
+                        item.is_some_and(|it| it == current),
+                    );
+                    match item {
+                        Some(it) if it.cmd.is_some() => undo_icon(
+                            &p,
+                            pc,
+                            rr * 0.8,
+                            it.cmd == Some(hotbar::SlotCmd::Redo),
+                            INKY,
+                        ),
+                        Some(it) if it.view.is_some() => {
+                            let name = it
+                                .view
+                                .and_then(|v| st.views.get(&v))
+                                .map_or("View".into(), |v| v.name.clone());
+                            view_icon(&p, pc, rr, &name);
+                        }
+                        Some(it) => preset_icon(&p, pc, rr, &it, &st.egui_fonts),
+                        None => {
+                            p.text(
+                                pc,
+                                Align2::CENTER_CENTER,
+                                "+",
+                                egui::FontId::proportional(rr * 0.7),
+                                Color32::from_gray(170),
+                            );
+                        }
+                    }
+                    // Which toolbar and slot, top left.
+                    p.text(
+                        pc + vec2(-rr * 0.62, -rr * 0.62),
+                        Align2::CENTER_CENTER,
+                        format!("{}·{}", k + 1, i + 1),
+                        egui::FontId::proportional(8.5),
+                        Color32::from_gray(140),
+                    );
+                    if open > 0.9 && hover {
+                        let t = match item {
+                            Some(it) if it.view.is_some() => "View".to_string(),
+                            Some(it) => describe(&it),
+                            None => "Empty: save the current tool".into(),
+                        };
+                        label(
+                            &p,
+                            pc + Vec2::angled(a) * (rr + 16.0) + vec2(0.0, 2.0),
+                            &format!("Toolbar {}: {t}", k + 1),
+                        );
+                    }
+                    if resp.clicked() {
+                        match item {
+                            Some(it) => {
+                                st.apply(&it);
+                                if it.cmd.is_none() {
+                                    st.menu = Menu::None;
+                                }
+                            }
+                            None => {
+                                st.toolbars[k].slots[i] = Some(current);
+                                changed = true;
+                            }
+                        }
                     }
                 }
             }

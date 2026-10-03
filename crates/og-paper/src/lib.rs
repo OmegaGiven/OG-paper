@@ -1315,7 +1315,10 @@ impl App {
                 return true;
             }
             Key::Named(NamedKey::Escape) => {
-                self.edit.selection.clear();
+                // Menus first; then the selection.
+                if !self.ui.close_all() {
+                    self.edit.selection.clear();
+                }
                 self.redraw();
                 return true;
             }

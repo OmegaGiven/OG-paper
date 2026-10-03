@@ -265,6 +265,10 @@ export async function start({ mode = 'app' } = {}) {
     open = open === name ? null : name;
     for (const [n, c] of Object.entries(cards)) c.hidden = n !== open;
   }
+  // Esc closes an open card (the app closes its own menus).
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && open && !(e.target instanceof HTMLTextAreaElement)) show(null);
+  });
 
   if (isTry) {
     cards.tour = card('Try the endless canvas');
