@@ -4367,18 +4367,39 @@ fn layout_editor(ctx: &egui::Context, st: &mut UiState) {
             // The quick bar, as a strip of empty slots.
             let s = (if touch { 44.0 } else { 38.0 } * ui_scale(screen)).max(26.0);
             let w = ((hotbar::BAR + 2) as f32 * (s + 4.0) - 4.0).min(screen.width() - 2.0 * m);
-            let bar_c = match lay.bar {
-                Some(f) => at_frac(screen, f, 0.0),
-                None if lay.tool.is_some() => {
-                    pos2(screen.center().x, screen.bottom() - m - s * 0.5)
-                }
-                None => pos2(screen.center().x, g.tool.y),
+            // In portrait it is a column down the left (as quick_bar draws it).
+            let vertical = !st.radial_bar && lay.bar.is_none() && screen.height() > screen.width();
+            let bar_rect = if vertical {
+                let pr = if touch { 24.0 } else { 19.0 } * ui_scale(screen).max(0.7);
+                let s = 2.0 * pr;
+                let room = screen.height() - 2.0 * (m + 2.0 * pr + 4.0 + 12.0);
+                let n = (((room + 4.0) / (s + 4.0)) as usize).clamp(5, hotbar::BAR + 2);
+                let len = n as f32 * (s + 4.0) - 4.0;
+                Rect::from_center_size(
+                    pos2(screen.left() + m + 2.0 + pr, screen.center().y),
+                    vec2(s, len),
+                )
+            } else {
+                let bar_c = match lay.bar {
+                    Some(f) => at_frac(screen, f, 0.0),
+                    None if lay.tool.is_some() => {
+                        pos2(screen.center().x, screen.bottom() - m - s * 0.5)
+                    }
+                    None => pos2(screen.center().x, g.tool.y),
+                };
+                Rect::from_center_size(bar_c, vec2(w, s))
             };
-            if let Some(c) = handle("bar", Rect::from_center_size(bar_c, vec2(w, s)), &|p, r| {
-                let n = ((r.width() + 4.0) / (s + 4.0)) as usize;
+            if let Some(c) = handle("bar", bar_rect, &|p, r| {
+                let s = r.width().min(r.height());
+                let along = if r.width() >= r.height() {
+                    vec2(1.0, 0.0)
+                } else {
+                    vec2(0.0, 1.0)
+                };
+                let n = ((r.width().max(r.height()) + 4.0) / (s + 4.0)) as usize;
                 for i in 0..n {
                     let b = Rect::from_min_size(
-                        pos2(r.left() + i as f32 * (s + 4.0), r.top()),
+                        r.left_top() + along * (i as f32 * (s + 4.0)),
                         Vec2::splat(s),
                     );
                     p.rect_filled(b, 8.0, FACE);
@@ -4388,7 +4409,8 @@ fn layout_editor(ctx: &egui::Context, st: &mut UiState) {
                 lay.bar = Some(frac_of(screen, c));
             }
             // The tool panel, as a card in its corner.
-            let (pw, ph) = (200.0, 150.0);
+            let k = ui_scale(screen);
+            let (pw, ph) = (200.0 * k.max(0.7), 150.0 * k.max(0.7));
             let pc = lay.panel;
             let px = if pc.is_right() {
                 screen.right() - m - pw
@@ -4433,15 +4455,34 @@ fn layout_editor(ctx: &egui::Context, st: &mut UiState) {
         .show(ctx, |ui| {
             ui.style_mut().visuals = egui::Visuals::light();
             egui::Frame::popup(ui.style()).show(ui, |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    ui.label("Drag the controls anywhere. Fans open toward the middle.");
+                // Narrow enough to leave the corner buttons uncovered; on a
+                // phone the text wraps and the buttons go under it.
+                let w = (screen.width() - 2.0 * 76.0).clamp(200.0, 560.0);
+                ui.set_max_width(w);
+                let text = "Drag the controls anywhere. Fans open toward the middle.";
+                let one_line = ui.fonts_mut(|f| {
+                    f.layout_no_wrap(text.into(), egui::FontId::proportional(14.0), INKY)
+                        .size()
+                        .x
+                }) + 140.0
+                    <= w;
+                let buttons = |ui: &mut egui::Ui, st: &mut UiState, done: &mut bool| {
                     if ui.button("Reset").clicked() {
                         st.layout = Default::default();
                     }
                     if ui.button("Done").clicked() {
-                        done = true;
+                        *done = true;
                     }
-                });
+                };
+                if one_line {
+                    ui.horizontal(|ui| {
+                        ui.label(text);
+                        buttons(ui, st, &mut done);
+                    });
+                } else {
+                    ui.add(egui::Label::new(text).wrap());
+                    ui.horizontal(|ui| buttons(ui, st, &mut done));
+                }
             });
         });
     if done {
