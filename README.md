@@ -27,6 +27,110 @@ Proprietary infinite-canvas apps such as Endless Paper keep your work in undocum
 - **Windows, macOS, Linux, Android:** [releases page](https://github.com/OmegaGiven/OG-paper/releases)
   (every push to `main` also produces builds under the CI run's artifacts).
 
+## Run your own server
+
+One small container hosts all your pages on your own hardware, so everyone
+on your network (or tailnet) can open and draw on them together, and each
+device keeps its own copy that syncs when it reconnects. It needs no
+account and no cloud.
+
+### The short version (any machine with Docker)
+
+```sh
+git clone https://github.com/OmegaGiven/OG-paper.git
+cd OG-paper
+docker compose up -d --build      # first build takes a few minutes
+docker compose logs og-paper      # copy a "Server link" from here
+```
+
+The log shows two **server links**: one that can make and change pages, and
+a view-only one. Treat them like passwords. Your pages live in
+`./og-paper-data` (mounted at `/data` in the container). The server listens
+on port **8991**.
+
+Without compose:
+
+```sh
+docker build -t og-paper .
+docker run -d --name og-paper --restart unless-stopped \
+  -p 8991:8991 -v /path/on/disk/og-paper:/data og-paper
+docker logs og-paper
+```
+
+The links name the container's internal address. To get links with the
+address people actually use, add `--public ws://<your-server-ip>:8991` to
+the command (see the commented `command:` line in
+[`docker-compose.yml`](docker-compose.yml)), or just swap the address in the
+link by hand. Browsers on the public web app (an `https://` page) can only
+connect to a `wss://` address. Put the server behind a TLS proxy (Tailscale
+serve, Caddy, Nginx Proxy Manager, Traefik) and use `--public
+wss://your-host`. The desktop and Android apps connect to plain `ws://`
+fine.
+
+### On a NAS or home server
+
+There is no prebuilt image yet, so the image is built from this repository
+once (on the NAS itself, or on a PC and then copied over, see below).
+
+- **Synology (DSM 7.2+, Container Manager):** copy the repository to a
+  shared folder (e.g. `/volume1/docker/og-paper`). In **Container Manager >
+  Project > Create**, choose that folder as the path; it picks up
+  `docker-compose.yml`. Build and start it. Open the container's **Log**
+  tab for the server links. To use a NAS folder for the pages, change
+  `./og-paper-data` to e.g. `/volume1/docker/og-paper/data`.
+- **QNAP (Container Station 3):** **Applications > Create**, paste the
+  contents of `docker-compose.yml` (with `build: .` replaced by a built
+  image, see below, or create it from the repository folder over SSH with
+  `docker compose up -d --build`). Map `/data` to a folder such as
+  `/share/Container/og-paper`.
+- **Unraid:** over SSH, `git clone` into `/mnt/user/appdata/og-paper-src` and
+  run `docker build -t og-paper .` there. Then **Docker > Add Container**:
+  Repository `og-paper`, port 8991 to 8991, path `/data` to
+  `/mnt/user/appdata/og-paper`. The server links are in the container's log.
+- **TrueNAS SCALE:** build the image in a shell (`docker build -t og-paper
+  .`), then **Apps > Discover Apps > Custom App**: image `og-paper` (pull
+  policy: never), port 8991, host path for `/data` on a dataset (e.g.
+  `/mnt/tank/apps/og-paper`).
+- **Raspberry Pi, a Linux box, a VPS:** the short version above works as is
+  (64-bit Raspberry Pi OS / any arm64 or x86-64 Linux with Docker).
+- **Without Docker:** download (or `cargo build --release -p og-paper`) the
+  Linux build and run `og-paper --serve-dir ~/og-paper-pages`. A systemd
+  service with `Restart=always` keeps it up.
+
+**Building on a PC for a slow NAS:** build for the NAS's CPU, then load it
+there:
+
+```sh
+docker buildx build --platform linux/arm64 -t og-paper --load .   # or linux/amd64
+docker save og-paper | gzip > og-paper.tar.gz
+# copy og-paper.tar.gz to the NAS, then on the NAS:
+docker load < og-paper.tar.gz
+```
+
+Open port 8991 on the NAS firewall for your LAN. For access from outside, a
+VPN or Tailscale is safer than opening the port to the internet.
+
+## Connect to a page
+
+Every way works from the ⚙ settings menu:
+
+1. **Your server's pages:** ⚙ > **Pages** > paste a server link under
+   *Servers* > **Add**. Its pages appear: **Open** one and you're drawing on
+   it with everyone else; **+ Page** makes a new one. The app keeps a copy
+   of each page you open; reopening it from *On this device* reconnects by
+   itself, and anything you drew offline goes up.
+2. **One page, live, no server:** ⚙ > **Share live** > **Host this canvas**
+   (desktop) and send someone the edit or view link; they paste it under
+   *Join* (or open the browser link). In a browser: **Host in this
+   browser** makes one-time invite links.
+3. **Swap copies:** ⚙ > **Save copy**, send the file, and they use ⚙ >
+   **Merge copy**: both sets of changes combine. **Sync folder** does this
+   automatically through Syncthing, Dropbox, Drive or a USB stick.
+
+More detail, including the relay for people who are never online at the
+same time and how the end-to-end encryption works, is in
+[`docs/SHARING.md`](docs/SHARING.md).
+
 ## What works today
 
 - **Brush:** a simple line (width, pressure, solid / dashed / dotted, opacity), or **Advanced**: a GIMP-style brush engine with 15 looks (pencil, charcoal, bristle brush, watercolor, airbrush, spray, calligraphy, sketchy, jagged, neon, chain, stitches, felt tip, rainbow, ink) and every setting behind them: 13 tip shapes, hardness, spacing, angle, roundness, pressure and speed dynamics, taper, fade, scatter, jitter, sketchy wobble, flow, paper grain, color jitter, hue cycle and fade-to color. Strokes stay vector and sharp at any zoom.

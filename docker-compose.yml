@@ -1,0 +1,19 @@
+# OG Paper server: hosts many pages for OG Paper apps and browsers.
+#   docker compose up -d --build
+#   docker compose logs og-paper      # shows the server links
+services:
+  og-paper:
+    build: .
+    image: og-paper
+    container_name: og-paper
+    restart: unless-stopped
+    ports:
+      - "8991:8991"
+    volumes:
+      # Pages, keys and the server key. Point this at a folder on your NAS
+      # (e.g. /volume1/docker/og-paper on Synology) to see the files.
+      - ./og-paper-data:/data
+    # environment:
+    #   OGP_SERVER_KEY: e...   # choose the server key yourself (else made on first start)
+    # Uncomment and set the address people use, so the printed links are right:
+    # command: ["og-paper", "--serve-dir", "/data/pages", "--port", "8991", "--public", "ws://192.168.1.20:8991"]
