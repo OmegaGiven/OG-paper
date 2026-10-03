@@ -27,6 +27,7 @@ mod prefs;
 mod render;
 mod search;
 mod shapes;
+mod share;
 mod snapshot;
 mod timeline;
 mod ui;
@@ -112,6 +113,8 @@ pub struct App {
     draw: DrawList,
     /// When each stroke appeared and disappeared.
     timeline: Timeline,
+    /// The canvas id and merge log (Merge copy).
+    share: share::Share,
     /// Shapes and texts (groups of strokes with their settings).
     objs: objects::Objects,
     edit: edit::EditState,
@@ -194,6 +197,7 @@ impl App {
             history: History::default(),
             draw: DrawList::default(),
             timeline: Timeline::default(),
+            share: share::Share::fresh(),
             objs: objects::Objects::default(),
             edit: edit::EditState::default(),
             bookmarks: Vec::new(),
@@ -338,7 +342,7 @@ impl App {
         let id = self.scene.add_stroke_with(&cell, &pts, style, uid::new());
         self.wet.clear();
         self.history.record(Change::Added(vec![id]));
-        self.timeline.record(id, true);
+        self.note(id, true);
         #[cfg(target_arch = "wasm32")]
         {
             let z = self.cam.log10_zoom();
@@ -369,7 +373,7 @@ impl App {
         for id in ids {
             if self.scene.delete(id) {
                 self.erased.push(id);
-                self.timeline.record(id, false);
+                self.note(id, false);
                 self.persist_deleted(id);
                 #[cfg(target_arch = "wasm32")]
                 web::stats(|s| s.erased += 1);
@@ -611,7 +615,7 @@ impl App {
         }
         for id in changed {
             let alive = !self.scene.strokes[id as usize].deleted;
-            self.timeline.record(id, alive);
+            self.note(id, alive);
             self.persist_deleted(id);
         }
         self.redraw();
@@ -628,6 +632,7 @@ impl App {
                     self.file = Some(f);
                     self.groups_saved = 0;
                     self.persist_groups();
+                    self.persist_share();
                     return;
                 }
                 Err(e) => self.say(format!("Could not create a file: {e}")),
@@ -707,6 +712,7 @@ impl App {
 
     fn load_scene(&mut self, scene: Scene, cam: Camera) {
         self.timeline = Timeline::from_scene(&scene, timeline::now_ms());
+        self.share = share::Share::loaded(&scene, None);
         self.scene = scene;
         self.cam = cam;
         self.history = History::default();
@@ -722,6 +728,40 @@ impl App {
             g.reset(&self.scene);
         }
         self.redraw();
+    }
+
+    /// Merge another copy of this canvas (.ogp, or a web copy .ogpt).
+    #[cfg(not(target_arch = "wasm32"))]
+    fn merge_file(&mut self, path: PathBuf) {
+        let name = file_label(&path);
+        if self.file.as_ref().is_some_and(|f| f.path() == path) {
+            self.say("That is the file already open");
+            return;
+        }
+        if path.extension().is_some_and(|e| e == "ogpt") {
+            match std::fs::read(&path)
+                .map_err(|e| e.to_string())
+                .and_then(|b| snapshot::decode(&b, BASE_PX))
+            {
+                Ok(s) => self.merge_copy(s.scene, s.objs, s.share),
+                Err(e) => self.say(format!("Could not read {name}: {e}")),
+            }
+            return;
+        }
+        match OgpFile::open(&path) {
+            Ok((f, scene, _view, groups)) => {
+                let mut objs = groups_from_file(&scene, groups);
+                for (id, b) in f.images().unwrap_or_default() {
+                    if let Ok(a) = images::load(b) {
+                        objs.images.insert(id, a);
+                    }
+                }
+                let copy = file_copy_log(&f);
+                drop(f);
+                self.merge_copy(scene, objs, copy);
+            }
+            Err(e) => self.say(format!("Could not read {name}: {e}")),
+        }
     }
 
     /// Import another canvas file (.ogp, or a web copy .ogpt) to place.
@@ -784,6 +824,12 @@ impl App {
                 self.file = Some(f);
                 self.load_scene(scene, cam);
                 self.objs = groups_from_file(&self.scene, groups);
+                let copy = self.file.as_ref().and_then(file_copy_log);
+                let had = copy.as_ref().is_some_and(|c| !c.events.is_empty());
+                self.share = share::Share::loaded(&self.scene, copy);
+                if !had {
+                    self.persist_share();
+                }
                 if let Some(f) = &self.file {
                     for (id, b) in f.images().unwrap_or_default() {
                         if let Ok(a) = images::load(b) {
@@ -1022,6 +1068,17 @@ impl App {
             Action::Picture => web::emit("picture"),
             #[cfg(target_arch = "wasm32")]
             Action::Import => web::emit("import"),
+            #[cfg(target_arch = "wasm32")]
+            Action::MergeCopy => web::emit("merge"),
+            #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+            Action::MergeCopy => {
+                if let Some(p) = rfd::FileDialog::new()
+                    .add_filter("OG Paper canvas", &["ogp", "ogpt"])
+                    .pick_file()
+                {
+                    self.merge_file(p);
+                }
+            }
             #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
             Action::Picture => {
                 if let Some(p) = rfd::FileDialog::new()
@@ -1553,6 +1610,7 @@ impl App {
             "cmd.paste" => self.action(Action::Paste),
             "cmd.picture" => self.action(Action::Picture),
             "cmd.import" => self.action(Action::Import),
+            "cmd.merge" => self.action(Action::MergeCopy),
             "cmd.search" => self.action(Action::Search),
             "cmd.bookmarks" => self.action(Action::Bookmarks),
             "cmd.timeline" => self.action(Action::Timeline),
@@ -1822,11 +1880,11 @@ impl App {
             }
         }
         for &id in &gone {
-            self.timeline.record(id, false);
+            self.note(id, false);
             self.persist_deleted(id);
         }
         for &id in &back {
-            self.timeline.record(id, true);
+            self.note(id, true);
             self.persist_deleted(id);
         }
         if !gone.is_empty() {
@@ -1851,6 +1909,7 @@ impl App {
                 | Cmd::Search
                 | Cmd::Sticker(..)
                 | Cmd::Import(_)
+                | Cmd::Merge(_)
                 | Cmd::SearchGo(_)
                 | Cmd::Export(..)
                 | Cmd::BookmarkGo(_)
@@ -1867,6 +1926,7 @@ impl App {
                 match snap {
                     Some(Ok(s)) => {
                         self.load_scene(s.scene, s.cam);
+                        self.share = share::Share::loaded(&self.scene, s.share);
                         self.timeline = s.timeline;
                         self.bookmarks = s.bookmarks;
                         self.objs = s.objs;
@@ -1969,6 +2029,10 @@ impl App {
                 web::set_search_results(format!("[{}]", json.join(",")));
             }
             Cmd::SearchGo(g) => self.search_go(g),
+            Cmd::Merge(bytes) => match snapshot::decode(&bytes, BASE_PX) {
+                Ok(s) => self.merge_copy(s.scene, s.objs, s.share),
+                Err(e) => self.say(format!("Could not read that copy: {e}")),
+            },
             Cmd::Import(bytes) => match snapshot::decode(&bytes, BASE_PX) {
                 Ok(s) => self.import_begin(s.scene, s.objs, "that canvas"),
                 Err(e) => self.say(format!("Could not import that file: {e}")),
@@ -2026,6 +2090,7 @@ impl App {
                 &self.timeline,
                 &self.bookmarks,
                 &self.objs,
+                &self.share.copy_log(),
             );
             if let Some(shown) = scene_flags {
                 timeline::apply(&mut self.scene, &shown);
@@ -2511,6 +2576,18 @@ fn groups_from_file(scene: &Scene, groups: Vec<ogpaper_file::FileGroup>) -> obje
         });
     }
     objs
+}
+
+/// A file's canvas id and merge log, if it has an id.
+#[cfg(not(target_arch = "wasm32"))]
+fn file_copy_log(f: &OgpFile) -> Option<share::CopyLog> {
+    let canvas = f.canvas_id().ok().flatten()?;
+    let (events, replaces) = f.sync_log().unwrap_or_default();
+    Some(share::CopyLog {
+        canvas,
+        events,
+        replaces,
+    })
 }
 
 #[cfg(not(target_arch = "wasm32"))]

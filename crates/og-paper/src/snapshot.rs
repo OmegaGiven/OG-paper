@@ -8,7 +8,7 @@
 //! in browser storage and downloads it as an offline copy (`.ogpt`). It is
 //! not the `.ogp` format and holds no undo history.
 //!
-//! Layout (little endian): b"OGPT", version u8 (4; 1 to 3 are still read), camera,
+//! Layout (little endian): b"OGPT", version u8 (5; 1 to 4 are still read), camera,
 //! then
 //! - strokes: count u32; each: addr, width f32, color u32, brush u8,
 //!   deleted u8, uid u128, point count u32, points (f32 x4 each),
@@ -20,6 +20,9 @@
 //!   stroke indexes (u32 each), data (see [`put_data`])
 //! - v3 pictures: count u32; each: id u64, byte count u32, the file (PNG,
 //!   JPEG, GIF or WebP)
+//! - v5 merge log (see `share`): canvas id u128; events: count u32, each
+//!   item u128, alive u8, stamp; replacements: count u32, each item u128,
+//!   replaced u128, stamp. A stamp is ms u64, n u32, peer u64.
 //!
 //! A camera is addr, off f64 x2, scale f64. An addr is level i64 then x and y
 //! as (byte count u32, signed LE bytes).
@@ -33,7 +36,7 @@ use crate::shapes::{ArrowType, FillStyle, Geom, Head, ShapeKind, ShapeStyle, Slo
 use crate::timeline::{Bookmark, Event, Timeline};
 
 const MAGIC: &[u8; 4] = b"OGPT";
-const VERSION: u8 = 4;
+const VERSION: u8 = 5;
 
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 pub struct Snapshot {
@@ -42,6 +45,8 @@ pub struct Snapshot {
     pub timeline: Timeline,
     pub bookmarks: Vec<Bookmark>,
     pub objs: Objects,
+    /// The merge log (v5); None for older copies.
+    pub share: Option<crate::share::CopyLog>,
 }
 
 /// A shape's or text's settings: kind u8 (0 shape, 1 text), then
@@ -184,6 +189,7 @@ pub fn encode(
     timeline: &Timeline,
     bookmarks: &[Bookmark],
     objs: &Objects,
+    share: &crate::share::CopyLog,
 ) -> Vec<u8> {
     let mut b = Vec::with_capacity(64 + scene.points.len() * 16 + timeline.events.len() * 13);
     b.extend_from_slice(MAGIC);
@@ -238,6 +244,24 @@ pub fn encode(
         b.extend_from_slice(&id.to_le_bytes());
         b.extend_from_slice(&(a.bytes.len() as u32).to_le_bytes());
         b.extend_from_slice(&a.bytes);
+    }
+    let stamp = |b: &mut Vec<u8>, h: &ogpaper_core::sync::Hlc| {
+        b.extend_from_slice(&h.ms.to_le_bytes());
+        b.extend_from_slice(&h.n.to_le_bytes());
+        b.extend_from_slice(&h.peer.to_le_bytes());
+    };
+    b.extend_from_slice(&share.canvas.to_le_bytes());
+    b.extend_from_slice(&(share.events.len() as u32).to_le_bytes());
+    for e in &share.events {
+        b.extend_from_slice(&e.item.to_le_bytes());
+        b.push(e.alive as u8);
+        stamp(&mut b, &e.at);
+    }
+    b.extend_from_slice(&(share.replaces.len() as u32).to_le_bytes());
+    for r in &share.replaces {
+        b.extend_from_slice(&r.item.to_le_bytes());
+        b.extend_from_slice(&r.replaces.to_le_bytes());
+        stamp(&mut b, &r.edit);
     }
     b
 }
@@ -353,12 +377,61 @@ pub fn decode(bytes: &[u8], base_px: f64) -> Result<Snapshot, String> {
             }
         }
     }
+    let share = if v >= 5 {
+        let u128_ = |r: &mut Reader| -> Result<u128, String> {
+            Ok(u128::from_le_bytes(
+                r.take(16)?.try_into().expect("16 bytes"),
+            ))
+        };
+        let stamp = |r: &mut Reader| -> Result<ogpaper_core::sync::Hlc, String> {
+            Ok(ogpaper_core::sync::Hlc {
+                ms: u64::from_le_bytes(r.take(8)?.try_into().expect("8 bytes")),
+                n: r.u32()?,
+                peer: u64::from_le_bytes(r.take(8)?.try_into().expect("8 bytes")),
+            })
+        };
+        let canvas = u128_(&mut r)?;
+        let n = r.u32()? as usize;
+        if n > (bytes.len() - r.at) / 37 {
+            return Err("truncated snapshot".into());
+        }
+        let mut events = Vec::with_capacity(n);
+        for _ in 0..n {
+            let item = u128_(&mut r)?;
+            let alive = r.u8()? != 0;
+            let at = stamp(&mut r)?;
+            events.push(ogpaper_core::sync::Event { item, alive, at });
+        }
+        let n = r.u32()? as usize;
+        if n > (bytes.len() - r.at) / 52 {
+            return Err("truncated snapshot".into());
+        }
+        let mut replaces = Vec::with_capacity(n);
+        for _ in 0..n {
+            let item = u128_(&mut r)?;
+            let replaced = u128_(&mut r)?;
+            let edit = stamp(&mut r)?;
+            replaces.push(ogpaper_core::sync::Replace {
+                item,
+                replaces: replaced,
+                edit,
+            });
+        }
+        Some(crate::share::CopyLog {
+            canvas,
+            events,
+            replaces,
+        })
+    } else {
+        None
+    };
     Ok(Snapshot {
         scene,
         cam,
         timeline: Timeline::from_events(events),
         bookmarks,
         objs,
+        share,
     })
 }
 
@@ -676,8 +749,33 @@ mod tests {
             },
             strokes: vec![a],
         });
-        let bytes = encode(&s, &cam, &tl, &marks, &objs);
+        let log = crate::share::CopyLog {
+            canvas: 0xabc << 90,
+            events: vec![ogpaper_core::sync::Event {
+                item: s.strokes[0].uid,
+                alive: true,
+                at: ogpaper_core::sync::Hlc {
+                    ms: 5,
+                    n: 1,
+                    peer: u64::MAX,
+                },
+            }],
+            replaces: vec![ogpaper_core::sync::Replace {
+                item: 1,
+                replaces: 2,
+                edit: ogpaper_core::sync::Hlc {
+                    ms: 6,
+                    n: 0,
+                    peer: 3,
+                },
+            }],
+        };
+        let bytes = encode(&s, &cam, &tl, &marks, &objs, &log);
         let snap = decode(&bytes, 800.0).unwrap();
+        let back = snap.share.as_ref().unwrap();
+        assert_eq!(back.canvas, log.canvas);
+        assert_eq!(back.events, log.events);
+        assert_eq!(back.replaces, log.replaces);
         let s2 = &snap.scene;
         assert_eq!(s2.strokes.len(), 3);
         assert_eq!(s2.brush_of(c), Some(brush));

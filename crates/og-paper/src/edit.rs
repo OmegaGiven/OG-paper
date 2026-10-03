@@ -176,7 +176,7 @@ impl App {
             return self.record_edit(vec![], added);
         }
         for &id in &added {
-            self.timeline.record(id, true);
+            self.note(id, true);
             self.persist_new(id);
         }
         self.persist_groups();
@@ -188,11 +188,11 @@ impl App {
     pub(crate) fn record_edit(&mut self, removed: Vec<u32>, added: Vec<u32>) {
         for &id in &removed {
             self.scene.delete(id);
-            self.timeline.record(id, false);
+            self.note(id, false);
             self.persist_deleted(id);
         }
         for &id in &added {
-            self.timeline.record(id, true);
+            self.note(id, true);
             self.persist_new(id);
         }
         let change = match (removed.is_empty(), added.is_empty()) {
@@ -962,10 +962,13 @@ impl App {
         let mut removed = Vec::new();
         let mut added = Vec::new();
         let mut new_sel = Vec::new();
+        let mut pairs = Vec::new();
         for r in sel {
             let old: Vec<u32> = self.objs.strokes(&r).to_vec();
             if let Some(n) = edit(self, r) {
-                added.extend_from_slice(self.objs.strokes(&n));
+                let new = self.objs.strokes(&n).to_vec();
+                added.extend_from_slice(&new);
+                pairs.push((old.clone(), new));
                 removed.extend(old);
                 new_sel.push(n);
             } else {
@@ -973,6 +976,7 @@ impl App {
             }
         }
         self.edit.selection = new_sel;
+        self.note_replaced(&pairs);
         self.record_edit(removed, added);
     }
 

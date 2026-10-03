@@ -13,12 +13,13 @@
 use std::path::{Path, PathBuf};
 
 use num_bigint::BigInt;
+use ogpaper_core::sync::{Event, Hlc, Replace};
 use ogpaper_core::{Brush, Camera, CellAddr, Dash, Point, Scene, Style};
 use rusqlite::{params, Connection, OptionalExtension};
 
 pub use rusqlite::Error;
 
-pub const FORMAT_VERSION: &str = "0.4";
+pub const FORMAT_VERSION: &str = "0.5";
 
 const README: &str = "This is an OG Paper canvas (https://github.com/OmegaGiven/OG-paper). \
 It is a SQLite database. Table `objects` holds one row per drawn object. Each object is \
@@ -35,7 +36,11 @@ settings they were drawn from (`data`, a small binary record described in the OG
 they can be edited again; the strokes alone are enough to draw them, except pictures, whose one \
 stroke is an invisible outline of the picture's corners (top-left, top-right, bottom-right, \
 bottom-left). Table `images` holds each picture file once (PNG, JPEG, GIF or WebP) under its \
-8-byte id, which the picture's `data` names.";
+8-byte id, which the picture's `data` names. For merging copies made apart: meta `canvas_id` \
+(32 hex digits) names the canvas across copies; table `sync_events` logs every time an object \
+was shown (alive = 1) or hidden, stamped (ms, n, peer) with a hybrid logical clock that orders \
+events the same on every device (an object shows if its latest event says so); table \
+`sync_replaces` says which object an edited object replaced, and in which edit.";
 
 pub struct OgpFile {
     conn: Connection,
@@ -104,6 +109,7 @@ impl OgpFile {
             conn,
             path: path.to_path_buf(),
         };
+        f.upgrade()?;
         f.set_meta("format", "ogp")?;
         f.set_meta("format_version", FORMAT_VERSION)?;
         f.set_meta("README", README)?;
@@ -232,9 +238,26 @@ impl OgpFile {
                  created INTEGER NOT NULL
              );",
         )?;
+        self.conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS sync_events (
+                 item BLOB NOT NULL,
+                 alive INTEGER NOT NULL,
+                 ms INTEGER NOT NULL,
+                 n INTEGER NOT NULL,
+                 peer INTEGER NOT NULL,
+                 PRIMARY KEY (ms, n, peer, item)
+             );
+             CREATE TABLE IF NOT EXISTS sync_replaces (
+                 item BLOB PRIMARY KEY,
+                 replaces BLOB NOT NULL,
+                 ms INTEGER NOT NULL,
+                 n INTEGER NOT NULL,
+                 peer INTEGER NOT NULL
+             );",
+        )?;
         if matches!(
             self.get_meta("format_version")?.as_deref(),
-            Some("0.1" | "0.2" | "0.3")
+            Some("0.1" | "0.2" | "0.3" | "0.4")
         ) {
             self.set_meta("format_version", FORMAT_VERSION)?;
             self.set_meta("README", README)?;
@@ -285,6 +308,90 @@ impl OgpFile {
             ],
         )?;
         Ok(())
+    }
+
+    /// The id that names this canvas across its copies, if it has one.
+    pub fn canvas_id(&self) -> Result<Option<u128>, Error> {
+        Ok(self
+            .get_meta("canvas_id")?
+            .and_then(|v| u128::from_str_radix(&v, 16).ok()))
+    }
+
+    pub fn set_canvas_id(&self, id: u128) -> Result<(), Error> {
+        self.set_meta("canvas_id", &format!("{id:032x}"))
+    }
+
+    /// Log that an object was shown or hidden (no-op if already logged).
+    pub fn put_event(&self, e: &Event) -> Result<(), Error> {
+        self.conn.execute(
+            "INSERT OR IGNORE INTO sync_events (item, alive, ms, n, peer) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                e.item.to_be_bytes().to_vec(),
+                e.alive as i64,
+                e.at.ms as i64,
+                e.at.n as i64,
+                e.at.peer as i64
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Note which object an edited object replaced (no-op if known).
+    pub fn put_replace(&self, r: &Replace) -> Result<(), Error> {
+        self.conn.execute(
+            "INSERT OR IGNORE INTO sync_replaces (item, replaces, ms, n, peer) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                r.item.to_be_bytes().to_vec(),
+                r.replaces.to_be_bytes().to_vec(),
+                r.edit.ms as i64,
+                r.edit.n as i64,
+                r.edit.peer as i64
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// The whole merge log: events (oldest first) and replacements.
+    pub fn sync_log(&self) -> Result<(Vec<Event>, Vec<Replace>), Error> {
+        let id = |b: Vec<u8>| {
+            <[u8; 16]>::try_from(b.as_slice())
+                .ok()
+                .map(u128::from_be_bytes)
+        };
+        let hlc = |ms: i64, n: i64, peer: i64| Hlc {
+            ms: ms as u64,
+            n: n as u32,
+            peer: peer as u64,
+        };
+        let mut events = Vec::new();
+        let mut q = self
+            .conn
+            .prepare("SELECT item, alive, ms, n, peer FROM sync_events ORDER BY ms, n, peer")?;
+        let mut rows = q.query([])?;
+        while let Some(r) = rows.next()? {
+            if let Some(item) = id(r.get(0)?) {
+                events.push(Event {
+                    item,
+                    alive: r.get::<_, i64>(1)? != 0,
+                    at: hlc(r.get(2)?, r.get(3)?, r.get(4)?),
+                });
+            }
+        }
+        let mut replaces = Vec::new();
+        let mut q = self
+            .conn
+            .prepare("SELECT item, replaces, ms, n, peer FROM sync_replaces")?;
+        let mut rows = q.query([])?;
+        while let Some(r) = rows.next()? {
+            if let (Some(item), Some(old)) = (id(r.get(0)?), id(r.get(1)?)) {
+                replaces.push(Replace {
+                    item,
+                    replaces: old,
+                    edit: hlc(r.get(2)?, r.get(3)?, r.get(4)?),
+                });
+            }
+        }
+        Ok((events, replaces))
     }
 
     pub fn path(&self) -> &Path {
@@ -419,6 +526,41 @@ mod tests {
     use super::*;
 
     #[test]
+    fn sync_log_and_canvas_id_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.ogp");
+        let f = OgpFile::create(&path).unwrap();
+        assert_eq!(f.canvas_id().unwrap(), None);
+        f.set_canvas_id(0xdead_beef_u128 << 64 | 7).unwrap();
+        let at = |ms, peer| Hlc { ms, n: 2, peer };
+        let e1 = Event {
+            item: 1 << 100,
+            alive: true,
+            at: at(10, u64::MAX),
+        };
+        let e2 = Event {
+            item: 1 << 100,
+            alive: false,
+            at: at(20, 5),
+        };
+        f.put_event(&e2).unwrap();
+        f.put_event(&e1).unwrap();
+        f.put_event(&e1).unwrap(); // twice is once
+        let r = Replace {
+            item: 9,
+            replaces: 1 << 100,
+            edit: at(20, 5),
+        };
+        f.put_replace(&r).unwrap();
+        drop(f);
+        let (f, ..) = OgpFile::open(&path).unwrap();
+        assert_eq!(f.canvas_id().unwrap(), Some(0xdead_beef_u128 << 64 | 7));
+        let (ev, rep) = f.sync_log().unwrap();
+        assert_eq!(ev, vec![e1, e2]);
+        assert_eq!(rep, vec![r]);
+    }
+
+    #[test]
     fn roundtrip_with_deep_cells_and_tombstones() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("t.ogp");
@@ -514,7 +656,7 @@ mod tests {
         assert!(s3.strokes.is_empty() && g3.is_empty());
         assert_eq!(
             f2.get_meta("format_version").unwrap().as_deref(),
-            Some("0.4")
+            Some("0.5")
         );
         let v = view.unwrap();
         assert_eq!(v.cell, cam.cell);

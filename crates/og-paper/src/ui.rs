@@ -255,6 +255,7 @@ pub enum AppItem {
     Grid,
     Dark,
     Import,
+    Merge,
     New,
     Open,
     Save,
@@ -284,6 +285,7 @@ impl AppItem {
             AppItem::Grid => "Grid",
             AppItem::Dark => "Dark mode",
             AppItem::Import => "Import canvas",
+            AppItem::Merge => "Merge copy",
             AppItem::New => "New canvas",
             AppItem::Open => "Open",
             AppItem::Save => "Save copy",
@@ -312,6 +314,7 @@ impl AppItem {
             AppItem::Grid => Action::Grid,
             AppItem::Dark => Action::Dark,
             AppItem::Import => Action::Import,
+            AppItem::Merge => Action::MergeCopy,
             AppItem::New => Action::New,
             AppItem::Open => Action::Open,
             AppItem::Save => Action::SaveAs,
@@ -537,6 +540,7 @@ impl Default for UiState {
                 AppItem::New,
                 AppItem::Open,
                 AppItem::Import,
+                AppItem::Merge,
                 AppItem::Save,
                 AppItem::Export,
                 AppItem::Paste,
@@ -808,6 +812,8 @@ pub enum Action {
     Open,
     /// Bring another canvas in, to move and place.
     Import,
+    /// Merge another copy of this canvas into it.
+    MergeCopy,
     ImportPlace,
     ImportCancel,
     SaveAs,
@@ -3344,6 +3350,17 @@ fn app_icon(
                     }
                 }
             }
+        }
+        AppItem::Merge => {
+            // Two lines joining into one.
+            line(&[
+                vec2(-0.8, -0.85),
+                vec2(-0.8, -0.2),
+                vec2(0.0, 0.35),
+                vec2(0.0, 0.95),
+            ]);
+            line(&[vec2(0.8, -0.85), vec2(0.8, -0.2), vec2(0.0, 0.35)]);
+            line(&[vec2(-0.3, 0.65), vec2(0.0, 0.95), vec2(0.3, 0.65)]);
         }
         AppItem::Import => {
             // An arrow down into a tray.
