@@ -1510,7 +1510,19 @@ fn quick_bar(ctx: &egui::Context, st: &mut UiState, g: &Geo) {
     } else {
         (n, 0.0, 0.0)
     };
-    let (side, stack) = if st.radial_bar {
+    let portrait = screen.height() > screen.width();
+    let (side, stack) = if st.radial_bar && portrait {
+        // Radial on a portrait screen: the toolbar list still opens as
+        // columns from the left edge, the inventory beside them.
+        let len = (hotbar::BAR + 1) as f32 * (s + gap);
+        (
+            Side::Right,
+            Rect::from_min_size(
+                pos2(screen.left() + 2.0, screen.center().y - len * 0.5),
+                vec2(1.0, len),
+            ),
+        )
+    } else if st.radial_bar {
         (
             Side::Above,
             Rect::from_center_size(g.bar, Vec2::splat(2.0 * g.r)),
@@ -1678,38 +1690,39 @@ fn inventory(
     let screen = ctx.content_rect();
     let m = 12.0;
     // `bars` is the toolbar list: the inventory reaches out from it, away
-    // from the quick bar (beside a column: under the list, or over it when
-    // there is no room).
+    // from the quick bar. Beside a column (portrait) it takes the rest of
+    // the screen's width, as tall as the list; over it if that is too narrow.
     let side = match side {
-        Side::Right | Side::Left
-            if screen.bottom() - bars.bottom() - 10.0 - m >= 3.0 * s + 90.0 =>
-        {
-            return inventory_at(
-                ctx,
-                st,
-                Rect::from_min_max(
-                    pos2(
-                        if side == Side::Right {
-                            bars.left()
-                        } else {
-                            screen.left() + m
-                        },
-                        bars.bottom() + 10.0,
-                    ),
-                    pos2(
-                        if side == Side::Right {
-                            screen.right() - m
-                        } else {
-                            bars.right()
-                        },
-                        screen.bottom() - m,
-                    ),
-                ),
-                s,
-                gap,
-                fx,
-            );
+        Side::Right | Side::Left => {
+            let (l, r) = if side == Side::Right {
+                (bars.right() + 8.0, screen.right() - m)
+            } else {
+                (screen.left() + m, bars.left() - 8.0)
+            };
+            if r - l >= 3.0 * (s + gap) + 24.0 {
+                let top = bars
+                    .top()
+                    .min(screen.bottom() - m - (4.0 * s + 90.0))
+                    .max(screen.top() + m);
+                let bottom = bars
+                    .bottom()
+                    .max(top + 4.0 * s + 90.0)
+                    .min(screen.bottom() - m);
+                return inventory_at(
+                    ctx,
+                    st,
+                    Rect::from_min_max(pos2(l, top), pos2(r, bottom)),
+                    s,
+                    gap,
+                    fx,
+                    true,
+                );
+            }
+            Side::Above
         }
+        other => other,
+    };
+    let side = match side {
         Side::Right | Side::Left => Side::Above,
         other => other,
     };
@@ -1753,10 +1766,11 @@ fn inventory(
             Rect::from_min_size(pos2(area.left(), top), vec2(area.width(), h))
         }
     };
-    inventory_at(ctx, st, area, s, gap, fx);
+    inventory_at(ctx, st, area, s, gap, fx, false);
 }
 
-/// The inventory panel filling `area`.
+/// The inventory panel filling `area`; with `full` all of it (beside the
+/// toolbar list), else at most ~60% of the screen tall.
 fn inventory_at(
     ctx: &egui::Context,
     st: &mut UiState,
@@ -1764,15 +1778,20 @@ fn inventory_at(
     s: f32,
     gap: f32,
     fx: &mut SlotFx,
+    full: bool,
 ) {
     let screen = ctx.content_rect();
-    let max_h = (screen.height() * 0.6).max(4.0 * s + 90.0);
+    let max_h = if full {
+        area.height()
+    } else {
+        (screen.height() * 0.6).max(4.0 * s + 90.0)
+    };
     let area = Rect::from_min_size(area.min, vec2(area.width(), area.height().min(max_h)));
     if area.height() < 3.0 * s {
         return;
     }
     let inner = area.width() - 24.0;
-    let cols = ((inner + gap) / (s + gap)).floor().max(3.0) as usize;
+    let cols = ((inner + gap) / (s + gap)).floor().max(2.0) as usize;
     // Fill the panel with empty slots, like a game's inventory grid.
     let fit = (((area.height() - 90.0) + gap) / (s + gap))
         .floor()
@@ -1796,8 +1815,13 @@ fn inventory_at(
                 .show(ui, |ui| {
                     ui.set_width(inner);
                     ui.set_height(area.height() - 24.0);
+                    // Narrow (beside the toolbar list on a phone): icons only,
+                    // so the panel keeps to its space.
+                    let narrow = inner < 230.0;
                     ui.horizontal(|ui| {
-                        ui.strong("Inventory");
+                        if inner >= 150.0 {
+                            ui.strong("Inventory");
+                        }
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui.button("×").on_hover_text("Close").clicked() {
                                 st.bag_open = false;
@@ -1810,7 +1834,11 @@ fn inventory_at(
                                 st.held = None;
                                 fx.changed = true;
                             }
-                            if ui.button("+ Save current").on_hover_text("Keep the current tool and its settings").clicked() {
+                            if ui
+                                .button(if narrow { "+" } else { "+ Save current" })
+                                .on_hover_text("Keep the current tool and its settings")
+                                .clicked()
+                            {
                                 match st.inventory.iter().position(|x| x.is_none()) {
                                     Some(k) => {
                                         st.inventory[k] = Some(fx.current);
@@ -1911,18 +1939,19 @@ fn toolbar_menu(
                     if vert {
                         // As wide as its columns (at least the header), but
                         // never wider than the room right of the bar.
-                        let cols = st.toolbars.len() as f32 * (s + gap) - gap;
+                        // Up to four columns wide; more scroll sideways.
+                        let cols = st.toolbars.len().min(4) as f32 * (s + gap) - gap;
                         let room_w = if side == Side::Left {
                             at.x - screen.left() - 12.0 - 20.0
                         } else {
                             screen.right() - at.x - 12.0 - 20.0
                         };
-                        ui.set_max_width(cols.max(150.0).min(room_w));
+                        ui.set_max_width(cols.max(2.0 * (s + gap)).min(room_w));
                     }
                     ui.horizontal(|ui| {
                         if ui
-                            .button("+ Add toolbar")
-                            .on_hover_text("A new, empty toolbar on top")
+                            .button(if vert { "+" } else { "+ Add toolbar" })
+                            .on_hover_text("Add a new, empty toolbar")
                             .clicked()
                         {
                             let k = st.toolbars.len();
@@ -2089,7 +2118,24 @@ fn toolbar_menu(
                     }
                 });
         });
-    Some(shown.response.rect)
+    let mut r = shown.response.rect;
+    if vert {
+        // Its width as laid out this frame (the area's own rect can lag a
+        // frame behind when toolbars are added).
+        let cols = st.toolbars.len().min(4) as f32 * (s + gap) - gap;
+        let room_w = if side == Side::Left {
+            at.x - screen.left() - 12.0 - 20.0
+        } else {
+            screen.right() - at.x - 12.0 - 20.0
+        };
+        let w = cols.max(2.0 * (s + gap)).min(room_w) + 20.0 + 2.0;
+        if side == Side::Left {
+            r.min.x = r.max.x - w;
+        } else {
+            r.max.x = r.min.x + w;
+        }
+    }
+    Some(r)
 }
 
 /// A bin.
