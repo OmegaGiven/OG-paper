@@ -107,5 +107,5 @@ on; it cannot read them.
   always-on host.
 - WebRTC needs both people online and a copy-paste of the reply code; it
   cannot reconnect by itself.
-- Rival-edit detection covers moves, restyles and other edits made through
-  selection; reordering (front/back) is not yet tracked as an edit.
+- Merge copy is not an undo step (undoing your own strokes afterwards works
+  as usual).

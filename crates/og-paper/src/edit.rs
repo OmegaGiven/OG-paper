@@ -1074,6 +1074,7 @@ impl App {
         let mut removed = Vec::new();
         let mut added = Vec::new();
         let mut new_sel = Vec::new();
+        let mut pairs = Vec::new();
         for r in order {
             let old = self.objs.strokes(&r).to_vec();
             let n = old.len() as f64;
@@ -1082,11 +1083,14 @@ impl App {
                 ObjRef::Group(g) => self.group_copy(g, |d| d, Some((z, z + (n - 1.0).max(0.0)))),
             };
             z += n + 1.0;
-            added.extend_from_slice(self.objs.strokes(&nr));
+            let new = self.objs.strokes(&nr).to_vec();
+            added.extend_from_slice(&new);
+            pairs.push((old.clone(), new));
             removed.extend(old);
             new_sel.push(nr);
         }
         self.edit.selection = new_sel;
+        self.note_replaced(&pairs);
         self.record_edit(removed, added);
     }
 
