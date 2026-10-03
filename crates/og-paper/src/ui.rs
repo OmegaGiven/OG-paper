@@ -256,6 +256,7 @@ pub enum AppItem {
     Dark,
     Import,
     Merge,
+    Changes,
     New,
     Open,
     Save,
@@ -286,6 +287,7 @@ impl AppItem {
             AppItem::Dark => "Dark mode",
             AppItem::Import => "Import canvas",
             AppItem::Merge => "Merge copy",
+            AppItem::Changes => "Save changes",
             AppItem::New => "New canvas",
             AppItem::Open => "Open",
             AppItem::Save => "Save copy",
@@ -315,6 +317,7 @@ impl AppItem {
             AppItem::Dark => Action::Dark,
             AppItem::Import => Action::Import,
             AppItem::Merge => Action::MergeCopy,
+            AppItem::Changes => Action::SaveChanges,
             AppItem::New => Action::New,
             AppItem::Open => Action::Open,
             AppItem::Save => Action::SaveAs,
@@ -541,6 +544,7 @@ impl Default for UiState {
                 AppItem::Open,
                 AppItem::Import,
                 AppItem::Merge,
+                AppItem::Changes,
                 AppItem::Save,
                 AppItem::Export,
                 AppItem::Paste,
@@ -814,6 +818,8 @@ pub enum Action {
     Import,
     /// Merge another copy of this canvas into it.
     MergeCopy,
+    /// Save only what changed since the last merge.
+    SaveChanges,
     ImportPlace,
     ImportCancel,
     SaveAs,
@@ -3350,6 +3356,19 @@ fn app_icon(
                     }
                 }
             }
+        }
+        AppItem::Changes => {
+            // A page with a plus: just the new bits.
+            line(&[
+                vec2(-0.7, -0.9),
+                vec2(0.3, -0.9),
+                vec2(0.7, -0.5),
+                vec2(0.7, 0.9),
+                vec2(-0.7, 0.9),
+                vec2(-0.7, -0.9),
+            ]);
+            line(&[vec2(0.0, -0.3), vec2(0.0, 0.5)]);
+            line(&[vec2(-0.4, 0.1), vec2(0.4, 0.1)]);
         }
         AppItem::Merge => {
             // Two lines joining into one.

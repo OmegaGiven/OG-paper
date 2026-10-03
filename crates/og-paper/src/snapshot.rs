@@ -22,7 +22,8 @@
 //!   JPEG, GIF or WebP)
 //! - v5 merge log (see `share`): canvas id u128; events: count u32, each
 //!   item u128, alive u8, stamp; replacements: count u32, each item u128,
-//!   replaced u128, stamp. A stamp is ms u64, n u32, peer u64.
+//!   replaced u128, stamp. A stamp is ms u64, n u32, peer u64. Then
+//!   optionally a flags byte: bit 0 = only the changes since a sync.
 //!
 //! A camera is addr, off f64 x2, scale f64. An addr is level i64 then x and y
 //! as (byte count u32, signed LE bytes).
@@ -263,6 +264,7 @@ pub fn encode(
         b.extend_from_slice(&r.replaces.to_le_bytes());
         stamp(&mut b, &r.edit);
     }
+    b.push(share.partial as u8);
     b
 }
 
@@ -417,10 +419,12 @@ pub fn decode(bytes: &[u8], base_px: f64) -> Result<Snapshot, String> {
                 edit,
             });
         }
+        let partial = r.at < bytes.len() && r.u8()? & 1 != 0;
         Some(crate::share::CopyLog {
             canvas,
             events,
             replaces,
+            partial,
         })
     } else {
         None
@@ -769,6 +773,7 @@ mod tests {
                     peer: 3,
                 },
             }],
+            partial: true,
         };
         let bytes = encode(&s, &cam, &tl, &marks, &objs, &log);
         let snap = decode(&bytes, 800.0).unwrap();
@@ -776,6 +781,7 @@ mod tests {
         assert_eq!(back.canvas, log.canvas);
         assert_eq!(back.events, log.events);
         assert_eq!(back.replaces, log.replaces);
+        assert!(back.partial);
         let s2 = &snap.scene;
         assert_eq!(s2.strokes.len(), 3);
         assert_eq!(s2.brush_of(c), Some(brush));

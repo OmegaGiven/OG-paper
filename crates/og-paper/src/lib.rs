@@ -72,6 +72,9 @@ fn dist(a: [f64; 2], b: [f64; 2]) -> f64 {
 
 /// Pixels per level-0 cell at scale 1.
 const BASE_PX: f64 = 800.0;
+/// Said when a changes copy is asked for before any merge.
+const NO_CHANGES_BASE: &str =
+    "No merge yet, so nothing to measure changes from: share a full copy (Save copy) first";
 
 /// What this app puts on the system clipboard when it copies (the copy
 /// itself stays in the app).
@@ -115,6 +118,8 @@ pub struct App {
     timeline: Timeline,
     /// The canvas id and merge log (Merge copy).
     share: share::Share,
+    /// What the last merge changed, highlighted for a while.
+    merge_changes: Option<share::Changes>,
     /// Shapes and texts (groups of strokes with their settings).
     objs: objects::Objects,
     edit: edit::EditState,
@@ -198,6 +203,7 @@ impl App {
             draw: DrawList::default(),
             timeline: Timeline::default(),
             share: share::Share::fresh(),
+            merge_changes: None,
             objs: objects::Objects::default(),
             edit: edit::EditState::default(),
             bookmarks: Vec::new(),
@@ -713,6 +719,7 @@ impl App {
     fn load_scene(&mut self, scene: Scene, cam: Camera) {
         self.timeline = Timeline::from_scene(&scene, timeline::now_ms());
         self.share = share::Share::loaded(&scene, None);
+        self.merge_changes = None;
         self.scene = scene;
         self.cam = cam;
         self.history = History::default();
@@ -774,6 +781,9 @@ impl App {
                 .map_err(|e| e.to_string())
                 .and_then(|b| snapshot::decode(&b, BASE_PX))
             {
+                Ok(s) if s.share.as_ref().is_some_and(|c| c.partial) => {
+                    self.say("That is a changes file: use Merge copy");
+                }
                 Ok(s) => self.import_begin(s.scene, s.objs, &name),
                 Err(e) => self.say(format!("Could not import {name}: {e}")),
             }
@@ -1070,6 +1080,37 @@ impl App {
             Action::Import => web::emit("import"),
             #[cfg(target_arch = "wasm32")]
             Action::MergeCopy => web::emit("merge"),
+            #[cfg(target_arch = "wasm32")]
+            Action::SaveChanges => match self.changes_copy() {
+                Some((b, n)) => {
+                    web::set_changes(b);
+                    web::emit("changes");
+                    self.say(format!("Changes copy: {n} changes since the last merge"));
+                }
+                None => self.say(NO_CHANGES_BASE),
+            },
+            #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+            Action::SaveChanges => match self.changes_copy() {
+                Some((b, n)) => {
+                    if let Some(mut p) = rfd::FileDialog::new()
+                        .add_filter("OG Paper changes", &["ogpt"])
+                        .set_file_name(format!(
+                            "{}-changes.ogpt",
+                            self.ui.file_name.trim_end_matches(".ogp")
+                        ))
+                        .save_file()
+                    {
+                        if p.extension().is_none() {
+                            p.set_extension("ogpt");
+                        }
+                        match std::fs::write(&p, b) {
+                            Ok(()) => self.say(format!("Saved {n} changes to {}", p.display())),
+                            Err(e) => self.say(format!("Could not save: {e}")),
+                        }
+                    }
+                }
+                None => self.say(NO_CHANGES_BASE),
+            },
             #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
             Action::MergeCopy => {
                 if let Some(p) = rfd::FileDialog::new()
@@ -1128,6 +1169,7 @@ impl App {
                             self.file = Some(f);
                             self.groups_saved = 0;
                             self.persist_groups();
+                            self.persist_share();
                             let f = self.file.take().expect("file");
                             let _ = f.put_view(&self.cam);
                             self.ui.file_name = file_label(&p);
@@ -1611,6 +1653,7 @@ impl App {
             "cmd.picture" => self.action(Action::Picture),
             "cmd.import" => self.action(Action::Import),
             "cmd.merge" => self.action(Action::MergeCopy),
+            "cmd.changes" => self.action(Action::SaveChanges),
             "cmd.search" => self.action(Action::Search),
             "cmd.bookmarks" => self.action(Action::Bookmarks),
             "cmd.timeline" => self.action(Action::Timeline),
@@ -1924,6 +1967,9 @@ impl App {
             Cmd::Load(bytes, demo) => {
                 let snap = bytes.map(|b| snapshot::decode(&b, BASE_PX));
                 match snap {
+                    Some(Ok(s)) if s.share.as_ref().is_some_and(|c| c.partial) => {
+                        self.say("That is a changes file: open the canvas, then Merge copy it");
+                    }
                     Some(Ok(s)) => {
                         self.load_scene(s.scene, s.cam);
                         self.share = share::Share::loaded(&self.scene, s.share);
@@ -2034,6 +2080,9 @@ impl App {
                 Err(e) => self.say(format!("Could not read that copy: {e}")),
             },
             Cmd::Import(bytes) => match snapshot::decode(&bytes, BASE_PX) {
+                Ok(s) if s.share.as_ref().is_some_and(|c| c.partial) => {
+                    self.say("That is a changes file: use Merge copy");
+                }
                 Ok(s) => self.import_begin(s.scene, s.objs, "that canvas"),
                 Err(e) => self.say(format!("Could not import that file: {e}")),
             },
@@ -2291,6 +2340,11 @@ impl App {
         }
         if let Some(g) = self.ui.search_pick.take() {
             self.search_go(g);
+        }
+        if self.merge_changes.as_ref().is_some_and(|c| c.live()) {
+            window.request_redraw();
+        } else {
+            self.merge_changes = None;
         }
         if self.flash.is_some_and(|(_, t)| t.elapsed() < search::FLASH) {
             window.request_redraw();
@@ -2587,6 +2641,7 @@ fn file_copy_log(f: &OgpFile) -> Option<share::CopyLog> {
         canvas,
         events,
         replaces,
+        partial: false,
     })
 }
 

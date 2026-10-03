@@ -99,6 +99,36 @@ pub struct Replace {
 pub struct Version(pub BTreeMap<u64, Hlc>);
 
 impl Version {
+    /// As text: `peer:ms.n` per peer (hex peer), comma separated.
+    pub fn to_text(&self) -> String {
+        self.0
+            .iter()
+            .map(|(p, h)| format!("{p:x}:{}.{}", h.ms, h.n))
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+
+    /// Read [`Version::to_text`] (bad parts are skipped).
+    pub fn parse(s: &str) -> Version {
+        let mut v = Version::default();
+        for part in s.split(',') {
+            let Some((p, rest)) = part.split_once(':') else {
+                continue;
+            };
+            let Some((ms, n)) = rest.split_once('.') else {
+                continue;
+            };
+            if let (Ok(peer), Ok(ms), Ok(n)) = (
+                u64::from_str_radix(p, 16),
+                ms.parse::<u64>(),
+                n.parse::<u32>(),
+            ) {
+                v.0.insert(peer, Hlc { ms, n, peer });
+            }
+        }
+        v
+    }
+
     pub fn has(&self, h: &Hlc) -> bool {
         self.0.get(&h.peer).is_some_and(|m| h <= m)
     }
@@ -312,6 +342,23 @@ mod tests {
         let mut l = Log::new();
         l.merge(events, replaces);
         l
+    }
+
+    #[test]
+    fn versions_round_trip_as_text() {
+        let mut v = Version::default();
+        v.note(Hlc {
+            ms: 12,
+            n: 3,
+            peer: u64::MAX,
+        });
+        v.note(Hlc {
+            ms: 7,
+            n: 0,
+            peer: 0,
+        });
+        assert_eq!(Version::parse(&v.to_text()), v);
+        assert_eq!(Version::parse("junk,1:2"), Version::default());
     }
 
     #[test]

@@ -1528,6 +1528,7 @@ impl App {
         let to_pt = |p: [f64; 2]| pos2((p[0] / ppp) as f32, (p[1] / ppp) as f32);
         let mut ov = ui::Overlay::default();
         self.import_overlay(&mut ov);
+        self.changes_overlay(&mut ov);
         if let Some((a, b)) = self.edit.shape_drag {
             let (a, b) = self.snap_line(a, b);
             let g = self.shape_geom_px(a, b);

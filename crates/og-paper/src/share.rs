@@ -15,8 +15,11 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use ogpaper_core::sync::{Clock, Event, Hlc, Log, Merged, Replace};
-use ogpaper_core::Scene;
+use egui::{pos2, Color32, Pos2};
+use web_time::{Duration, Instant};
+
+use ogpaper_core::sync::{Clock, Event, Hlc, Log, Merged, Replace, Version};
+use ogpaper_core::{Camera, Scene};
 
 use crate::objects::{Group, Objects};
 use crate::timeline::{now_ms, uid_ms};
@@ -28,6 +31,9 @@ pub struct Share {
     pub canvas: u128,
     pub clock: Clock,
     pub log: Log,
+    /// What the copy last merged in had: a changes file need only carry
+    /// what is not in it (kept in the prefs per canvas).
+    pub seen: Option<Version>,
 }
 
 /// What a copy carries for merging (from a file or a snapshot).
@@ -36,6 +42,8 @@ pub struct CopyLog {
     pub canvas: u128,
     pub events: Vec<Event>,
     pub replaces: Vec<Replace>,
+    /// Only the changes since some sync, not the whole canvas.
+    pub partial: bool,
 }
 
 /// This device's id, made once and kept in the prefs.
@@ -83,7 +91,25 @@ impl Share {
             canvas: crate::uid::new(),
             clock: Clock::new(peer_id()),
             log: Log::new(),
+            seen: None,
         }
+    }
+
+    fn seen_key(&self) -> String {
+        format!("seen.{:032x}", self.canvas)
+    }
+
+    /// Remember what a merged copy had.
+    pub fn remember_seen(&mut self, v: &Version) {
+        let mut all = self.seen.clone().unwrap_or_default();
+        for (p, h) in &v.0 {
+            let e = all.0.entry(*p).or_insert(*h);
+            *e = (*e).max(*h);
+        }
+        let mut prefs = crate::prefs::load();
+        prefs.insert(self.seen_key(), all.to_text());
+        crate::prefs::save(&prefs);
+        self.seen = Some(all);
     }
 
     /// The state of a loaded copy: its id and log, or a new id and a log
@@ -107,6 +133,9 @@ impl Share {
             s.clock.observe(e.at);
             s.log.add(e);
         }
+        s.seen = crate::prefs::load()
+            .get(&s.seen_key())
+            .map(|t| Version::parse(t));
         s
     }
 
@@ -116,7 +145,24 @@ impl Share {
             canvas: self.canvas,
             events: self.log.events().collect(),
             replaces: self.log.replacements().copied().collect(),
+            partial: false,
         }
+    }
+}
+
+/// How long a merge's changes stay highlighted.
+const CHANGES_FOR: Duration = Duration::from_secs(10);
+
+/// What the last merge changed, highlighted for a while.
+pub struct Changes {
+    pub shown: Vec<u32>,
+    pub hidden: Vec<u32>,
+    pub at: Instant,
+}
+
+impl Changes {
+    pub fn live(&self) -> bool {
+        self.at.elapsed() < CHANGES_FOR
     }
 }
 
@@ -291,9 +337,11 @@ impl App {
         }
         let replaces: Vec<Replace> = theirs.log.replacements().copied().collect();
         let merged = self.share.log.merge(&new_events, &replaces);
+        self.share.remember_seen(theirs.log.version());
         // Every stroke shows or hides as the joined log says.
         let visible = self.share.log.visible();
         let known = self.share.log.state();
+        let (mut shown, mut hidden) = (Vec::new(), Vec::new());
         for id in 0..self.scene.strokes.len() as u32 {
             let s = &self.scene.strokes[id as usize];
             if !known.contains_key(&s.uid) {
@@ -305,11 +353,25 @@ impl App {
             }
             if want {
                 self.scene.restore(id);
+                shown.push(id);
             } else {
                 self.scene.delete(id);
+                hidden.push(id);
             }
             self.timeline.record(id, want);
         }
+        // Show what changed: highlighted, and the view framed on it.
+        let mut all = shown.clone();
+        all.extend(&hidden);
+        if let Some(cam) = self.frame_strokes(&all) {
+            self.fly = Some(cam);
+            self.fly_last = Instant::now();
+        }
+        self.merge_changes = (!all.is_empty()).then(|| Changes {
+            shown,
+            hidden,
+            at: Instant::now(),
+        });
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(f) = &self.file {
             for &id in &added {
@@ -332,6 +394,153 @@ impl App {
         };
         self.say(report.text());
         self.redraw();
+    }
+}
+
+impl App {
+    /// A copy holding only what the copy last merged in lacks: the newer
+    /// events, the strokes they name, their shapes and pictures. None when
+    /// there was no merge yet (a full copy is then the way to share).
+    pub(crate) fn changes_copy(&self) -> Option<(Vec<u8>, usize)> {
+        let seen = self.share.seen.as_ref()?;
+        let events = self.share.log.missing(seen);
+        let replaces: Vec<Replace> = self
+            .share
+            .log
+            .replacements()
+            .filter(|r| !seen.has(&r.edit))
+            .copied()
+            .collect();
+        let named: std::collections::HashSet<u128> = events.iter().map(|e| e.item).collect();
+        // Strokes the changes name, in a scene of their own.
+        let mut scene = Scene::new();
+        let mut map = HashMap::new();
+        for (i, s) in self.scene.strokes.iter().enumerate() {
+            let i = i as u32;
+            if !named.contains(&s.uid) {
+                continue;
+            }
+            let id = scene.add_stroke_at(
+                self.scene.stroke_cell(i),
+                self.scene.stroke_points(i),
+                self.scene.stroke_style(i),
+                s.uid,
+                s.z,
+            );
+            if s.deleted {
+                scene.delete(id);
+            }
+            map.insert(i, id);
+        }
+        let mut objs = Objects::default();
+        for g in &self.objs.groups {
+            let strokes: Vec<u32> = g
+                .strokes
+                .iter()
+                .filter_map(|s| map.get(s).copied())
+                .collect();
+            if strokes.len() == g.strokes.len() && !strokes.is_empty() {
+                if let crate::objects::ObjData::Image { id, .. } = g.data {
+                    if let Some(a) = self.objs.images.get(&id) {
+                        objs.images.insert(id, a.clone());
+                    }
+                }
+                objs.add(Group {
+                    cell: g.cell.clone(),
+                    data: g.data.clone(),
+                    strokes,
+                });
+            }
+        }
+        let n = events.len();
+        let log = CopyLog {
+            canvas: self.share.canvas,
+            events,
+            replaces,
+            partial: true,
+        };
+        let bytes = crate::snapshot::encode(
+            &scene,
+            &self.cam,
+            &crate::timeline::Timeline::default(),
+            &[],
+            &objs,
+            &log,
+        );
+        Some((bytes, n))
+    }
+
+    /// A camera framing strokes `ids` (None if there are none).
+    pub(crate) fn frame_strokes(&self, ids: &[u32]) -> Option<Camera> {
+        let top = ids
+            .iter()
+            .map(|&i| self.scene.stroke_cell(i).level)
+            .min()?
+            .min(self.cam.cell.level);
+        let mut reference = self.cam.cell.clone();
+        while reference.level > top {
+            reference = reference.parent();
+        }
+        let (mut lo, mut hi) = ([f64::MAX; 2], [f64::MIN; 2]);
+        for &i in ids {
+            let cell = self.scene.stroke_cell(i);
+            let o = cell.origin_in(&reference);
+            let side = cell.side_in(&reference);
+            for p in self.scene.stroke_points(i) {
+                let q = [o[0] + p[0] as f64 * side, o[1] + p[1] as f64 * side];
+                lo = [lo[0].min(q[0]), lo[1].min(q[1])];
+                hi = [hi[0].max(q[0]), hi[1].max(q[1])];
+            }
+        }
+        if !(lo[0] <= hi[0]) || !lo.iter().chain(&hi).all(|v| v.is_finite()) {
+            return None;
+        }
+        let c = [(lo[0] + hi[0]) * 0.5, (lo[1] + hi[1]) * 0.5];
+        let mut cam = Camera::new(reference, c, self.cam.base_px);
+        let ppc = cam.ppc();
+        let [w, h] = self.size();
+        let bw = ((hi[0] - lo[0]) * ppc).max(1e-300);
+        let bh = ((hi[1] - lo[1]) * ppc).max(1e-300);
+        // Not closer than the view already is for a single tiny change.
+        let f = (0.7 * w / bw)
+            .min(0.6 * h / bh)
+            .min(self.cam.ppc() / ppc * 4.0);
+        cam.zoom_at(f, [0.0, 0.0]);
+        Some(cam)
+    }
+
+    /// The last merge's changes over the canvas: what came in glows, what
+    /// went is a faint red ghost.
+    pub(crate) fn changes_overlay(&self, ov: &mut crate::ui::Overlay) {
+        let Some(c) = self.merge_changes.as_ref().filter(|c| c.live()) else {
+            return;
+        };
+        let ppp = self.ppp();
+        let fade = 1.0 - (c.at.elapsed().as_secs_f32() / CHANGES_FOR.as_secs_f32()).powi(3);
+        let pts_of = |id: u32| -> Vec<Pos2> {
+            let (o, side) = crate::objects::frame(self.scene.stroke_cell(id), &self.cam);
+            self.scene
+                .stroke_points(id)
+                .iter()
+                .map(|p| {
+                    let q = self.cam_to_px([o[0] + p[0] as f64 * side, o[1] + p[1] as f64 * side]);
+                    pos2((q[0] / ppp) as f32, (q[1] / ppp) as f32)
+                })
+                .collect()
+        };
+        let width = |id: u32| {
+            let s = &self.scene.strokes[id as usize];
+            let side = self.scene.stroke_cell(id).side_in(&self.cam.cell);
+            (s.width as f64 * side * self.cam.ppc() / ppp) as f32
+        };
+        let glow = Color32::from_rgba_unmultiplied(40, 160, 255, (110.0 * fade) as u8);
+        let gone = Color32::from_rgba_unmultiplied(220, 50, 50, (120.0 * fade) as u8);
+        for &id in c.shown.iter().take(5000) {
+            ov.lines.push((pts_of(id), width(id) + 8.0, glow, false));
+        }
+        for &id in c.hidden.iter().take(5000) {
+            ov.lines.push((pts_of(id), width(id).max(1.5), gone, false));
+        }
     }
 }
 

@@ -88,6 +88,7 @@ thread_local! {
     static SEARCH: RefCell<String> = RefCell::default();
     static STICKER: RefCell<Option<Vec<u8>>> = RefCell::default();
     static EXPORT: RefCell<Option<Result<Vec<u8>, String>>> = RefCell::default();
+    static CHANGES: RefCell<Option<Vec<u8>>> = RefCell::default();
     static SEARCH_OUT: RefCell<String> = RefCell::new("[]".into());
     static HAS_SELECTION: Cell<bool> = const { Cell::new(false) };
 }
@@ -221,6 +222,7 @@ pub fn og_set_menu(items: &str) {
                 "radialbar" => AppItem::RadialBar,
                 "import" => AppItem::Import,
                 "merge" => AppItem::Merge,
+                "changes" => AppItem::Changes,
                 "dark" => AppItem::Dark,
                 "showtools" => AppItem::ShowTools,
                 "showpanel" => AppItem::ShowPanel,
@@ -328,6 +330,17 @@ pub fn og_export_take() -> Result<Option<Vec<u8>>, JsValue> {
 
 pub fn set_export(r: Result<Vec<u8>, String>) {
     EXPORT.with(|e| *e.borrow_mut() = Some(r));
+}
+
+/// A changes-only copy to download (see "changes" requests).
+pub fn set_changes(b: Vec<u8>) {
+    CHANGES.with(|c| *c.borrow_mut() = Some(b));
+}
+
+/// The changes-only copy asked for by a "changes" request.
+#[wasm_bindgen]
+pub fn og_changes_take() -> Option<Vec<u8>> {
+    CHANGES.with(|c| c.borrow_mut().take())
 }
 
 /// A sticker just made from the selection (see "sticker" requests).
