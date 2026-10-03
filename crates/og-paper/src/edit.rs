@@ -498,7 +498,18 @@ impl App {
             if !self.objs.alive(&self.scene, &ObjRef::Group(g as u32)) {
                 continue;
             }
-            let geom = to_cam(&grp.cell, &grp.data, &self.cam).geom().clone();
+            let cam_data = to_cam(&grp.cell, &grp.data, &self.cam);
+            // Only texts whose letters are a sensible size on screen: zoomed
+            // far into a big text (or out past a tiny one), a tap starts a
+            // new text instead of opening that one at a giant or speck size.
+            let cap = match &cam_data {
+                ObjData::Text { size, .. } | ObjData::Table { size, .. } => size * self.cam.ppc(),
+                _ => 0.0,
+            };
+            if !(4.0 * self.ppp()..=self.size()[1] / 3.0).contains(&cap) {
+                continue;
+            }
+            let geom = cam_data.geom().clone();
             let d = rot2([q[0] - geom.center[0], q[1] - geom.center[1]], -geom.rot);
             if d[0].abs() > geom.half[0] + slack || d[1].abs() > geom.half[1] + slack {
                 continue;
