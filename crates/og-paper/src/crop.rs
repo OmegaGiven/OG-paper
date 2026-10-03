@@ -320,7 +320,7 @@ impl App {
         let Some(ce) = self.edit.crop.as_ref() else {
             return;
         };
-        let ppp = self.ppp();
+        let ppp = self.uipp();
         let pt = |q: [f64; 2]| pos2((q[0] / ppp) as f32, (q[1] / ppp) as f32);
         let at = |u: f64, v: f64| pt(self.crop_px(&full, u, v));
         let [c0, c1, c2, c3] = ce.crop.map(|v| v as f64);

@@ -227,7 +227,7 @@ impl App {
         if self.peers.is_empty() {
             return;
         }
-        let ppp = self.ppp();
+        let ppp = self.uipp();
         let [w, h] = self.size();
         let pt = |q: [f64; 2]| pos2((q[0] / ppp) as f32, (q[1] / ppp) as f32);
         for p in self.peers.values_mut() {

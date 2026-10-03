@@ -228,7 +228,7 @@ impl App {
 
     /// The import drawn where it would land, over the canvas.
     pub(crate) fn import_overlay(&mut self, ov: &mut crate::ui::Overlay) {
-        let ppp = self.ppp();
+        let ppp = self.uipp();
         let [w, h] = self.size();
         let Some(imp) = self.import.as_mut() else {
             return;

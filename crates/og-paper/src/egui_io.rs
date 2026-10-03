@@ -101,12 +101,13 @@ mod web {
             }
         }
 
-        fn ppp(_window: &Window) -> f32 {
-            crate::web_dpr()
+        /// Physical pixels per egui point: the device's, times the UI size.
+        fn ppp(&self) -> f32 {
+            crate::web_dpr() * self.ctx.zoom_factor()
         }
 
-        pub fn on_event(&mut self, window: &Window, event: &WindowEvent) -> (bool, bool) {
-            let ppp = Self::ppp(window);
+        pub fn on_event(&mut self, _window: &Window, event: &WindowEvent) -> (bool, bool) {
+            let ppp = self.ppp();
             let wants_pointer =
                 self.ctx.egui_wants_pointer_input() || self.ctx.is_pointer_over_egui();
             match event {
@@ -262,7 +263,7 @@ mod web {
         }
 
         pub fn take(&mut self, window: &Window) -> egui::RawInput {
-            let ppp = Self::ppp(window);
+            let ppp = self.ppp();
             let (w, h) = crate::web_canvas_size(window).unwrap_or((1, 1));
             let size = winit::dpi::PhysicalSize::new(w, h);
             let mut raw = egui::RawInput {
@@ -279,7 +280,7 @@ mod web {
             raw.viewports
                 .entry(egui::ViewportId::ROOT)
                 .or_default()
-                .native_pixels_per_point = Some(ppp);
+                .native_pixels_per_point = Some(crate::web_dpr());
             raw
         }
     }

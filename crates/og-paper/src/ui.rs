@@ -457,6 +457,8 @@ pub struct UiState {
     pub radial_bar: bool,
     /// Helper text (how-to lines) shows.
     pub hints: bool,
+    /// How big the UI is drawn (UI > Size), 1 = normal.
+    pub ui_scale: f32,
     /// Dark mode: the whole screen drawn with its lightness flipped.
     pub dark: bool,
     /// Another canvas is being placed (shows Place / Cancel).
@@ -667,6 +669,7 @@ impl Default for UiState {
             radial_bar: false,
             dark: false,
             hints: true,
+            ui_scale: 1.0,
             importing: false,
             folder_on: false,
             live: None,
@@ -1044,6 +1047,8 @@ pub enum Action {
     Dark,
     /// Show or hide helper text.
     Hints,
+    /// UI > Size: one step bigger (+1) or smaller (-1), or normal (0).
+    UiScale(i8),
     /// Open the text search.
     Search,
     /// Export the view or selection as a picture or PDF.
@@ -1178,6 +1183,9 @@ fn geo(ctx: &egui::Context, st: &UiState) -> Geo {
 pub fn draw(ctx: &egui::Context, st: &mut UiState) -> Vec<Action> {
     let mut actions = Vec::new();
     HINTS.store(st.hints, std::sync::atomic::Ordering::Relaxed);
+    if (ctx.zoom_factor() - st.ui_scale).abs() > 1e-3 {
+        ctx.set_zoom_factor(st.ui_scale);
+    }
     // A press anywhere but on an open menu closes it (on the canvas, the
     // app also skips drawing for that tap). What is where comes from the
     // last frame: the fans' own buttons and items, the panels' areas.
@@ -2834,6 +2842,10 @@ fn tool_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) 
         st.tool = Tool::Picker;
     }
 }
+
+/// UI > Size: the smallest and largest UI scale.
+pub const UI_SCALE_MIN: f32 = 0.7;
+pub const UI_SCALE_MAX: f32 = 1.6;
 
 /// Whether helper text shows (UI > Helper text), set each frame.
 static HINTS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
@@ -5801,6 +5813,33 @@ fn layout_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>
                         "Flip the whole screen dark (saved files keep their colors)",
                         Action::Dark,
                     );
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("Size").strong());
+                        ui.add_space(8.0);
+                        if ui
+                            .add_enabled(st.ui_scale > UI_SCALE_MIN + 1e-3, egui::Button::new("−"))
+                            .on_hover_text("Smaller")
+                            .clicked()
+                        {
+                            actions.push(Action::UiScale(-1));
+                        }
+                        if ui
+                            .button(format!("{:.0}%", st.ui_scale * 100.0))
+                            .on_hover_text("Back to normal size")
+                            .clicked()
+                        {
+                            actions.push(Action::UiScale(0));
+                        }
+                        if ui
+                            .add_enabled(st.ui_scale < UI_SCALE_MAX - 1e-3, egui::Button::new("+"))
+                            .on_hover_text("Bigger")
+                            .clicked()
+                        {
+                            actions.push(Action::UiScale(1));
+                        }
+                    });
+                    help(ui, "How big the buttons, menus and panels are.");
                     ui.add_space(8.0);
                     ui.label(egui::RichText::new("Paper").strong());
                     ui.horizontal(|ui| {

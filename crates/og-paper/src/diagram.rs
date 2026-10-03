@@ -208,7 +208,7 @@ impl App {
         op: Option<&Op>,
         ov: &mut crate::ui::Overlay,
     ) {
-        let ppp = self.ppp();
+        let ppp = self.uipp();
         let ppc = self.cam.ppc();
         for (_, d, ends) in att {
             let d = op.map_or(d.clone(), |op| Self::follow(d, *ends, op));

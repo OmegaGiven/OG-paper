@@ -564,7 +564,7 @@ impl App {
         let Some(c) = self.merge_changes.as_ref().filter(|c| c.live()) else {
             return;
         };
-        let ppp = self.ppp();
+        let ppp = self.uipp();
         let fade = 1.0 - (c.at.elapsed().as_secs_f32() / CHANGES_FOR.as_secs_f32()).powi(3);
         let pts_of = |id: u32| -> Vec<Pos2> {
             let (o, side) = crate::objects::frame(self.scene.stroke_cell(id), &self.cam);

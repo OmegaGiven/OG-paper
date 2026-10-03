@@ -169,7 +169,7 @@ impl App {
     /// What the overlay draws for a selected line or arrow: its points and
     /// the + between them, and the line as it is being dragged.
     pub(crate) fn joint_overlay(&self, ov: &mut crate::ui::Overlay) {
-        let ppp = self.ppp();
+        let ppp = self.uipp();
         let pt = |q: [f64; 2]| pos2((q[0] / ppp) as f32, (q[1] / ppp) as f32);
         let pts = match (&self.edit.joint, self.sel_connector()) {
             (Some(j), _) => {

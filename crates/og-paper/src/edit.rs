@@ -395,9 +395,10 @@ impl App {
             return;
         };
         let px = self.cam_to_px(t.at);
-        let ppp = self.ppp();
         #[cfg(target_arch = "wasm32")]
         {
+            // The page's editor is placed in CSS px.
+            let ppp = self.ppp();
             let [r, g, b, _] = t.style.color.to_le_bytes();
             crate::web::text_request(format!(
                 "{{\"x\":{:.1},\"y\":{:.1},\"size\":{:.1},\"color\":\"#{:02x}{:02x}{:02x}\",\"font\":{},\"single\":{},\"table\":{},\"text\":{}}}",
@@ -415,10 +416,9 @@ impl App {
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
-            self.ui.text_edit = Some((
-                pos2((px[0] / ppp) as f32, (px[1] / ppp) as f32),
-                t.text.clone(),
-            ));
+            let k = self.uipp();
+            self.ui.text_edit =
+                Some((pos2((px[0] / k) as f32, (px[1] / k) as f32), t.text.clone()));
         }
         self.redraw();
     }
@@ -639,10 +639,11 @@ impl App {
         }
         // Handles of the current selection (a line or arrow has points instead).
         if let Some((corners, rot)) = self.sel_box().filter(|_| self.sel_connector().is_none()) {
-            let pts: [Pos2; 4] = corners.map(|q| pos2((q[0] / ppp) as f32, (q[1] / ppp) as f32));
+            let k = self.uipp();
+            let pts: [Pos2; 4] = corners.map(|q| pos2((q[0] / k) as f32, (q[1] / k) as f32));
             let (_, knob) = ui::rotate_knob(&pts, self.ui.touch_ui);
-            let knob = [knob.x as f64 * ppp, knob.y as f64 * ppp];
-            let reach = HANDLE_PT * ppp * if self.ui.touch_ui { 1.5 } else { 1.0 };
+            let knob = [knob.x as f64 * k, knob.y as f64 * k];
+            let reach = HANDLE_PT * k * if self.ui.touch_ui { 1.5 } else { 1.0 };
             let kind = if crate::dist(knob, p) < reach {
                 Some(DragKind::Rotate)
             } else if let Some(i) = corners.iter().position(|&q| crate::dist(q, p) < reach) {
@@ -1548,7 +1549,9 @@ impl App {
     /// What the UI draws over the canvas this frame.
     pub(crate) fn build_overlay(&mut self) {
         let ppp = self.ppp();
-        let to_pt = |p: [f64; 2]| pos2((p[0] / ppp) as f32, (p[1] / ppp) as f32);
+        // UI points (the overlay is UI): px / k.
+        let k = self.uipp();
+        let to_pt = |p: [f64; 2]| pos2((p[0] / k) as f32, (p[1] / k) as f32);
         let mut ov = ui::Overlay::default();
         self.import_overlay(&mut ov);
         self.changes_overlay(&mut ov);
@@ -1559,7 +1562,7 @@ impl App {
                 let col = egui::Color32::from_rgba_unmultiplied(r, gg, bb, al);
                 ov.lines.push((
                     pts.iter().map(|&p| to_pt(p)).collect(),
-                    (w / ppp) as f32,
+                    (w / k) as f32,
                     col,
                     fill,
                 ));
@@ -1573,7 +1576,7 @@ impl App {
                 let col = egui::Color32::from_rgba_unmultiplied(r, gg, bb, al);
                 let pts = pc.pts.iter().map(|&p| to_pt(p)).collect();
                 let fill = pc.brush == ogpaper_core::Brush::Fill;
-                ov.lines.push((pts, (pc.width / ppp) as f32, col, fill));
+                ov.lines.push((pts, (pc.width / k) as f32, col, fill));
             }
         }
         if let Some((a, b)) = self.edit.marquee {

@@ -247,6 +247,10 @@ impl App {
         ui.radial_bar = prefs.get("radialbar").is_some_and(|v| v == "on");
         ui.dark = prefs.get("dark").is_some_and(|v| v == "on");
         ui.hints = prefs.get("hints").is_none_or(|v| v != "off");
+        ui.ui_scale = prefs
+            .get("uiscale")
+            .and_then(|v| v.parse::<f32>().ok())
+            .map_or(1.0, |v| v.clamp(ui::UI_SCALE_MIN, ui::UI_SCALE_MAX));
         ui.hide_tools = prefs.get("hide_tools").is_some_and(|v| v == "on");
         ui.hide_panel = prefs.get("hide_panel").is_some_and(|v| v == "on");
         ui.hide_bar = prefs.get("hide_bar").is_some_and(|v| v == "on");
@@ -336,6 +340,12 @@ impl App {
             return true;
         }
         false
+    }
+
+    /// Physical pixels per UI point: the screen's, times the UI size
+    /// (UI > Size). For drawing the UI over the canvas.
+    pub(crate) fn uipp(&self) -> f64 {
+        self.egui_ctx.pixels_per_point() as f64
     }
 
     fn ppp(&self) -> f64 {
@@ -698,7 +708,7 @@ impl App {
     }
 
     fn pick_preview(&mut self, p: [f64; 2]) {
-        let ppp = self.ppp() as f32;
+        let ppp = self.uipp() as f32;
         self.ui.pick_preview = Some((
             egui::pos2(p[0] as f32 / ppp, p[1] as f32 / ppp),
             self.color_at(p),
@@ -1211,6 +1221,19 @@ impl App {
                 let v = if *flag { "on" } else { "off" };
                 let mut p = prefs::load();
                 p.insert(key.into(), v.into());
+                prefs::save(&p);
+                self.redraw();
+            }
+            Action::UiScale(step) => {
+                let s = if step == 0 {
+                    1.0
+                } else {
+                    let k = ((self.ui.ui_scale * 10.0).round() as i32 + step as i32) as f32 / 10.0;
+                    k.clamp(ui::UI_SCALE_MIN, ui::UI_SCALE_MAX)
+                };
+                self.ui.ui_scale = s;
+                let mut p = prefs::load();
+                p.insert("uiscale".into(), format!("{s:.1}"));
                 prefs::save(&p);
                 self.redraw();
             }
