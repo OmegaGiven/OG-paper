@@ -1269,12 +1269,22 @@ fn quick_bar(ctx: &egui::Context, st: &mut UiState, g: &Geo) {
     // the left side instead, so it has the long side to itself.
     let vertical = !st.radial_bar && st.layout.bar.is_none() && screen.height() > screen.width();
     let (n, col_y0, col_x0) = if vertical {
-        let avail = screen.height() - 2.0 * m;
+        // Slots as wide as the tool panel's round button below them, on
+        // the same centre line (see tool_panel).
+        let pr = if touch { 24.0 } else { 19.0 } * ui_scale(screen).max(0.7);
+        let pm = if touch { 18.0 } else { 16.0 };
+        s = 2.0 * pr;
+        // Clear of the round buttons at the top and bottom.
+        let avail = screen.height() - 2.0 * (pm + 2.0 * pr + 4.0 + 12.0);
         let fit = (((avail + gap) / (s + gap)) as usize)
             .saturating_sub(2)
             .clamp(3, hotbar::BAR);
         let len = (fit + 2) as f32 * (s + gap) - gap;
-        (fit, screen.center().y - len * 0.5, screen.left() + m)
+        (
+            fit,
+            screen.center().y - len * 0.5,
+            screen.left() + pm + 2.0 + pr - s * 0.5,
+        )
     } else {
         (n, 0.0, 0.0)
     };
