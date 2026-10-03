@@ -1267,6 +1267,8 @@ pub(crate) mod native {
 
     enum Out {
         Data(Vec<u8>),
+        /// A text frame (the JSON API).
+        Text(String),
         Close,
     }
 
@@ -1377,6 +1379,13 @@ pub(crate) mod native {
             self.rx.try_iter().collect()
         }
 
+        /// Send a text frame (the JSON API).
+        pub fn send_text(&self, id: u64, t: String) {
+            if let Some(s) = self.outs.lock().expect("outs").get(&id) {
+                let _ = s.send(Out::Text(t));
+            }
+        }
+
         pub fn stop(self) {
             self.stop.store(true, Ordering::Relaxed);
             for s in self.outs.lock().expect("outs").values() {
@@ -1425,6 +1434,11 @@ pub(crate) mod native {
                             return e.to_string();
                         }
                     }
+                    Ok(Out::Text(t)) => {
+                        if let Err(e) = ws.send(Message::Text(t.into())) {
+                            return e.to_string();
+                        }
+                    }
                     Ok(Out::Close) => {
                         let _ = ws.close(None);
                         let _ = ws.flush();
@@ -1437,6 +1451,10 @@ pub(crate) mod native {
             match ws.read() {
                 Ok(Message::Binary(b)) => {
                     let _ = tx.send(Ev::Data(id, b.to_vec()));
+                }
+                // Text frames: the JSON API's (bytes of the UTF-8).
+                Ok(Message::Text(t)) => {
+                    let _ = tx.send(Ev::Data(id, t.as_bytes().to_vec()));
                 }
                 Ok(Message::Close(_)) => return "closed by the other side".into(),
                 Ok(_) => {}

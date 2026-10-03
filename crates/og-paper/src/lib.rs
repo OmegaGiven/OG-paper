@@ -34,6 +34,7 @@ mod presence;
 #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 mod relay;
 mod render;
+mod script;
 mod seal;
 mod search;
 mod shapes;
@@ -94,7 +95,7 @@ const NO_CHANGES_BASE: &str =
 #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 const CLIP_MARK: &str = "OG Paper selection (paste it into OG Paper)";
 
-fn home_camera() -> Camera {
+pub(crate) fn home_camera() -> Camera {
     Camera::new(CellAddr::new(0, 0, 0), [0.5, 0.5], BASE_PX)
 }
 
@@ -137,7 +138,7 @@ pub struct App {
     /// When each stroke appeared and disappeared.
     timeline: Timeline,
     /// The canvas id and merge log (Merge copy).
-    share: share::Share,
+    pub(crate) share: share::Share,
     /// What the last merge changed, highlighted for a while.
     merge_changes: Option<share::Changes>,
     /// Hosting or joined a live canvas.
