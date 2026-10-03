@@ -69,10 +69,18 @@ pub struct Layout {
     pub undo: Option<[f32; 2]>,
     /// The middle of the quick bar.
     pub bar: Option<[f32; 2]>,
+    /// The quick bar's direction, set with its rotate button; None =
+    /// by the screen (a column in portrait, a row in landscape).
+    pub bar_vertical: Option<bool>,
     pub panel: Corner,
 }
 
 impl Layout {
+    /// Whether the quick bar (in bar mode) runs down the screen.
+    pub fn bar_is_vertical(&self, portrait: bool) -> bool {
+        self.bar_vertical.unwrap_or(portrait)
+    }
+
     pub fn encode(&self) -> String {
         let mut parts = Vec::new();
         for (k, v) in [
@@ -84,6 +92,9 @@ impl Layout {
             if let Some([x, y]) = v {
                 parts.push(format!("{k}:{x:.4},{y:.4}"));
             }
+        }
+        if let Some(v) = self.bar_vertical {
+            parts.push(format!("barv:{}", if v { "v" } else { "h" }));
         }
         if self.panel != Corner::BottomLeft {
             parts.push(format!("panel:{}", self.panel.key()));
@@ -107,6 +118,13 @@ impl Layout {
                 "app" => l.app = xy(),
                 "undo" => l.undo = xy(),
                 "bar" => l.bar = xy(),
+                "barv" => {
+                    l.bar_vertical = match v.trim() {
+                        "v" => Some(true),
+                        "h" => Some(false),
+                        _ => None,
+                    }
+                }
                 "panel" => l.panel = Corner::from_key(v.trim()).unwrap_or_default(),
                 _ => {}
             }
@@ -158,9 +176,14 @@ mod tests {
             app: None,
             undo: Some([0.5, 0.05]),
             bar: Some([0.5, 0.02]),
+            bar_vertical: Some(false),
             panel: Corner::TopRight,
         };
         assert_eq!(Layout::decode(&l.encode()), l);
+        // The bar's direction: by the screen unless set.
+        assert!(Layout::default().bar_is_vertical(true));
+        assert!(!Layout::default().bar_is_vertical(false));
+        assert!(!l.bar_is_vertical(true));
         assert_eq!(Layout::decode(""), Layout::default());
         assert_eq!(Layout::decode("tool:2,3;junk").tool, None);
     }

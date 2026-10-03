@@ -1173,6 +1173,7 @@ enum Side {
     Above,
     Below,
     Right,
+    Left,
 }
 
 /// Which set of slots.
@@ -1267,7 +1268,9 @@ fn quick_bar(ctx: &egui::Context, st: &mut UiState, g: &Geo) {
     let stack = Rect::from_min_size(pos2(x0, top), vec2(row, rows as f32 * (s + gap) - gap));
     // A portrait screen (and no place set in Edit layout): a column down
     // the left side instead, so it has the long side to itself.
-    let vertical = !st.radial_bar && st.layout.bar.is_none() && screen.height() > screen.width();
+    let vertical = !st.radial_bar && st.layout.bar_is_vertical(screen.height() > screen.width());
+    // A column on the right half grows (and opens its menus) leftward.
+    let mut leftward = false;
     let (n, col_y0, col_x0) = if vertical {
         // Slots as wide as the tool panel's round button below them, on
         // the same centre line (see tool_panel).
@@ -1280,11 +1283,29 @@ fn quick_bar(ctx: &egui::Context, st: &mut UiState, g: &Geo) {
             .saturating_sub(2)
             .clamp(3, hotbar::BAR);
         let len = (fit + 2) as f32 * (s + gap) - gap;
-        (
-            fit,
-            screen.center().y - len * 0.5,
-            screen.left() + pm + 2.0 + pr - s * 0.5,
-        )
+        match st.layout.bar {
+            // Moved (Edit layout): centred where it was put.
+            Some(f) => {
+                let c = at_frac(screen, f, 0.0);
+                leftward = c.x > screen.center().x;
+                (
+                    fit,
+                    (c.y - len * 0.5).clamp(
+                        screen.top() + m,
+                        (screen.bottom() - m - len).max(screen.top() + m),
+                    ),
+                    (c.x - s * 0.5).clamp(
+                        screen.left() + m,
+                        (screen.right() - m - s).max(screen.left() + m),
+                    ),
+                )
+            }
+            None => (
+                fit,
+                screen.center().y - len * 0.5,
+                screen.left() + pm + 2.0 + pr - s * 0.5,
+            ),
+        }
     } else {
         (n, 0.0, 0.0)
     };
@@ -1295,12 +1316,11 @@ fn quick_bar(ctx: &egui::Context, st: &mut UiState, g: &Geo) {
         )
     } else if vertical {
         let len = (n + 2) as f32 * (s + gap) - gap;
+        let wide = rows as f32 * (s + gap) - gap;
+        let left = if leftward { col_x0 + s - wide } else { col_x0 };
         (
-            Side::Right,
-            Rect::from_min_size(
-                pos2(col_x0, col_y0),
-                vec2(rows as f32 * (s + gap) - gap, len),
-            ),
+            if leftward { Side::Left } else { Side::Right },
+            Rect::from_min_size(pos2(left, col_y0), vec2(wide, len)),
         )
     } else {
         (if up { Side::Above } else { Side::Below }, stack)
@@ -1308,8 +1328,9 @@ fn quick_bar(ctx: &egui::Context, st: &mut UiState, g: &Geo) {
     // Where cell j (0 = number, 1..n = slots, n+1 = bag) of row ri goes.
     let cell = |ri: usize, j: usize| -> Pos2 {
         if vertical {
+            let dx = ri as f32 * (s + gap);
             pos2(
-                col_x0 + ri as f32 * (s + gap),
+                if leftward { col_x0 - dx } else { col_x0 + dx },
                 col_y0 + j as f32 * (s + gap),
             )
         } else {
@@ -1500,6 +1521,10 @@ fn inventory(
             pos2(bars.right() + 10.0, screen.top() + m),
             screen.max - vec2(m, m),
         ),
+        Side::Left => Rect::from_min_max(
+            screen.min + vec2(m, m),
+            pos2(bars.left() - 10.0, screen.bottom() - m),
+        ),
     };
     // At most ~60% of the screen tall, next to the bar, so there is canvas
     // around it to tap (which closes it).
@@ -1513,7 +1538,7 @@ fn inventory(
             area.min,
             pos2(area.right(), area.bottom().min(area.top() + max_h)),
         ),
-        Side::Right => {
+        Side::Right | Side::Left => {
             let h = area.height().min(max_h);
             let top =
                 (bars.center().y - h * 0.5).clamp(area.top(), (area.bottom() - h).max(area.top()));
@@ -1609,7 +1634,7 @@ fn toolbar_menu(
     let check = if st.touch_ui { 30.0 } else { 24.0 };
     // Beside a vertical quick bar (portrait) each toolbar is a column;
     // else a row. `w` is a toolbar's length along it.
-    let vert = side == Side::Right;
+    let vert = matches!(side, Side::Right | Side::Left);
     let w = check + 6.0 + (n + 1) as f32 * (s + gap) + s;
     let x = (bars.left() - check - 6.0).clamp(
         screen.left() + 8.0,
@@ -1618,7 +1643,7 @@ fn toolbar_menu(
     let room = match side {
         Side::Above => bars.top() - screen.top() - 24.0,
         Side::Below => screen.bottom() - bars.bottom() - 24.0,
-        Side::Right => screen.height() - 24.0,
+        Side::Right | Side::Left => screen.height() - 24.0,
     };
     let (pivot, at) = match side {
         Side::Above => (Align2::LEFT_BOTTOM, pos2(x, bars.top() - 10.0)),
@@ -1628,6 +1653,14 @@ fn toolbar_menu(
             Align2::LEFT_TOP,
             pos2(
                 bars.right() + 10.0,
+                (bars.top() - 10.0 - (if st.touch_ui { 34.0 } else { 28.0 }) - check - 6.0)
+                    .max(screen.top() + 8.0),
+            ),
+        ),
+        Side::Left => (
+            Align2::RIGHT_TOP,
+            pos2(
+                bars.left() - 10.0,
                 (bars.top() - 10.0 - (if st.touch_ui { 34.0 } else { 28.0 }) - check - 6.0)
                     .max(screen.top() + 8.0),
             ),
@@ -1655,7 +1688,11 @@ fn toolbar_menu(
                         // As wide as its columns (at least the header), but
                         // never wider than the room right of the bar.
                         let cols = st.toolbars.len() as f32 * (s + gap) - gap;
-                        let room_w = screen.right() - at.x - 12.0 - 20.0;
+                        let room_w = if side == Side::Left {
+                            at.x - screen.left() - 12.0 - 20.0
+                        } else {
+                            screen.right() - at.x - 12.0 - 20.0
+                        };
                         ui.set_max_width(cols.max(150.0).min(room_w));
                     }
                     ui.horizontal(|ui| {
@@ -2095,6 +2132,28 @@ fn preset_icon(
 }
 
 /// A satchel: the inventory button.
+/// A circular arrow (rotate).
+fn rotate_icon(p: &egui::Painter, c: Pos2, r: f32, col: Color32) {
+    let stroke = Stroke::new((r * 0.22).max(1.4), col);
+    let (a0, a1) = (-2.6_f32, 1.9_f32);
+    let pts: Vec<Pos2> = (0..=16)
+        .map(|i| {
+            let a = a0 + (a1 - a0) * i as f32 / 16.0;
+            c + vec2(a.cos(), a.sin()) * r
+        })
+        .collect();
+    let end = *pts.last().unwrap();
+    p.add(Shape::line(pts, stroke));
+    // Arrowhead at the end, pointing along the turn.
+    let t = vec2(-a1.sin(), a1.cos());
+    let n = vec2(a1.cos(), a1.sin());
+    let h = r * 0.55;
+    p.add(Shape::line(
+        vec![end - t * h + n * h * 0.6, end, end - t * h - n * h * 0.6],
+        stroke,
+    ));
+}
+
 fn bag_icon(p: &egui::Painter, c: Pos2, r: f32) {
     let s = r * 0.42;
     let st = Stroke::new((r * 0.08).max(1.2), INKY);
@@ -4407,18 +4466,29 @@ fn layout_editor(ctx: &egui::Context, st: &mut UiState) {
             // The quick bar, as a strip of empty slots.
             let s = (if touch { 44.0 } else { 38.0 } * ui_scale(screen)).max(26.0);
             let w = ((hotbar::BAR + 2) as f32 * (s + 4.0) - 4.0).min(screen.width() - 2.0 * m);
-            // In portrait it is a column down the left (as quick_bar draws it).
-            let vertical = !st.radial_bar && lay.bar.is_none() && screen.height() > screen.width();
+            // A column or a row, as quick_bar draws it: by the screen, or
+            // as set with the rotate button.
+            let vertical = !st.radial_bar && lay.bar_is_vertical(screen.height() > screen.width());
             let bar_rect = if vertical {
                 let pr = if touch { 24.0 } else { 19.0 } * ui_scale(screen).max(0.7);
                 let s = 2.0 * pr;
                 let room = screen.height() - 2.0 * (m + 2.0 * pr + 4.0 + 12.0);
                 let n = (((room + 4.0) / (s + 4.0)) as usize).clamp(5, hotbar::BAR + 2);
                 let len = n as f32 * (s + 4.0) - 4.0;
-                Rect::from_center_size(
-                    pos2(screen.left() + m + 2.0 + pr, screen.center().y),
-                    vec2(s, len),
-                )
+                let c = match lay.bar {
+                    Some(f) => {
+                        let c = at_frac(screen, f, 0.0);
+                        pos2(
+                            c.x.clamp(screen.left() + m + s * 0.5, screen.right() - m - s * 0.5),
+                            c.y.clamp(
+                                screen.top() + m + len * 0.5,
+                                (screen.bottom() - m - len * 0.5).max(screen.top() + m + len * 0.5),
+                            ),
+                        )
+                    }
+                    None => pos2(screen.left() + m + 2.0 + pr, screen.center().y),
+                };
+                Rect::from_center_size(c, vec2(s, len))
             } else {
                 let bar_c = match lay.bar {
                     Some(f) => at_frac(screen, f, 0.0),
@@ -4447,6 +4517,41 @@ fn layout_editor(ctx: &egui::Context, st: &mut UiState) {
                 }
             }) {
                 lay.bar = Some(frac_of(screen, c));
+            }
+            // Rotate: turns the quick bar between a column and a row.
+            if !st.radial_bar {
+                let rr = if touch { 15.0 } else { 12.0 };
+                let rc = if vertical {
+                    // Above the column, or below it when at the top.
+                    if bar_rect.top() - 10.0 - 2.0 * rr > screen.top() + 4.0 {
+                        pos2(bar_rect.center().x, bar_rect.top() - 10.0 - rr)
+                    } else {
+                        pos2(bar_rect.center().x, bar_rect.bottom() + 10.0 + rr)
+                    }
+                } else if bar_rect.right() + 10.0 + 2.0 * rr < screen.right() - 4.0 {
+                    pos2(bar_rect.right() + 10.0 + rr, bar_rect.center().y)
+                } else if bar_rect.left() - 10.0 - 2.0 * rr > screen.left() + 4.0 {
+                    pos2(bar_rect.left() - 10.0 - rr, bar_rect.center().y)
+                } else if bar_rect.top() - 10.0 - 2.0 * rr > screen.top() + 4.0 {
+                    // A row as wide as the screen: above its middle.
+                    pos2(bar_rect.center().x, bar_rect.top() - 10.0 - rr)
+                } else {
+                    pos2(bar_rect.center().x, bar_rect.bottom() + 10.0 + rr)
+                };
+                let rect = Rect::from_center_size(rc, Vec2::splat(2.0 * rr));
+                let resp = ui.interact(rect, Id::new("lay_rotate"), Sense::click());
+                disc_shadow(&p, rc, rr);
+                p.circle_filled(rc, rr, if resp.hovered() { Color32::WHITE } else { FACE });
+                p.circle_stroke(rc, rr, Stroke::new(1.2, accent));
+                rotate_icon(&p, rc, rr * 0.55, INKY);
+                if resp.clicked() {
+                    lay.bar_vertical = Some(!vertical);
+                }
+                resp.on_hover_text(if vertical {
+                    "Turn the quick bar into a row"
+                } else {
+                    "Turn the quick bar into a column"
+                });
             }
             // The tool panel, as a card in its corner.
             let k = ui_scale(screen);
