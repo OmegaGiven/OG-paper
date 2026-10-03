@@ -166,6 +166,7 @@ pub fn bindings() -> Vec<Binding> {
         ("cmd.import", "Import canvas", None),
         ("cmd.merge", "Merge copy", None),
         ("cmd.changes", "Save changes since last merge", None),
+        ("cmd.folder", "Sync folder on/off", None),
         ("cmd.search", "Search text", Some("ctrl+f")),
         ("cmd.bookmarks", "Bookmarks", Some("ctrl+b")),
         ("cmd.timeline", "Timeline", Some("ctrl+h")),

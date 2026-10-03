@@ -213,6 +213,13 @@ impl App {
         };
         self.share.log.add(e);
         self.persist_event(&e, None);
+        self.sync_touch();
+    }
+
+    /// Something changed that other copies should get.
+    pub(crate) fn sync_touch(&mut self) {
+        #[cfg(not(target_arch = "wasm32"))]
+        self.folder_touch();
     }
 
     /// One edit's new strokes, each with the strokes of the thing it
@@ -278,9 +285,22 @@ impl App {
 
     /// Merge another copy of this canvas into it.
     pub(crate) fn merge_copy(&mut self, scene: Scene, objs: Objects, copy: Option<CopyLog>) {
+        self.merge_with(scene, objs, copy, false);
+    }
+
+    /// A merge in the background (sync folder, a connection): no flight,
+    /// and a message only when something changed.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    pub(crate) fn merge_quiet(&mut self, scene: Scene, objs: Objects, copy: Option<CopyLog>) {
+        self.merge_with(scene, objs, copy, true);
+    }
+
+    fn merge_with(&mut self, scene: Scene, objs: Objects, copy: Option<CopyLog>, quiet: bool) {
         let theirs = Share::loaded(&scene, copy);
         if theirs.canvas != self.share.canvas {
-            self.say("That file is a different canvas: use Import canvas to bring it in");
+            if !quiet {
+                self.say("That file is a different canvas: use Import canvas to bring it in");
+            }
             return;
         }
         // Strokes this copy lacks come in as they are (same cell, same uid).
@@ -363,9 +383,14 @@ impl App {
         // Show what changed: highlighted, and the view framed on it.
         let mut all = shown.clone();
         all.extend(&hidden);
-        if let Some(cam) = self.frame_strokes(&all) {
-            self.fly = Some(cam);
-            self.fly_last = Instant::now();
+        if !quiet {
+            if let Some(cam) = self.frame_strokes(&all) {
+                self.fly = Some(cam);
+                self.fly_last = Instant::now();
+            }
+        }
+        if !all.is_empty() || !added.is_empty() {
+            self.sync_touch();
         }
         self.merge_changes = (!all.is_empty()).then(|| Changes {
             shown,
@@ -392,7 +417,9 @@ impl App {
             conflicts: self.share.log.conflicts().len(),
             me: self.share.clock.peer(),
         };
-        self.say(report.text());
+        if !quiet || !all.is_empty() {
+            self.say(report.text());
+        }
         self.redraw();
     }
 }

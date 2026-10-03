@@ -42,8 +42,11 @@ pub enum Cmd {
     Sticker(Vec<u8>, Option<[f64; 2]>),
     /// Import another canvas (bytes of a `.ogpt` file) to place.
     Import(Vec<u8>),
-    /// Merge another copy of this canvas (bytes of a `.ogpt` file).
-    Merge(Vec<u8>),
+    /// Merge another copy of this canvas (bytes of a `.ogpt` file);
+    /// quietly when it came in the background (a sync folder).
+    Merge(Vec<u8>, bool),
+    /// The page started or stopped syncing through a folder.
+    Folder(bool),
     /// Export: format, only the selection, paper background.
     Export(String, bool, bool),
     /// Make the moment shown in the timeline the current canvas (undoable).
@@ -223,6 +226,7 @@ pub fn og_set_menu(items: &str) {
                 "import" => AppItem::Import,
                 "merge" => AppItem::Merge,
                 "changes" => AppItem::Changes,
+                "folder" => AppItem::Folder,
                 "dark" => AppItem::Dark,
                 "showtools" => AppItem::ShowTools,
                 "showpanel" => AppItem::ShowPanel,
@@ -372,7 +376,20 @@ pub fn og_import(bytes: Vec<u8>) {
 /// Merge another copy of this canvas (bytes of a `.ogpt` file).
 #[wasm_bindgen]
 pub fn og_merge(bytes: Vec<u8>) {
-    push(Cmd::Merge(bytes));
+    push(Cmd::Merge(bytes, false));
+}
+
+/// Merge a copy that arrived in the background (a sync folder): no flight,
+/// a message only if something changed.
+#[wasm_bindgen]
+pub fn og_merge_quiet(bytes: Vec<u8>) {
+    push(Cmd::Merge(bytes, true));
+}
+
+/// Whether the page is syncing through a folder (for the settings fan).
+#[wasm_bindgen]
+pub fn og_set_folder(on: bool) {
+    push(Cmd::Folder(on));
 }
 
 /// Place a copy of a sticker at (x, y) CSS px, or the middle of the screen.

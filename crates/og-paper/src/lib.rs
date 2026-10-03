@@ -13,6 +13,8 @@ mod diagram;
 mod edit;
 mod egui_io;
 mod export;
+#[cfg(not(target_arch = "wasm32"))]
+mod folder;
 mod font;
 mod hotbar;
 mod hotkeys;
@@ -120,6 +122,9 @@ pub struct App {
     share: share::Share,
     /// What the last merge changed, highlighted for a while.
     merge_changes: Option<share::Changes>,
+    /// Syncing through a shared folder (desktop).
+    #[cfg(not(target_arch = "wasm32"))]
+    folder: Option<folder::Folder>,
     /// Shapes and texts (groups of strokes with their settings).
     objs: objects::Objects,
     edit: edit::EditState,
@@ -204,6 +209,8 @@ impl App {
             timeline: Timeline::default(),
             share: share::Share::fresh(),
             merge_changes: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            folder: None,
             objs: objects::Objects::default(),
             edit: edit::EditState::default(),
             bookmarks: Vec::new(),
@@ -242,6 +249,21 @@ impl App {
 
     /// Physical pixels per point: widths and touch radii are in points, so a
     /// 3 px pen looks the same on a 1x monitor and a 3x phone.
+    /// A stroke, drag or placement is in progress.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    pub(crate) fn busy(&self) -> bool {
+        !matches!(self.gesture, Gesture::None) || self.import.is_some()
+    }
+
+    /// Something runs in the background that needs regular wake-ups.
+    fn background(&self) -> bool {
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.folder.is_some() {
+            return true;
+        }
+        false
+    }
+
     fn ppp(&self) -> f64 {
         #[cfg(target_arch = "wasm32")]
         {
@@ -720,6 +742,10 @@ impl App {
         self.timeline = Timeline::from_scene(&scene, timeline::now_ms());
         self.share = share::Share::loaded(&scene, None);
         self.merge_changes = None;
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.folder = None;
+        }
         self.scene = scene;
         self.cam = cam;
         self.history = History::default();
@@ -840,6 +866,7 @@ impl App {
                 if !had {
                     self.persist_share();
                 }
+                self.folder_resume();
                 if let Some(f) = &self.file {
                     for (id, b) in f.images().unwrap_or_default() {
                         if let Ok(a) = images::load(b) {
@@ -1089,6 +1116,20 @@ impl App {
                 }
                 None => self.say(NO_CHANGES_BASE),
             },
+            #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+            #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+            Action::SyncFolder => {
+                if self.folder.is_some() {
+                    self.folder_stop();
+                } else if let Some(root) = rfd::FileDialog::new()
+                    .set_title("Folder to sync this canvas through (Syncthing, Dropbox, Drive...)")
+                    .pick_folder()
+                {
+                    self.folder_start(root);
+                }
+            }
+            #[cfg(target_arch = "wasm32")]
+            Action::SyncFolder => web::emit("folder"),
             #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
             Action::SaveChanges => match self.changes_copy() {
                 Some((b, n)) => {
@@ -1654,6 +1695,7 @@ impl App {
             "cmd.import" => self.action(Action::Import),
             "cmd.merge" => self.action(Action::MergeCopy),
             "cmd.changes" => self.action(Action::SaveChanges),
+            "cmd.folder" => self.action(Action::SyncFolder),
             "cmd.search" => self.action(Action::Search),
             "cmd.bookmarks" => self.action(Action::Bookmarks),
             "cmd.timeline" => self.action(Action::Timeline),
@@ -1952,7 +1994,8 @@ impl App {
                 | Cmd::Search
                 | Cmd::Sticker(..)
                 | Cmd::Import(_)
-                | Cmd::Merge(_)
+                | Cmd::Merge(..)
+                | Cmd::Folder(_)
                 | Cmd::SearchGo(_)
                 | Cmd::Export(..)
                 | Cmd::BookmarkGo(_)
@@ -2075,7 +2118,9 @@ impl App {
                 web::set_search_results(format!("[{}]", json.join(",")));
             }
             Cmd::SearchGo(g) => self.search_go(g),
-            Cmd::Merge(bytes) => match snapshot::decode(&bytes, BASE_PX) {
+            Cmd::Folder(on) => self.ui.folder_on = on,
+            Cmd::Merge(bytes, quiet) => match snapshot::decode(&bytes, BASE_PX) {
+                Ok(s) if quiet => self.merge_quiet(s.scene, s.objs, s.share),
                 Ok(s) => self.merge_copy(s.scene, s.objs, s.share),
                 Err(e) => self.say(format!("Could not read that copy: {e}")),
             },
@@ -2182,7 +2227,7 @@ impl App {
             -99.0
         };
         web::set_status(format!(
-            "{{\"ready\":true,\"zoom\":{:.3},\"strokes\":{},\"drawn\":{},\"erased\":{},\"undos\":{},\"deepDraw\":{:.2},\"flying\":{},\"dirty\":{},\"bookmarks\":[{}],\"timeline\":{},\"dark\":{}}}",
+            "{{\"ready\":true,\"zoom\":{:.3},\"strokes\":{},\"drawn\":{},\"erased\":{},\"undos\":{},\"deepDraw\":{:.2},\"flying\":{},\"dirty\":{},\"bookmarks\":[{}],\"timeline\":{},\"dark\":{},\"canvas\":\"{:032x}\",\"peer\":\"{:016x}\"}}",
             self.cam.log10_zoom(),
             self.scene.strokes.iter().filter(|s| !s.deleted).count(),
             st.drawn,
@@ -2194,6 +2239,8 @@ impl App {
             marks.join(","),
             tl,
             self.ui.dark,
+            self.share.canvas,
+            self.share.clock.peer(),
         ));
         if self.fly.is_some() {
             self.redraw();
@@ -2264,6 +2311,11 @@ impl App {
         self.ui.timeline_on = self.tl_view.is_some();
         self.ui.can_undo = self.history.can_undo();
         self.ui.importing = self.import.is_some();
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.ui.folder_on = self.folder.is_some();
+            self.folder_tick();
+        }
         self.ui.can_redo = self.history.can_redo();
         self.ui.strokes = self.scene.strokes.iter().filter(|s| !s.deleted).count();
         self.sync_egui_fonts();
@@ -2419,9 +2471,17 @@ impl App {
 }
 
 impl ApplicationHandler for App {
-    /// Wake up to hide a message when its time is up.
+    /// Wake up to hide a message when its time is up, and every second
+    /// while syncing in the background.
     fn about_to_wait(&mut self, el: &ActiveEventLoop) {
-        match self.message_until {
+        let tick = self
+            .background()
+            .then(|| Instant::now() + Duration::from_secs(1));
+        let next = match (self.message_until, tick) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        match next {
             Some(t) if Instant::now() >= t => {
                 self.redraw();
                 el.set_control_flow(ControlFlow::Wait);

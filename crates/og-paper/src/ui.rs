@@ -257,6 +257,7 @@ pub enum AppItem {
     Import,
     Merge,
     Changes,
+    Folder,
     New,
     Open,
     Save,
@@ -288,6 +289,7 @@ impl AppItem {
             AppItem::Import => "Import canvas",
             AppItem::Merge => "Merge copy",
             AppItem::Changes => "Save changes",
+            AppItem::Folder => "Sync folder",
             AppItem::New => "New canvas",
             AppItem::Open => "Open",
             AppItem::Save => "Save copy",
@@ -318,6 +320,7 @@ impl AppItem {
             AppItem::Import => Action::Import,
             AppItem::Merge => Action::MergeCopy,
             AppItem::Changes => Action::SaveChanges,
+            AppItem::Folder => Action::SyncFolder,
             AppItem::New => Action::New,
             AppItem::Open => Action::Open,
             AppItem::Save => Action::SaveAs,
@@ -386,6 +389,8 @@ pub struct UiState {
     pub dark: bool,
     /// Another canvas is being placed (shows Place / Cancel).
     pub importing: bool,
+    /// Syncing through a shared folder.
+    pub folder_on: bool,
     /// Hidden by the person (Settings): the tool button, the tool panel,
     /// the quick toolbar.
     pub hide_tools: bool,
@@ -545,6 +550,7 @@ impl Default for UiState {
                 AppItem::Import,
                 AppItem::Merge,
                 AppItem::Changes,
+                AppItem::Folder,
                 AppItem::Save,
                 AppItem::Export,
                 AppItem::Paste,
@@ -568,6 +574,7 @@ impl Default for UiState {
             radial_bar: false,
             dark: false,
             importing: false,
+            folder_on: false,
             queued: Vec::new(),
             views: Default::default(),
             view_now: None,
@@ -820,6 +827,8 @@ pub enum Action {
     MergeCopy,
     /// Save only what changed since the last merge.
     SaveChanges,
+    /// Start or stop syncing through a shared folder.
+    SyncFolder,
     ImportPlace,
     ImportCancel,
     SaveAs,
@@ -3211,6 +3220,7 @@ fn app_menu(ctx: &egui::Context, st: &mut UiState, g: &Geo, actions: &mut Vec<Ac
                     let active = (item == AppItem::Timeline && st.timeline_on)
                         || (item == AppItem::Grid && st.grid != GridMode::Off)
                         || (item == AppItem::Dark && st.dark)
+                        || (item == AppItem::Folder && st.folder_on)
                         || (item == AppItem::Diagram && st.diagram)
                         || (item == AppItem::RadialBar && st.radial_bar)
                         || (item == AppItem::ShowTools && !st.hide_tools)
@@ -3240,6 +3250,8 @@ fn app_menu(ctx: &egui::Context, st: &mut UiState, g: &Geo, actions: &mut Vec<Ac
                             AppItem::ShowPanel => "Tool panel: shown",
                             AppItem::ShowBar if st.hide_bar => "Quick toolbar: hidden",
                             AppItem::ShowBar => "Quick toolbar: shown",
+                            AppItem::Folder if st.folder_on => "Sync folder: on",
+                            AppItem::Folder => "Sync folder: off",
                             AppItem::Dark if st.dark => "Dark mode: on",
                             AppItem::Dark => "Dark mode: off",
                             AppItem::Diagram if st.diagram => "Diagram: on",
@@ -3356,6 +3368,20 @@ fn app_icon(
                     }
                 }
             }
+        }
+        AppItem::Folder => {
+            // A folder with two arrows going round.
+            line(&[
+                vec2(-0.95, -0.6),
+                vec2(-0.35, -0.6),
+                vec2(-0.15, -0.35),
+                vec2(0.95, -0.35),
+                vec2(0.95, 0.8),
+                vec2(-0.95, 0.8),
+                vec2(-0.95, -0.6),
+            ]);
+            line(&[vec2(-0.4, 0.05), vec2(0.35, 0.05), vec2(0.15, -0.12)]);
+            line(&[vec2(0.4, 0.45), vec2(-0.35, 0.45), vec2(-0.15, 0.62)]);
         }
         AppItem::Changes => {
             // A page with a plus: just the new bits.

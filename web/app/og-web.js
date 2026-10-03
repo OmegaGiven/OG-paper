@@ -9,7 +9,7 @@ import init, {
   og_copy, og_paste_own, og_paste_image, og_paste_text, og_pdf_page,
   og_bookmark_add, og_bookmark_go, og_bookmark_remove, og_bookmark_rename, og_bookmark_to_bar,
   og_search, og_search_results, og_search_go, og_export, og_export_take, og_has_selection,
-  og_sticker_take, og_sticker_svg, og_sticker_place, og_import, og_merge, og_changes_take,
+  og_sticker_take, og_sticker_svg, og_sticker_place, og_import, og_merge, og_changes_take, og_merge_quiet, og_set_folder,
   og_timeline, og_timeline_range, og_timeline_restore, og_snapshot_request, og_snapshot_take,
 } from './pkg/og_paper.js';
 
@@ -462,7 +462,7 @@ export async function start({ mode = 'app' } = {}) {
   const standalone = matchMedia('(display-mode: fullscreen), (display-mode: standalone)').matches;
   const canFs = document.documentElement.requestFullscreen && !standalone;
   const syncMenu = () => {
-    const items = ['new', 'open', 'import', 'merge', 'changes', 'save', 'export', 'paste', 'library', 'picture', 'search', 'bookmarks', 'timeline', 'home', 'grid', 'dark', 'diagram', 'layout', 'radialbar', 'showtools', 'showpanel', 'showbar', 'hotkeys'];
+    const items = ['new', 'open', 'import', 'merge', 'changes', 'folder', 'save', 'export', 'paste', 'library', 'picture', 'search', 'bookmarks', 'timeline', 'home', 'grid', 'dark', 'diagram', 'layout', 'radialbar', 'showtools', 'showpanel', 'showbar', 'hotkeys'];
     if (canFs && !document.fullscreenElement) items.push('fullscreen');
     if (isTry) items.push('tour');
     og_set_menu(items.join(','));
@@ -615,6 +615,91 @@ export async function start({ mode = 'app' } = {}) {
     say(`Loaded ${f.name}`);
     show(null);
   };
+  // ---- sync folder: each device keeps its own copy in a shared folder ----
+  // (File System Access API: Chromium browsers. The folder handle is kept
+  // in IndexedDB per canvas, so syncing resumes after a reload once the
+  // browser grants access again.)
+  const folder = { root: null, dir: null, canvas: null, seen: {}, lastHash: '', busy: false };
+  const fsOk = 'showDirectoryPicker' in window;
+  async function hashOf(bytes) {
+    const d = await crypto.subtle.digest('SHA-256', bytes);
+    return Array.from(new Uint8Array(d).slice(0, 12)).map(b => b.toString(16).padStart(2, '0')).join('');
+  }
+  async function folderUse(root, canvas) {
+    folder.root = root;
+    folder.canvas = canvas;
+    folder.dir = await root.getDirectoryHandle(`og-paper-${canvas}`, { create: true });
+    folder.seen = {};
+    folder.lastHash = '';
+    og_set_folder(true);
+  }
+  async function folderToggle() {
+    const st = status();
+    if (folder.dir) {
+      folder.root = folder.dir = null;
+      await idbDel(`folder.${st.canvas}`, 'canvases');
+      og_set_folder(false);
+      return say('Stopped syncing through the folder');
+    }
+    if (!fsOk) return say('This browser cannot sync a folder: use Save copy and Merge copy, or a Chromium browser');
+    try {
+      // The folder used before for this canvas, once the browser allows it again.
+      const kept = await idbGet(`folder.${st.canvas}`);
+      if (kept && (await kept.requestPermission({ mode: 'readwrite' })) === 'granted') {
+        await folderUse(kept, st.canvas);
+        return say(`Syncing through “${kept.name}” again`);
+      }
+      const root = await showDirectoryPicker({ id: 'og-paper-sync', mode: 'readwrite' });
+      await folderUse(root, st.canvas);
+      await idbPut(`folder.${st.canvas}`, root);
+      say(`Syncing through “${root.name}”: other devices pick the same folder`);
+    } catch (e) {
+      if (e.name !== 'AbortError') say('Could not use that folder');
+    }
+  }
+  async function folderTick() {
+    if (!folder.dir || folder.busy) return;
+    const st = status();
+    if (!st.ready) return;
+    if (st.canvas !== folder.canvas) { folder.root = folder.dir = null; og_set_folder(false); return; }
+    folder.busy = true;
+    try {
+      const own = `${st.peer}.ogpt`;
+      for await (const [name, h] of folder.dir.entries()) {
+        if (h.kind !== 'file' || !name.endsWith('.ogpt') || name === own) continue;
+        const f = await h.getFile();
+        if ((folder.seen[name] || 0) >= f.lastModified) continue;
+        og_merge_quiet(new Uint8Array(await f.arrayBuffer()));
+        folder.seen[name] = f.lastModified;
+      }
+      const bytes = await snapshot(true);
+      if (bytes) {
+        const hsh = await hashOf(bytes);
+        if (hsh !== folder.lastHash) {
+          const w = await (await folder.dir.getFileHandle(own, { create: true })).createWritable();
+          await w.write(bytes);
+          await w.close();
+          folder.lastHash = hsh;
+        }
+      }
+    } catch (e) {
+      console.warn('sync folder', e);
+    } finally {
+      folder.busy = false;
+    }
+  }
+  setInterval(folderTick, 3000);
+  // After a reload: resume at once if access is still granted, else say how.
+  let folderChecked = '';
+  setInterval(async () => {
+    const st = status();
+    if (!fsOk || !st.ready || folder.dir || folderChecked === st.canvas) return;
+    folderChecked = st.canvas;
+    const kept = await idbGet(`folder.${st.canvas}`);
+    if (!kept) return;
+    if ((await kept.queryPermission({ mode: 'readwrite' })) === 'granted') await folderUse(kept, st.canvas);
+    else say('Tap Sync folder to resume syncing this canvas');
+  }, 1500);
   // ---- import: another saved copy, placed into this canvas ----
   const importPicker = Object.assign(document.createElement('input'), { type: 'file', accept: '.ogpt', hidden: true, id: 'import-picker' });
   document.body.append(importPicker);
@@ -957,6 +1042,7 @@ export async function start({ mode = 'app' } = {}) {
           setTimeout(() => URL.revokeObjectURL(a.href), 10000);
         }
       }
+      else if (r === 'folder') folderToggle();
       else if (r === 'merge') { importPicker.dataset.mode = 'merge'; importPicker.value = ''; importPicker.click(); }
       else if (r === 'new') newCanvas();
       else if (r === 'bookmarks') show('bookmarks');
