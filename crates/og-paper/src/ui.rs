@@ -1192,7 +1192,7 @@ fn quick_bar(ctx: &egui::Context, st: &mut UiState, g: &Geo) {
     let screen = ctx.content_rect();
     let m = if touch { 18.0 } else { 16.0 } * ui_scale(screen).max(0.75);
     let gap = 4.0;
-    let mut s = (if touch { 44.0 } else { 38.0 } * ui_scale(screen)).max(30.0);
+    let mut s = (if touch { 44.0 } else { 38.0 } * ui_scale(screen)).max(26.0);
     // Bottom row, between the panel button and undo / redo, if it fits;
     // else a row above them.
     let right = g.tool.x - g.r - 12.0;
@@ -1541,10 +1541,12 @@ fn inventory(
                     ui.horizontal(|ui| {
                         ui.strong("Inventory");
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.button("Close").clicked() {
+                            if ui.button("×").on_hover_text("Close").clicked() {
                                 st.bag_open = false;
                             }
-                            let bin = ui.add_enabled(st.held.is_some(), egui::Button::new("🗑 Throw away"));
+                            let bin = ui
+                                .add_enabled(st.held.is_some(), egui::Button::new("🗑"))
+                                .on_hover_text("Throw away the tool in hand");
                             if bin.clicked() {
                                 st.held = None;
                                 fx.changed = true;
@@ -1649,7 +1651,7 @@ fn toolbar_menu(
                                 .weak(),
                         );
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.button("Close").clicked() {
+                            if ui.button("×").on_hover_text("Close").clicked() {
                                 st.bar_menu = false;
                             }
                         });
@@ -4353,7 +4355,7 @@ fn layout_editor(ctx: &egui::Context, st: &mut UiState) {
                 lay.app = Some(frac_of(screen, c));
             }
             // The quick bar, as a strip of empty slots.
-            let s = (if touch { 44.0 } else { 38.0 } * ui_scale(screen)).max(30.0);
+            let s = (if touch { 44.0 } else { 38.0 } * ui_scale(screen)).max(26.0);
             let w = ((hotbar::BAR + 2) as f32 * (s + 4.0) - 4.0).min(screen.width() - 2.0 * m);
             let bar_c = match lay.bar {
                 Some(f) => at_frac(screen, f, 0.0),

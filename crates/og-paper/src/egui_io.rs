@@ -160,6 +160,20 @@ mod web {
                     // Single-touch taps on the UI act like a mouse; the canvas
                     // handles multi-touch itself.
                     let p = Pos2::new(t.location.x as f32 / ppp, t.location.y as f32 / ppp);
+                    // Also as a touch, so egui knows this is a touch screen
+                    // (drag to scroll panels, long-press menus).
+                    self.events.push(Event::Touch {
+                        device_id: egui::TouchDeviceId(0),
+                        id: egui::TouchId(t.id),
+                        phase: match t.phase {
+                            TouchPhase::Started => egui::TouchPhase::Start,
+                            TouchPhase::Moved => egui::TouchPhase::Move,
+                            TouchPhase::Ended => egui::TouchPhase::End,
+                            TouchPhase::Cancelled => egui::TouchPhase::Cancel,
+                        },
+                        pos: p,
+                        force: t.force.map(|f| f.normalized() as f32),
+                    });
                     match t.phase {
                         TouchPhase::Started => {
                             self.pos = Some(p);
