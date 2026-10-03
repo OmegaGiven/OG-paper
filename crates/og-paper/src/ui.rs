@@ -239,6 +239,8 @@ pub enum AppItem {
     Diagram,
     /// Move the controls around.
     Layout,
+    /// Set your own keys.
+    Hotkeys,
     /// Background grid: off, lines, dots.
     Grid,
     New,
@@ -262,6 +264,7 @@ impl AppItem {
             AppItem::Library => "Library",
             AppItem::Diagram => "Diagram",
             AppItem::Layout => "Edit layout",
+            AppItem::Hotkeys => "Hotkeys",
             AppItem::Grid => "Grid",
             AppItem::New => "New canvas",
             AppItem::Open => "Open",
@@ -283,6 +286,7 @@ impl AppItem {
             AppItem::Library => Action::Library,
             AppItem::Diagram => Action::Diagram,
             AppItem::Layout => Action::EditLayout,
+            AppItem::Hotkeys => Action::Hotkeys,
             AppItem::Grid => Action::Grid,
             AppItem::New => Action::New,
             AppItem::Open => Action::Open,
@@ -345,6 +349,10 @@ pub struct UiState {
     pub grid: GridMode,
     /// Diagram mode: lines and arrows stick to what they touch.
     pub diagram: bool,
+    /// Hotkeys: the keymap, its menu, and the binding waiting for a key.
+    pub keys: crate::hotkeys::Keymap,
+    pub keys_open: bool,
+    pub key_capture: Option<String>,
     /// Where the controls sit, and whether they are being moved.
     pub layout: crate::layout::Layout,
     pub layout_edit: bool,
@@ -495,7 +503,11 @@ impl Default for UiState {
                 AppItem::Grid,
                 AppItem::Diagram,
                 AppItem::Layout,
+                AppItem::Hotkeys,
             ],
+            keys: Default::default(),
+            keys_open: false,
+            key_capture: None,
             diagram: false,
             layout: Default::default(),
             layout_edit: false,
@@ -672,6 +684,10 @@ pub enum Action {
     Diagram,
     /// Start moving the controls around.
     EditLayout,
+    /// Open the hotkeys menu.
+    Hotkeys,
+    /// The hotkeys changed in the menu: save them.
+    SaveKeys,
     /// Save the selection to the library.
     SaveSticker,
     /// Open the library.
@@ -999,6 +1015,9 @@ pub fn draw(ctx: &egui::Context, st: &mut UiState) -> Vec<Action> {
     if st.lib_open {
         library_panel(ctx, st, &mut actions);
     }
+    if st.keys_open {
+        hotkeys_panel(ctx, st, &mut actions);
+    }
 
     if let Some(msg) = &st.message {
         egui::Area::new(Id::new("msg"))
@@ -1143,6 +1162,7 @@ fn quick_bar(ctx: &egui::Context, st: &mut UiState, g: &Geo) {
             );
             let resp = ui.interact(r, Id::new("bag"), Sense::click());
             let p = ui.painter();
+            rect_shadow(p, r, 8.0);
             p.rect_filled(
                 r,
                 8.0,
@@ -1218,6 +1238,7 @@ fn number_button(
 ) -> bool {
     let resp = ui.interact(r, Id::new(("bar_num", k)), Sense::click());
     let p = ui.painter();
+    rect_shadow(p, r, 8.0);
     p.rect_filled(
         r,
         8.0,
@@ -1634,6 +1655,7 @@ fn slot(ui: &mut egui::Ui, st: &mut UiState, rect: Rect, which: Slots, i: usize,
     let item = *slot_mut(st, which, i);
     let p = ui.painter();
     let on = !st.bag_open && item.is_some_and(|it| it == current);
+    rect_shadow(p, rect, 8.0);
     p.rect_filled(
         rect,
         8.0,
@@ -2839,6 +2861,22 @@ fn app_icon(p: &egui::Painter, c: Pos2, r: f32, item: AppItem, grid: GridMode) {
         p.add(Shape::line(pts.iter().map(|v| c + *v * s).collect(), st));
     };
     match item {
+        AppItem::Hotkeys => {
+            // A keyboard.
+            line(&[
+                vec2(-1.0, -0.6),
+                vec2(1.0, -0.6),
+                vec2(1.0, 0.6),
+                vec2(-1.0, 0.6),
+                vec2(-1.0, -0.6),
+            ]);
+            for y in [-0.25, 0.1] {
+                for x in [-0.65, -0.3, 0.05, 0.4, 0.7] {
+                    p.circle_filled(c + vec2(x, y) * s, r * 0.045, INKY);
+                }
+            }
+            line(&[vec2(-0.45, 0.38), vec2(0.45, 0.38)]);
+        }
         AppItem::Layout => {
             // Four tiles, one lifted and moving.
             for (x, y) in [(-0.95, -0.95), (0.15, -0.95), (-0.95, 0.15)] {
@@ -3058,8 +3096,26 @@ fn label(p: &egui::Painter, at: Pos2, text: &str) {
     p.galley(rect.min + vec2(4.0, 1.0), galley, INKY);
 }
 
+/// A soft drop shadow under a round button: a few faint layers, offset down.
+fn disc_shadow(p: &egui::Painter, c: Pos2, r: f32) {
+    for (dy, grow, a) in [(3.0, 3.5, 8u8), (2.2, 2.0, 14), (1.4, 0.8, 22)] {
+        p.circle_filled(c + vec2(0.0, dy), r + grow, Color32::from_black_alpha(a));
+    }
+}
+
+/// The same under a rounded square (quick-bar slots).
+fn rect_shadow(p: &egui::Painter, r: Rect, rounding: f32) {
+    for (dy, grow, a) in [(3.0, 2.5, 7u8), (2.0, 1.2, 12), (1.2, 0.4, 18)] {
+        p.rect_filled(
+            r.expand(grow).translate(vec2(0.0, dy)),
+            rounding + grow,
+            Color32::from_black_alpha(a),
+        );
+    }
+}
+
 fn disc(p: &egui::Painter, c: Pos2, r: f32, fill: Color32, active: bool) {
-    p.circle_filled(c + vec2(0.0, 1.5), r + 1.0, Color32::from_black_alpha(30));
+    disc_shadow(p, c, r);
     p.circle_filled(c, r, fill);
     p.circle_stroke(
         c,
@@ -4268,4 +4324,94 @@ fn brush_section(
     });
     heading(ui, "Color");
     color_dial(ui, &mut ink.color, false, dial_hue, touch)
+}
+
+/// Settings > Hotkeys: every tool, look and command with its key; tap a key
+/// to change it (then press the new one), × to clear it.
+fn hotkeys_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) {
+    let screen = ctx.content_rect();
+    let w = 380.0f32.min(screen.width() - 24.0);
+    let mut changed = false;
+    egui::Area::new(Id::new("hotkeys"))
+        .order(Order::Foreground)
+        .pivot(Align2::CENTER_CENTER)
+        .fixed_pos(screen.center())
+        .show(ctx, |ui| {
+            ui.style_mut().visuals = egui::Visuals::light();
+            egui::Frame::new()
+                .fill(FACE)
+                .stroke(Stroke::new(1.0, EDGE))
+                .corner_radius(12.0)
+                .inner_margin(12.0)
+                .shadow(egui::Shadow { offset: [0, 3], blur: 14, spread: 0, color: Color32::from_black_alpha(45) })
+                .show(ui, |ui| {
+                    ui.set_width(w);
+                    ui.horizontal(|ui| {
+                        ui.strong("Hotkeys");
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button("Close").clicked() {
+                                st.keys_open = false;
+                                st.key_capture = None;
+                            }
+                            if ui.button("Reset all").on_hover_text("Back to the default keys").clicked() {
+                                st.keys.reset();
+                                changed = true;
+                            }
+                        });
+                    });
+                    ui.label(
+                        egui::RichText::new("Tap a key to change it, then press the new key (Esc cancels, Backspace clears).")
+                            .small()
+                            .weak(),
+                    );
+                    ui.add_space(4.0);
+                    let all = crate::hotkeys::bindings();
+                    egui::ScrollArea::vertical().max_height(screen.height() * 0.7).show(ui, |ui| {
+                        let mut group = "";
+                        for b in &all {
+                            if b.group != group {
+                                group = b.group;
+                                ui.add_space(6.0);
+                                ui.label(egui::RichText::new(group).strong());
+                            }
+                            ui.horizontal(|ui| {
+                                ui.allocate_ui_with_layout(
+                                    vec2(w - 130.0, 20.0),
+                                    egui::Layout::left_to_right(egui::Align::Center),
+                                    |ui| {
+                                        ui.set_min_width(w - 130.0);
+                                        ui.add(egui::Label::new(&b.label).truncate());
+                                    },
+                                );
+                                let waiting = st.key_capture.as_deref() == Some(b.id.as_str());
+                                let text = if waiting {
+                                    "press a key…".to_string()
+                                } else {
+                                    st.keys.keys.get(&b.id).cloned().flatten().map_or("—".to_string(), |c| c.label())
+                                };
+                                if ui.add_sized([86.0, 20.0], egui::Button::selectable(waiting, text)).clicked() {
+                                    st.key_capture = if waiting { None } else { Some(b.id.clone()) };
+                                }
+                                if ui.small_button("×").on_hover_text("No key").clicked() {
+                                    st.keys.set(&b.id, None);
+                                    changed = true;
+                                }
+                            });
+                        }
+                        ui.add_space(8.0);
+                        ui.label(egui::RichText::new("Fixed keys").strong());
+                        ui.label(
+                            egui::RichText::new(
+                                "1–9 quick bar slots · Alt+1–9 toolbars · [ ] cycle toolbars · Ctrl+C / X / V copy, cut, paste · \
+                                 Ctrl+A select all · Ctrl+D duplicate · Ctrl+Y redo · Delete · arrows nudge · Esc · Enter · Home · Space pan",
+                            )
+                            .small()
+                            .weak(),
+                        );
+                    });
+                });
+        });
+    if changed {
+        actions.push(Action::SaveKeys);
+    }
 }

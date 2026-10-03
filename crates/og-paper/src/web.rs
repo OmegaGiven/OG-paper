@@ -211,6 +211,7 @@ pub fn og_set_menu(items: &str) {
                 "library" => AppItem::Library,
                 "diagram" => AppItem::Diagram,
                 "layout" => AppItem::Layout,
+                "hotkeys" => AppItem::Hotkeys,
                 "picture" => AppItem::Picture,
                 "bookmarks" => AppItem::Bookmarks,
                 "timeline" => AppItem::Timeline,

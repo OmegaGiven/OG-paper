@@ -15,6 +15,7 @@ mod egui_io;
 mod export;
 mod font;
 mod hotbar;
+mod hotkeys;
 mod images;
 mod layout;
 mod library;
@@ -170,6 +171,7 @@ impl App {
         ui.grid = ui::GridMode::from_key(prefs.get("grid").map_or("off", |s| s.as_str()));
         ui.diagram = prefs.get("diagram").is_some_and(|v| v == "on");
         ui.layout = layout::Layout::decode(prefs.get("layout").map_or("", |s| s.as_str()));
+        ui.keys = hotkeys::Keymap::load(prefs.get("keys").map_or("", |s| s.as_str()));
         Self {
             window: None,
             gpu: None,
@@ -895,6 +897,13 @@ impl App {
                 }
                 self.redraw();
             }
+            Action::Hotkeys => {
+                self.ui.keys_open = !self.ui.keys_open;
+                self.ui.key_capture = None;
+                self.ui.menu = ui::Menu::None;
+                self.redraw();
+            }
+            Action::SaveKeys => self.save_keys(),
             Action::EditLayout => {
                 self.ui.layout_edit = true;
                 self.ui.menu = ui::Menu::None;
@@ -1218,6 +1227,57 @@ impl App {
         let shift = self.mods.shift_key();
         let selecting = self.ui.tool.selects() && !self.edit.selection.is_empty();
         let step = if shift { 10.0 } else { 1.0 };
+        // Waiting for a key to assign (Settings > Hotkeys).
+        if let Some(id) = self.ui.key_capture.clone() {
+            match key {
+                Key::Named(NamedKey::Escape) => self.ui.key_capture = None,
+                Key::Named(NamedKey::Backspace | NamedKey::Delete) => {
+                    self.ui.keys.set(&id, None);
+                    self.ui.key_capture = None;
+                    self.save_keys();
+                }
+                Key::Named(
+                    NamedKey::Control
+                    | NamedKey::Shift
+                    | NamedKey::Alt
+                    | NamedKey::Super
+                    | NamedKey::Meta,
+                ) => {}
+                k => {
+                    if let Some(c) = self.combo(k) {
+                        if c.fixed() {
+                            self.say(format!(
+                                "{} is kept for the app; pick another key",
+                                c.label()
+                            ));
+                        } else {
+                            let label = c.label();
+                            if let Some(from) = self.ui.keys.set(&id, Some(c)) {
+                                let name = hotkeys::bindings()
+                                    .into_iter()
+                                    .find(|b| b.id == from)
+                                    .map_or(from, |b| b.label);
+                                self.say(format!("{label} moved here from {name}"));
+                            }
+                            self.ui.key_capture = None;
+                            self.save_keys();
+                        }
+                    }
+                }
+            }
+            self.redraw();
+            return true;
+        }
+        // Your hotkeys first (fixed keys are never in the keymap).
+        if let Some(c) = self.combo(key) {
+            if !c.fixed() {
+                if let Some(id) = self.ui.keys.lookup(&c).map(str::to_string) {
+                    self.run_binding(&id);
+                    self.redraw();
+                    return true;
+                }
+            }
+        }
         let k = match key {
             Key::Character(c) => c.to_lowercase(),
             Key::Named(NamedKey::Home) => {
@@ -1265,12 +1325,7 @@ impl App {
             _ => return false,
         };
         match (ctrl, shift, k.as_str()) {
-            (true, false, "z") => self.action(Action::Undo),
-            (true, true, "z") | (true, _, "y") => self.action(Action::Redo),
-            (true, _, "n") => self.action(Action::New),
-            (true, _, "f") => self.action(Action::Search),
-            (true, _, "o") => self.action(Action::Open),
-            (true, true, "s") | (true, false, "s") => self.action(Action::SaveAs),
+            (true, _, "y") => self.action(Action::Redo),
             (true, _, "d") if selecting => self.sel_action(Action::Duplicate),
             (true, _, "c") if selecting => {
                 self.copy_selection();
@@ -1289,31 +1344,6 @@ impl App {
             (true, _, "a") => self.select_all_visible(),
             (true, _, "]") if selecting => self.sel_action(Action::ToFront),
             (true, _, "[") if selecting => self.sel_action(Action::ToBack),
-            // V: Select, again for Lasso.
-            (false, _, "v") => {
-                self.ui.tool = if self.ui.tool == Tool::Select {
-                    Tool::Lasso
-                } else {
-                    Tool::Select
-                }
-            }
-            (false, _, "s") => self.ui.tool = Tool::Shapes,
-            (false, _, "t") => self.ui.tool = Tool::Text,
-            (false, _, "r") => {
-                (self.ui.tool, self.ui.shape.kind) = (Tool::Shapes, shapes::ShapeKind::Rect)
-            }
-            (false, _, "o") => {
-                (self.ui.tool, self.ui.shape.kind) = (Tool::Shapes, shapes::ShapeKind::Ellipse)
-            }
-            (false, _, "d") => {
-                (self.ui.tool, self.ui.shape.kind) = (Tool::Shapes, shapes::ShapeKind::Diamond)
-            }
-            (false, _, "a") => {
-                (self.ui.tool, self.ui.shape.kind) = (Tool::Shapes, shapes::ShapeKind::Arrow)
-            }
-            (false, _, "l") => {
-                (self.ui.tool, self.ui.shape.kind) = (Tool::Shapes, shapes::ShapeKind::Line)
-            }
             // Toolbars: [ and ] cycle, Alt+1–9 jump.
             (false, _, "[") => self.ui.cycle_bar(-1),
             (false, _, "]") => self.ui.cycle_bar(1),
@@ -1327,10 +1357,78 @@ impl App {
                     return false;
                 }
             }
-            (false, _, "e") => self.ui.tool = Tool::Eraser,
-            (false, _, "g") => self.ui.tool = Tool::Bucket,
-            (false, _, "h") => self.ui.tool = Tool::Hand,
-            (false, _, "i") => {
+            _ => return false,
+        }
+        self.redraw();
+        true
+    }
+
+    /// A key press as a hotkey combo (None for keys that can't be one).
+    fn combo(&self, key: &Key) -> Option<hotkeys::Combo> {
+        let k = match key {
+            Key::Character(c) => {
+                let c = c.to_lowercase();
+                // Shifted digits and symbols come as their shifted character;
+                // keep the character itself.
+                if c.trim().is_empty() {
+                    return None;
+                }
+                c
+            }
+            Key::Named(n) => match n {
+                NamedKey::Control
+                | NamedKey::Shift
+                | NamedKey::Alt
+                | NamedKey::Super
+                | NamedKey::Meta => return None,
+                n => format!("{n:?}").to_lowercase(),
+            },
+            _ => return None,
+        };
+        Some(hotkeys::Combo {
+            ctrl: self.mods.control_key() || self.mods.super_key(),
+            shift: self.mods.shift_key(),
+            alt: self.mods.alt_key(),
+            key: k,
+        })
+    }
+
+    fn save_keys(&mut self) {
+        let mut p = prefs::load();
+        p.insert("keys".into(), self.ui.keys.save_text());
+        prefs::save(&p);
+    }
+
+    /// Do what hotkey `id` stands for.
+    fn run_binding(&mut self, id: &str) {
+        let shape = |app: &mut App, k: shapes::ShapeKind| {
+            app.ui.tool = Tool::Shapes;
+            app.ui.shape.kind = k;
+        };
+        match id {
+            "tool.brush" => self.ui.tool = Tool::Pen,
+            "tool.texture" => self.ui.tool = Tool::Texture,
+            "tool.highlighter" => self.ui.tool = Tool::Highlighter,
+            "tool.bucket" => self.ui.tool = Tool::Bucket,
+            "tool.eraser" => self.ui.tool = Tool::Eraser,
+            "tool.select" => {
+                // Again for the lasso.
+                self.ui.tool = if self.ui.tool == Tool::Select {
+                    Tool::Lasso
+                } else {
+                    Tool::Select
+                }
+            }
+            "tool.lasso" => self.ui.tool = Tool::Lasso,
+            "tool.shapes" => self.ui.tool = Tool::Shapes,
+            "shape.rect" => shape(self, shapes::ShapeKind::Rect),
+            "shape.ellipse" => shape(self, shapes::ShapeKind::Ellipse),
+            "shape.diamond" => shape(self, shapes::ShapeKind::Diamond),
+            "shape.arrow" => shape(self, shapes::ShapeKind::Arrow),
+            "shape.line" => shape(self, shapes::ShapeKind::Line),
+            "tool.text" => self.ui.tool = Tool::Text,
+            "tool.hand" => self.ui.tool = Tool::Hand,
+            "tool.picker" => {
                 if !matches!(
                     self.ui.tool,
                     Tool::Picker | Tool::Eraser | Tool::Hand | Tool::Select | Tool::Lasso
@@ -1339,10 +1437,58 @@ impl App {
                 }
                 self.ui.tool = Tool::Picker;
             }
-            _ => return false,
+            "brush.simple" => {
+                self.ui.tool = Tool::Pen;
+                self.ui.pen.advanced = false;
+            }
+            "cmd.undo" => self.action(Action::Undo),
+            "cmd.redo" => self.action(Action::Redo),
+            "cmd.new" => self.action(Action::New),
+            "cmd.open" => self.action(Action::Open),
+            "cmd.save" => self.action(Action::SaveAs),
+            "cmd.export" => self.action(Action::Export),
+            "cmd.paste" => self.action(Action::Paste),
+            "cmd.picture" => self.action(Action::Picture),
+            "cmd.search" => self.action(Action::Search),
+            "cmd.bookmarks" => self.action(Action::Bookmarks),
+            "cmd.timeline" => self.action(Action::Timeline),
+            "cmd.library" => self.action(Action::Library),
+            "cmd.home" => self.action(Action::Home),
+            "cmd.grid" => self.action(Action::Grid),
+            "cmd.diagram" => self.action(Action::Diagram),
+            "cmd.layout" => self.action(Action::EditLayout),
+            "cmd.fullscreen" => self.action(Action::FullScreen),
+            "cmd.hotkeys" => self.action(Action::Hotkeys),
+            id => {
+                // A brush or texture look.
+                let Some(n) = id
+                    .strip_prefix("look.")
+                    .and_then(|n| n.parse::<usize>().ok())
+                else {
+                    return;
+                };
+                let Some(l) = ogpaper_core::brush::looks().into_iter().nth(n) else {
+                    return;
+                };
+                let ink = if l.texture {
+                    self.ui.tool = Tool::Texture;
+                    &mut self.ui.texture
+                } else {
+                    self.ui.tool = Tool::Pen;
+                    &mut self.ui.pen
+                };
+                ink.advanced = true;
+                ink.params = ogpaper_core::BrushParams {
+                    seed: ink.params.seed,
+                    ..l.params
+                };
+                self.say(format!(
+                    "{}: {}",
+                    if l.texture { "Texture" } else { "Brush" },
+                    l.name
+                ));
+            }
         }
-        self.redraw();
-        true
     }
 
     // ---- touch -----------------------------------------------------------
