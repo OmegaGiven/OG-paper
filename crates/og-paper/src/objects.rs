@@ -589,6 +589,10 @@ fn portal_pieces(style: &ShapeStyle, geom: &Geom, width: f64, seed: u32) -> Vec<
     }];
     let [r, g, b, a] = style.stroke.to_le_bytes();
     let stroke = u32::from_le_bytes([r, g, b, ((a as u32 * style.opacity as u32) / 255) as u8]);
+    if width <= 0.0 || stroke.to_le_bytes()[3] == 0 {
+        // No outline: just the window.
+        return out;
+    }
     if geom.pts.len() >= 3 {
         let mut ring = poly;
         ring.push(ring[0]);

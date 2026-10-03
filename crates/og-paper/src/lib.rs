@@ -2509,6 +2509,11 @@ impl App {
             Cmd::Pages(json) => self.web_pages(&json),
             Cmd::Plugin(bytes, quiet) => self.plugin_install(bytes, quiet),
             Cmd::Pack(bytes) => self.pack_install(&bytes),
+            Cmd::Run(json) => {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&json) {
+                    self.run_commands(&v);
+                }
+            }
             Cmd::RelayShare(key) => {
                 let addr = self.ui.relay_text.clone().unwrap_or_default();
                 self.relay_share(&addr, &key);

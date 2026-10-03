@@ -64,23 +64,26 @@ impl App {
             let Some(&g) = self.objs.portal_of.get(&i.stroke) else {
                 continue;
             };
-            let Some(ObjData::Portal { view, .. }) =
-                self.objs.groups.get(g as usize).map(|g| &g.data)
+            let Some(grp) = self.objs.groups.get(g as usize) else {
+                continue;
+            };
+            let ObjData::Portal {
+                view, style, geom, ..
+            } = &grp.data
             else {
                 continue;
             };
             if self.scene.strokes[i.stroke as usize].deleted {
                 continue;
             }
-            let poly: Vec<[f64; 2]> = self
-                .scene
-                .stroke_points(i.stroke)
-                .iter()
+            // The window from the object itself, in f64 (the stroke's screen
+            // points are f32): each pass is exact, so going through many in
+            // a row does not drift.
+            let poly: Vec<[f64; 2]> = objects::portal_outline(style, geom)
+                .into_iter()
                 .map(|p| {
-                    [
-                        i.ox as f64 + p[0] as f64 * i.scale as f64,
-                        i.oy as f64 + p[1] as f64 * i.scale as f64,
-                    ]
+                    let q = self.cam.to_screen(&grp.cell, p);
+                    [q[0] + w * 0.5, q[1] + h * 0.5]
                 })
                 .collect();
             if poly.len() < 3 || !probe.iter().all(|&q| inside(&poly, q)) {
@@ -91,7 +94,7 @@ impl App {
                 (x0, y0, x1, y1) = (x0.min(q[0]), y0.min(q[1]), x1.max(q[0]), y1.max(q[1]));
             }
             // As `portals_in` frames it, centred on the screen.
-            let side = (x1 - x0).min(y1 - y0) as f32 as f64;
+            let side = (x1 - x0).min(y1 - y0);
             let mut cam = view.cam.clone();
             cam.base_px = self.cam.base_px;
             cam.zoom_at(side / view.view_px.max(1.0), [0.0, 0.0]);
@@ -315,6 +318,9 @@ impl App {
             kind: self.ui.portal_kind,
             fill: objects::PORTAL_PAPER,
             fill_style: FillStyle::None,
+            // A window is exact: square corners, a clean line.
+            round: false,
+            sloppiness: shapes::Sloppiness::Architect,
             ..self.ui.shape
         }
     }
@@ -553,5 +559,16 @@ mod tests {
         assert!((dz - 1.1f64.log10()).abs() < 1e-3, "{dz}");
         let p = app.cam.to_screen(&start.cell, start.off);
         assert!(p[0].hypot(p[1]) < 1e-3, "centred on the street: {p:?}");
+        // Round and round: the vanishing point stays put.
+        for _ in 0..15 {
+            app.cam.zoom_at(4.0, [0.0, 0.0]);
+            query(&app.scene, &app.cam, w, h, crate::VIEW, &mut app.draw);
+            assert!(app.portal_pass());
+        }
+        let p = app.cam.to_screen(&start.cell, start.off);
+        assert!(
+            p[0].hypot(p[1]) < 1e-3,
+            "still centred after 15 passes: {p:?}"
+        );
     }
 }

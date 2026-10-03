@@ -117,6 +117,15 @@ Desktop: `~/OG Paper/plugins/` (one `.wasm` each; drop a file there and it
 loads next start). Web: in the browser's storage. Remove deletes it.
 Android runs plugins kept in its app folder, but has no install picker yet.
 
+## In the browser
+
+The web app takes the same commands from the page itself, for devtools
+snippets, bookmarklets and extensions:
+
+```js
+ogPaper.run([{ add: 'text', x: 0, y: 0, text: 'Hello' }]);
+```
+
 ## Automations (the server API)
 
 A page server (`og-paper --serve-dir`, or the Docker image) takes JSON over

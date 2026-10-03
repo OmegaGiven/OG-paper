@@ -897,7 +897,22 @@ impl App {
     fn region_select(&mut self, inside: impl Fn([f64; 2]) -> bool) {
         // (object, points inside, points, extent)
         let mut seen: Vec<(ObjRef, usize, usize, [f64; 2], [f64; 2])> = Vec::new();
-        for inst in &self.draw.strokes {
+        // Finer than drawing: ink too small to draw (a few pixels when
+        // zoomed out) is still in the box, so it is still taken.
+        let [w, h] = self.size();
+        let mut fine = ogpaper_core::DrawList::default();
+        ogpaper_core::query(
+            &self.scene,
+            &self.cam,
+            w,
+            h,
+            ogpaper_core::Params {
+                min_cell_px: 0.25,
+                ..crate::VIEW
+            },
+            &mut fine,
+        );
+        for inst in &fine.strokes {
             let id = inst.stroke;
             if self.scene.strokes[id as usize].deleted {
                 continue;
