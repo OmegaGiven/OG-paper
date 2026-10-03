@@ -597,7 +597,7 @@ impl UiState {
     }
 
     pub fn menu_open(&self) -> bool {
-        self.menu != Menu::None || self.bar_menu
+        self.menu != Menu::None || self.bar_menu || self.bag_open
     }
 
     /// Close every menu (a tap on the canvas does this).
@@ -605,6 +605,8 @@ impl UiState {
         self.menu = Menu::None;
         self.bar_menu = false;
         self.bar_rename = None;
+        // A tap off the inventory closes it too (a held tool goes back).
+        self.bag_open = false;
     }
 
     /// Esc: close every menu and panel that is open (not the tool panel).
@@ -1165,6 +1167,14 @@ pub fn draw(ctx: &egui::Context, st: &mut UiState) -> Vec<Action> {
     actions
 }
 
+/// Where the toolbar list and inventory open, relative to the bar.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Side {
+    Above,
+    Below,
+    Right,
+}
+
 /// Which set of slots.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 enum Slots {
@@ -1255,10 +1265,46 @@ fn quick_bar(ctx: &egui::Context, st: &mut UiState, g: &Geo) {
         y - s * 0.5
     };
     let stack = Rect::from_min_size(pos2(x0, top), vec2(row, rows as f32 * (s + gap) - gap));
-    let (up, stack) = if st.radial_bar {
-        (true, Rect::from_center_size(g.bar, Vec2::splat(2.0 * g.r)))
+    // A portrait screen (and no place set in Edit layout): a column down
+    // the left side instead, so it has the long side to itself.
+    let vertical = !st.radial_bar && st.layout.bar.is_none() && screen.height() > screen.width();
+    let (n, col_y0, col_x0) = if vertical {
+        let avail = screen.height() - 2.0 * m;
+        let fit = (((avail + gap) / (s + gap)) as usize)
+            .saturating_sub(2)
+            .clamp(3, hotbar::BAR);
+        let len = (fit + 2) as f32 * (s + gap) - gap;
+        (fit, screen.center().y - len * 0.5, screen.left() + m)
     } else {
-        (up, stack)
+        (n, 0.0, 0.0)
+    };
+    let (side, stack) = if st.radial_bar {
+        (
+            Side::Above,
+            Rect::from_center_size(g.bar, Vec2::splat(2.0 * g.r)),
+        )
+    } else if vertical {
+        let len = (n + 2) as f32 * (s + gap) - gap;
+        (
+            Side::Right,
+            Rect::from_min_size(
+                pos2(col_x0, col_y0),
+                vec2(rows as f32 * (s + gap) - gap, len),
+            ),
+        )
+    } else {
+        (if up { Side::Above } else { Side::Below }, stack)
+    };
+    // Where cell j (0 = number, 1..n = slots, n+1 = bag) of row ri goes.
+    let cell = |ri: usize, j: usize| -> Pos2 {
+        if vertical {
+            pos2(
+                col_x0 + ri as f32 * (s + gap),
+                col_y0 + j as f32 * (s + gap),
+            )
+        } else {
+            pos2(x0 + j as f32 * (s + gap), y - s * 0.5 + ri as f32 * step)
+        }
     };
 
     // Radial toolbar: the bar is a fan from its own button (see radial_bar).
@@ -1274,8 +1320,7 @@ fn quick_bar(ctx: &egui::Context, st: &mut UiState, g: &Geo) {
                     .chain(others.iter().copied())
                     .enumerate()
                 {
-                    let ry = y - s * 0.5 + ri as f32 * step;
-                    let r = Rect::from_min_size(pos2(x0, ry), Vec2::splat(s));
+                    let r = Rect::from_min_size(cell(ri, 0), Vec2::splat(s));
                     let active = k == st.active_bar;
                     if number_button(ui, st, r, k, active && st.bar_menu, active) {
                         if active {
@@ -1288,18 +1333,12 @@ fn quick_bar(ctx: &egui::Context, st: &mut UiState, g: &Geo) {
                         }
                     }
                     for i in 0..n {
-                        let r = Rect::from_min_size(
-                            pos2(x0 + (i + 1) as f32 * (s + gap), ry),
-                            Vec2::splat(s),
-                        );
+                        let r = Rect::from_min_size(cell(ri, i + 1), Vec2::splat(s));
                         slot(ui, st, r, Slots::Row(k), i, &mut fx);
                     }
                 }
                 // The bag: opens the inventory.
-                let r = Rect::from_min_size(
-                    pos2(x0 + (n + 1) as f32 * (s + gap), y - s * 0.5),
-                    Vec2::splat(s),
-                );
+                let r = Rect::from_min_size(cell(0, n + 1), Vec2::splat(s));
                 let resp = ui.interact(r, Id::new("bag"), Sense::click());
                 let p = ui.painter();
                 rect_shadow(p, r, 8.0);
@@ -1336,7 +1375,7 @@ fn quick_bar(ctx: &egui::Context, st: &mut UiState, g: &Geo) {
             });
     }
     if st.bag_open {
-        inventory(ctx, st, stack, up, s, gap, &mut fx);
+        inventory(ctx, st, stack, side, s, gap, &mut fx);
     } else if let Some(h) = st.held.take() {
         // Closed while holding a tool: put it back in the first free slot.
         if let Some(k) = st.inventory.iter().position(|x| x.is_none()) {
@@ -1356,7 +1395,7 @@ fn quick_bar(ctx: &egui::Context, st: &mut UiState, g: &Geo) {
         preset_icon(&p, c, s * 0.45, &h, &st.egui_fonts);
     }
     if st.bar_menu {
-        toolbar_menu(ctx, st, stack, up, s, gap, &mut fx);
+        toolbar_menu(ctx, st, stack, side, s, gap, &mut fx);
     }
     if fx.changed {
         hotbar::grow_inventory(&mut st.inventory);
@@ -1431,23 +1470,45 @@ fn inventory(
     ctx: &egui::Context,
     st: &mut UiState,
     bars: Rect,
-    up: bool,
+    side: Side,
     s: f32,
     gap: f32,
     fx: &mut SlotFx,
 ) {
     let screen = ctx.content_rect();
     let m = 12.0;
-    let area = if up {
-        Rect::from_min_max(
+    let area = match side {
+        Side::Above => Rect::from_min_max(
             screen.min + vec2(m, m),
             pos2(screen.right() - m, bars.top() - 10.0),
-        )
-    } else {
-        Rect::from_min_max(
+        ),
+        Side::Below => Rect::from_min_max(
             pos2(screen.left() + m, bars.bottom() + 10.0),
             screen.max - vec2(m, m),
-        )
+        ),
+        Side::Right => Rect::from_min_max(
+            pos2(bars.right() + 10.0, screen.top() + m),
+            screen.max - vec2(m, m),
+        ),
+    };
+    // At most ~60% of the screen tall, next to the bar, so there is canvas
+    // around it to tap (which closes it).
+    let max_h = (screen.height() * 0.6).max(4.0 * s + 90.0);
+    let area = match side {
+        Side::Above => Rect::from_min_max(
+            pos2(area.left(), area.top().max(area.bottom() - max_h)),
+            area.max,
+        ),
+        Side::Below => Rect::from_min_max(
+            area.min,
+            pos2(area.right(), area.bottom().min(area.top() + max_h)),
+        ),
+        Side::Right => {
+            let h = area.height().min(max_h);
+            let top =
+                (bars.center().y - h * 0.5).clamp(area.top(), (area.bottom() - h).max(area.top()));
+            Rect::from_min_size(pos2(area.left(), top), vec2(area.width(), h))
+        }
     };
     if area.height() < 3.0 * s {
         return;
@@ -1526,7 +1587,7 @@ fn toolbar_menu(
     ctx: &egui::Context,
     st: &mut UiState,
     bars: Rect,
-    up: bool,
+    side: Side,
     s: f32,
     gap: f32,
     fx: &mut SlotFx,
@@ -1539,15 +1600,18 @@ fn toolbar_menu(
         screen.left() + 8.0,
         (screen.right() - w - 32.0).max(screen.left() + 8.0),
     );
-    let room = if up {
-        bars.top() - screen.top() - 24.0
-    } else {
-        screen.bottom() - bars.bottom() - 24.0
+    let room = match side {
+        Side::Above => bars.top() - screen.top() - 24.0,
+        Side::Below => screen.bottom() - bars.bottom() - 24.0,
+        Side::Right => screen.height() - 24.0,
     };
-    let (pivot, at) = if up {
-        (Align2::LEFT_BOTTOM, pos2(x, bars.top() - 10.0))
-    } else {
-        (Align2::LEFT_TOP, pos2(x, bars.bottom() + 10.0))
+    let (pivot, at) = match side {
+        Side::Above => (Align2::LEFT_BOTTOM, pos2(x, bars.top() - 10.0)),
+        Side::Below => (Align2::LEFT_TOP, pos2(x, bars.bottom() + 10.0)),
+        Side::Right => (
+            Align2::LEFT_CENTER,
+            pos2(bars.right() + 10.0, bars.center().y),
+        ),
     };
     egui::Area::new(Id::new("toolbar_menu"))
         .order(Order::Foreground)
