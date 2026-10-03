@@ -291,17 +291,30 @@ impl App {
     /// A merge in the background (sync folder, a connection): no flight,
     /// and a message only when something changed.
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
-    pub(crate) fn merge_quiet(&mut self, scene: Scene, objs: Objects, copy: Option<CopyLog>) {
-        self.merge_with(scene, objs, copy, true);
+    pub(crate) fn merge_quiet(
+        &mut self,
+        scene: Scene,
+        objs: Objects,
+        copy: Option<CopyLog>,
+    ) -> Option<Version> {
+        self.merge_with(scene, objs, copy, true)
     }
 
-    fn merge_with(&mut self, scene: Scene, objs: Objects, copy: Option<CopyLog>, quiet: bool) {
-        let theirs = Share::loaded(&scene, copy);
+    /// Merge a copy; its version when it was of this canvas.
+    fn merge_with(
+        &mut self,
+        scene: Scene,
+        objs: Objects,
+        copy: Option<CopyLog>,
+        quiet: bool,
+    ) -> Option<Version> {
+        let mut theirs = Share::loaded(&scene, copy);
+        theirs.log.policy = self.share.log.policy;
         if theirs.canvas != self.share.canvas {
             if !quiet {
                 self.say("That file is a different canvas: use Import canvas to bring it in");
             }
-            return;
+            return None;
         }
         // Strokes this copy lacks come in as they are (same cell, same uid).
         let mut by_uid: HashMap<u128, u32> = self
@@ -421,6 +434,7 @@ impl App {
             self.say(report.text());
         }
         self.redraw();
+        Some(theirs.log.version().clone())
     }
 }
 
@@ -430,6 +444,12 @@ impl App {
     /// there was no merge yet (a full copy is then the way to share).
     pub(crate) fn changes_copy(&self) -> Option<(Vec<u8>, usize)> {
         let seen = self.share.seen.as_ref()?;
+        Some(self.changes_since(seen))
+    }
+
+    /// A changes-only copy of what a copy at `seen` lacks, and how many
+    /// changes it holds (0: nothing to send).
+    pub(crate) fn changes_since(&self, seen: &Version) -> (Vec<u8>, usize) {
         let events = self.share.log.missing(seen);
         let replaces: Vec<Replace> = self
             .share
@@ -479,7 +499,7 @@ impl App {
                 });
             }
         }
-        let n = events.len();
+        let n = events.len() + replaces.len();
         let log = CopyLog {
             canvas: self.share.canvas,
             events,
@@ -494,7 +514,7 @@ impl App {
             &objs,
             &log,
         );
-        Some((bytes, n))
+        (bytes, n)
     }
 
     /// A camera framing strokes `ids` (None if there are none).

@@ -133,6 +133,13 @@ impl Version {
         self.0.get(&h.peer).is_some_and(|m| h <= m)
     }
 
+    /// Everything either version has.
+    pub fn join(&mut self, other: &Version) {
+        for h in other.0.values() {
+            self.note(*h);
+        }
+    }
+
     fn note(&mut self, h: Hlc) {
         let e = self.0.entry(h.peer).or_insert(h);
         if h > *e {
@@ -150,12 +157,54 @@ pub struct Merged {
     pub changed: Vec<u128>,
 }
 
+/// Which rival edit of an item wins. Every copy must use the same policy
+/// to agree (a host hands its policy to whoever joins).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Policy {
+    /// The branch with the newest edit anywhere in it.
+    #[default]
+    Newest,
+    /// An edit made by this peer (the host) beats the others; then newest.
+    Favor(u64),
+    /// Edits by anyone but this peer (the host) beat its own; then newest.
+    Disfavor(u64),
+}
+
+impl Policy {
+    /// As a byte for the wire: 0 newest, 1 favor, 2 disfavor (the peer is
+    /// sent separately).
+    pub fn code(&self) -> u8 {
+        match self {
+            Policy::Newest => 0,
+            Policy::Favor(_) => 1,
+            Policy::Disfavor(_) => 2,
+        }
+    }
+
+    pub fn from_code(c: u8, peer: u64) -> Policy {
+        match c {
+            1 => Policy::Favor(peer),
+            2 => Policy::Disfavor(peer),
+            _ => Policy::Newest,
+        }
+    }
+
+    fn rank(&self, edit: &Hlc) -> u8 {
+        match *self {
+            Policy::Newest => 0,
+            Policy::Favor(p) => (edit.peer == p) as u8,
+            Policy::Disfavor(p) => (edit.peer != p) as u8,
+        }
+    }
+}
+
 /// Every event and replacement a copy knows of.
 #[derive(Clone, Debug, Default)]
 pub struct Log {
     events: BTreeMap<(Hlc, u128), bool>,
     replaces: HashMap<u128, Replace>,
     version: Version,
+    pub policy: Policy,
 }
 
 impl Log {
@@ -252,9 +301,10 @@ impl Log {
             if branches.len() < 2 {
                 continue;
             }
+            let policy = self.policy;
             let win = branches
                 .iter()
-                .max_by_key(|(edit, (score, _))| (*score, **edit))
+                .max_by_key(|(edit, (score, _))| (policy.rank(edit), *score, **edit))
                 .map(|(e, _)| *e);
             for (edit, (_, items)) in &branches {
                 if Some(*edit) != win {
@@ -423,6 +473,33 @@ mod tests {
         l.merge(&[ev(2, false, 30, 1), ev(4, true, 30, 1)], &[r24]);
         assert_eq!(l.visible(), [4].into_iter().collect());
         assert!(l.conflicts().contains(&3));
+    }
+
+    #[test]
+    fn the_host_policy_picks_its_own_or_its_guests_edit() {
+        let r = |item, ms, peer| Replace {
+            item,
+            replaces: 1,
+            edit: h(ms, peer),
+        };
+        let mut l = log_of(
+            &[
+                ev(1, true, 1, 1),
+                ev(1, false, 10, 7),
+                ev(2, true, 10, 7),
+                ev(3, true, 20, 2),
+            ],
+            &[r(2, 10, 7), r(3, 20, 2)],
+        );
+        assert_eq!(l.visible(), [3].into_iter().collect()); // newest
+        l.policy = Policy::Favor(7); // 7 hosts: its older edit wins
+        assert_eq!(l.visible(), [2].into_iter().collect());
+        l.policy = Policy::Disfavor(2); // 2 hosts: the guest's edit wins
+        assert_eq!(l.visible(), [2].into_iter().collect());
+        assert_eq!(
+            Policy::from_code(Policy::Favor(7).code(), 7),
+            Policy::Favor(7)
+        );
     }
 
     #[test]

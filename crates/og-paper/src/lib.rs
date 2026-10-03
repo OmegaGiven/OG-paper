@@ -23,9 +23,11 @@ mod import;
 mod joints;
 mod layout;
 mod library;
+mod net;
 mod objects;
 mod pdf;
 mod prefs;
+mod presence;
 mod render;
 mod search;
 mod shapes;
@@ -36,6 +38,7 @@ mod ui;
 mod uid;
 #[cfg(target_arch = "wasm32")]
 mod web;
+mod wire;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -122,6 +125,18 @@ pub struct App {
     share: share::Share,
     /// What the last merge changed, highlighted for a while.
     merge_changes: Option<share::Changes>,
+    /// Hosting or joined a live canvas.
+    net: Option<net::Net>,
+    /// Others on the live canvas.
+    peers: HashMap<u64, presence::Peer>,
+    /// What this device last sent of its view and stroke in progress.
+    sent: presence::Sent,
+    /// Riding along with someone's view.
+    follow: Option<u64>,
+    /// Joined with a view link: looking, not changing.
+    view_only: bool,
+    /// Serving with no window (`--serve`): no view to share.
+    headless: bool,
     /// Syncing through a shared folder (desktop).
     #[cfg(not(target_arch = "wasm32"))]
     folder: Option<folder::Folder>,
@@ -209,6 +224,12 @@ impl App {
             timeline: Timeline::default(),
             share: share::Share::fresh(),
             merge_changes: None,
+            net: None,
+            peers: HashMap::new(),
+            sent: Default::default(),
+            follow: None,
+            view_only: false,
+            headless: false,
             #[cfg(not(target_arch = "wasm32"))]
             folder: None,
             objs: objects::Objects::default(),
@@ -257,6 +278,9 @@ impl App {
 
     /// Something runs in the background that needs regular wake-ups.
     fn background(&self) -> bool {
+        if self.net_active() {
+            return true;
+        }
         #[cfg(not(target_arch = "wasm32"))]
         if self.folder.is_some() {
             return true;
@@ -426,6 +450,7 @@ impl App {
             return;
         }
         self.fly = None;
+        self.follow = None;
         self.gesture = match self.ui.tool {
             _ if self.space => Gesture::Pan,
             // Placing an import: any drag moves it.
@@ -447,6 +472,19 @@ impl App {
         {
             // The past is read-only: browse it instead.
             self.say("Viewing the timeline: close it (or restore this moment) to draw");
+            self.gesture = Gesture::Pan;
+        }
+        if self.view_only
+            && (matches!(
+                self.gesture,
+                Gesture::Ink
+                    | Gesture::Erase
+                    | Gesture::Shape
+                    | Gesture::Select
+                    | Gesture::Bucket(_)
+            ) || self.ui.tool == Tool::Text)
+        {
+            self.say("Joined with a view link: you can look around, not change the canvas");
             self.gesture = Gesture::Pan;
         }
         match self.gesture {
@@ -652,24 +690,36 @@ impl App {
     #[cfg(not(target_arch = "wasm32"))]
     fn persist_new(&mut self, id: u32) {
         if self.file.is_none() {
-            match default_path().and_then(|p| OgpFile::create(&p).map_err(|e| e.to_string())) {
-                Ok(f) => {
-                    self.ui.file_name = file_label(f.path());
-                    self.say(format!("Saving to {}", f.path().display()));
-                    let _ = f.put_all(&self.scene);
-                    self.file = Some(f);
-                    self.groups_saved = 0;
-                    self.persist_groups();
-                    self.persist_share();
-                    return;
-                }
-                Err(e) => self.say(format!("Could not create a file: {e}")),
-            }
+            self.ensure_file();
+            return;
         }
         if let Some(f) = &self.file {
             if let Err(e) = f.put_stroke(&self.scene, id) {
                 self.say(format!("Save failed: {e}"));
             }
+        }
+    }
+
+    /// Make sure the canvas has a file to save into (a new one in the
+    /// OG Paper folder if it has none yet), holding everything so far.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn ensure_file(&mut self) {
+        if self.file.is_some() {
+            return;
+        }
+        match default_path().and_then(|p| OgpFile::create(&p).map_err(|e| e.to_string())) {
+            Ok(f) => {
+                if self.ui.file_name == "Untitled" {
+                    self.ui.file_name = file_label(f.path());
+                }
+                self.say(format!("Saving to {}", f.path().display()));
+                let _ = f.put_all(&self.scene);
+                self.file = Some(f);
+                self.groups_saved = 0;
+                self.persist_groups();
+                self.persist_share();
+            }
+            Err(e) => self.say(format!("Could not create a file: {e}")),
         }
     }
 
@@ -1110,6 +1160,7 @@ impl App {
             #[cfg(target_arch = "wasm32")]
             Action::SaveChanges => match self.changes_copy() {
                 Some((b, n)) => {
+                    let (b, n) = (b, n);
                     web::set_changes(b);
                     web::emit("changes");
                     self.say(format!("Changes copy: {n} changes since the last merge"));
@@ -1183,6 +1234,34 @@ impl App {
                 {
                     self.import_file(p);
                 }
+            }
+            Action::LivePanel => {
+                self.ui.live_open = !self.ui.live_open;
+                self.ui.menu = ui::Menu::None;
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            Action::HostStart => self.host_start(net::DEFAULT_PORT),
+            Action::NetStop => {
+                let host = self.net.as_ref().is_some_and(|n| n.is_host());
+                self.net_stop();
+                self.say(if host {
+                    "Stopped hosting"
+                } else {
+                    "Left the shared canvas (your copy stays here)"
+                });
+            }
+            Action::Join => {
+                let link = self.ui.join_text.trim().to_string();
+                self.join(&link);
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            Action::SetPolicy(code) => self.set_policy(code),
+            Action::GoToPeer(peer, follow) => self.go_to_peer(peer, follow),
+            Action::SetName => {
+                if let Some(name) = self.ui.name_text.clone() {
+                    presence::set_my_name(&name);
+                }
+                self.sent = Default::default();
             }
             Action::ImportPlace => self.import_finish(true),
             Action::ImportCancel => self.import_finish(false),
@@ -1996,6 +2075,7 @@ impl App {
                 | Cmd::Import(_)
                 | Cmd::Merge(..)
                 | Cmd::Folder(_)
+                | Cmd::Poke
                 | Cmd::SearchGo(_)
                 | Cmd::Export(..)
                 | Cmd::BookmarkGo(_)
@@ -2119,8 +2199,13 @@ impl App {
             }
             Cmd::SearchGo(g) => self.search_go(g),
             Cmd::Folder(on) => self.ui.folder_on = on,
+            Cmd::Net(e) => self.net_event(e),
+            Cmd::Join(link) => self.join(&link),
+            Cmd::Poke => {}
             Cmd::Merge(bytes, quiet) => match snapshot::decode(&bytes, BASE_PX) {
-                Ok(s) if quiet => self.merge_quiet(s.scene, s.objs, s.share),
+                Ok(s) if quiet => {
+                    self.merge_quiet(s.scene, s.objs, s.share);
+                }
                 Ok(s) => self.merge_copy(s.scene, s.objs, s.share),
                 Err(e) => self.say(format!("Could not read that copy: {e}")),
             },
@@ -2227,7 +2312,7 @@ impl App {
             -99.0
         };
         web::set_status(format!(
-            "{{\"ready\":true,\"zoom\":{:.3},\"strokes\":{},\"drawn\":{},\"erased\":{},\"undos\":{},\"deepDraw\":{:.2},\"flying\":{},\"dirty\":{},\"bookmarks\":[{}],\"timeline\":{},\"dark\":{},\"canvas\":\"{:032x}\",\"peer\":\"{:016x}\"}}",
+            "{{\"ready\":true,\"zoom\":{:.3},\"strokes\":{},\"drawn\":{},\"erased\":{},\"undos\":{},\"deepDraw\":{:.2},\"flying\":{},\"dirty\":{},\"bookmarks\":[{}],\"timeline\":{},\"dark\":{},\"canvas\":\"{:032x}\",\"peer\":\"{:016x}\",\"net\":{}}}",
             self.cam.log10_zoom(),
             self.scene.strokes.iter().filter(|s| !s.deleted).count(),
             st.drawn,
@@ -2241,6 +2326,7 @@ impl App {
             self.ui.dark,
             self.share.canvas,
             self.share.clock.peer(),
+            web::json_str(&self.live_info().map(|l| l.state).unwrap_or_default()),
         ));
         if self.fly.is_some() {
             self.redraw();
@@ -2311,6 +2397,8 @@ impl App {
         self.ui.timeline_on = self.tl_view.is_some();
         self.ui.can_undo = self.history.can_undo();
         self.ui.importing = self.import.is_some();
+        self.net_tick();
+        self.ui.live = self.live_info();
         #[cfg(not(target_arch = "wasm32"))]
         {
             self.ui.folder_on = self.folder.is_some();
@@ -2474,9 +2562,12 @@ impl ApplicationHandler for App {
     /// Wake up to hide a message when its time is up, and every second
     /// while syncing in the background.
     fn about_to_wait(&mut self, el: &ActiveEventLoop) {
-        let tick = self
-            .background()
-            .then(|| Instant::now() + Duration::from_secs(1));
+        let every = if self.net_active() {
+            Duration::from_millis(30)
+        } else {
+            Duration::from_secs(1)
+        };
+        let tick = self.background().then(|| Instant::now() + every);
         let next = match (self.message_until, tick) {
             (Some(a), Some(b)) => Some(a.min(b)),
             (a, b) => a.or(b),
@@ -2613,6 +2704,7 @@ impl ApplicationHandler for App {
             }
             WindowEvent::MouseWheel { delta, .. } if !over_ui => {
                 self.fly = None;
+                self.follow = None;
                 let (dx, dy) = match delta {
                     MouseScrollDelta::LineDelta(x, y) => (x as f64 * 40.0, y as f64 * 40.0),
                     MouseScrollDelta::PixelDelta(p) => (p.x, p.y),
@@ -2789,6 +2881,31 @@ pub fn run_desktop(open: Option<PathBuf>) {
     el.set_control_flow(ControlFlow::Wait);
     let mut app = App::new(open);
     el.run_app(&mut app).expect("event loop");
+}
+
+/// `og-paper --serve canvas.ogp [--port N]`: host a canvas with no window
+/// (a homelab, a container). Prints the links, then serves until stopped.
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+pub fn serve(path: PathBuf, port: u16) {
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    let mut app = App::new(None);
+    app.headless = true;
+    app.open_file(path);
+    app.host_start(port);
+    if let Some(info) = app.live_info() {
+        println!("{}", info.state);
+        for (what, link) in &info.links {
+            println!("  {what}: {link}");
+        }
+    }
+    loop {
+        app.net_tick();
+        app.folder_tick();
+        if let Some(m) = app.ui.message.take() {
+            println!("{m}");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
 }
 
 /// True on touch-first browsers (phones, tablets): bigger toolbar targets.

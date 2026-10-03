@@ -87,8 +87,9 @@ pub struct EditState {
 }
 
 const HANDLE_PT: f64 = 12.0;
-/// Share of an object's points that must be inside a lasso loop.
-const LASSO_SHARE: f64 = 0.6;
+/// Share of an object's points a marquee or lasso must take in to select
+/// it (its middle being inside is enough too).
+const SELECT_SHARE: f64 = 0.4;
 
 /// Whether `p` is inside the closed polygon `poly` (even-odd rule).
 pub(crate) fn in_poly(p: [f64; 2], poly: &[[f64; 2]]) -> bool {
@@ -866,34 +867,11 @@ impl App {
         if hi[0] - lo[0] < 3.0 && hi[1] - lo[1] < 3.0 {
             return;
         }
-        let mut seen: Vec<(ObjRef, bool)> = Vec::new();
-        for inst in &self.draw.strokes {
-            let id = inst.stroke;
-            if self.scene.strokes[id as usize].deleted {
-                continue;
-            }
-            let r = self.objs.obj_of(id);
-            let inside = self.scene.stroke_points(id).iter().all(|p| {
-                let x = inst.ox as f64 + p[0] as f64 * inst.scale as f64;
-                let y = inst.oy as f64 + p[1] as f64 * inst.scale as f64;
-                x >= lo[0] && x <= hi[0] && y >= lo[1] && y <= hi[1]
-            });
-            match seen.iter_mut().find(|s| s.0 == r) {
-                Some(s) => s.1 &= inside,
-                None => seen.push((r, inside)),
-            }
-        }
-        for (r, inside) in seen {
-            if inside && !self.edit.selection.contains(&r) {
-                self.edit.selection.push(r);
-            }
-        }
+        self.region_select(|q| q[0] >= lo[0] && q[0] <= hi[0] && q[1] >= lo[1] && q[1] <= hi[1]);
     }
 
-    /// Select what is mostly inside the loop `poly` (px): an object counts
-    /// when at least `LASSO_SHARE` of its points are inside, so a loose loop
-    /// still catches strokes that poke out a little. A tap selects what is
-    /// under it.
+    /// Select what the loop `poly` (px) takes in (see `region_select`). A
+    /// tap selects what is under it.
     fn lasso_select(&mut self, poly: &[[f64; 2]]) {
         let len: f64 = poly.windows(2).map(|w| crate::dist(w[0], w[1])).sum();
         if poly.len() < 3 || len < 12.0 * self.ppp() {
@@ -909,8 +887,16 @@ impl App {
             lo = [lo[0].min(q[0]), lo[1].min(q[1])];
             hi = [hi[0].max(q[0]), hi[1].max(q[1])];
         }
-        // (object, points inside, points)
-        let mut seen: Vec<(ObjRef, usize, usize)> = Vec::new();
+        self.region_select(|q| {
+            q[0] >= lo[0] && q[0] <= hi[0] && q[1] >= lo[1] && q[1] <= hi[1] && in_poly(q, poly)
+        });
+    }
+
+    /// Select each object a marquee or lasso takes in generously: when at
+    /// least `SELECT_SHARE` of its points are inside, or its middle is.
+    fn region_select(&mut self, inside: impl Fn([f64; 2]) -> bool) {
+        // (object, points inside, points, extent)
+        let mut seen: Vec<(ObjRef, usize, usize, [f64; 2], [f64; 2])> = Vec::new();
         for inst in &self.draw.strokes {
             let id = inst.stroke;
             if self.scene.strokes[id as usize].deleted {
@@ -918,31 +904,32 @@ impl App {
             }
             let r = self.objs.obj_of(id);
             let pts = self.scene.stroke_points(id);
-            let inside = pts
-                .iter()
-                .filter(|p| {
-                    let q = [
-                        inst.ox as f64 + p[0] as f64 * inst.scale as f64,
-                        inst.oy as f64 + p[1] as f64 * inst.scale as f64,
-                    ];
-                    q[0] >= lo[0]
-                        && q[0] <= hi[0]
-                        && q[1] >= lo[1]
-                        && q[1] <= hi[1]
-                        && in_poly(q, poly)
-                })
-                .count();
+            let (mut n_in, mut lo, mut hi) = (0, [f64::MAX; 2], [f64::MIN; 2]);
+            for p in pts {
+                let q = [
+                    inst.ox as f64 + p[0] as f64 * inst.scale as f64,
+                    inst.oy as f64 + p[1] as f64 * inst.scale as f64,
+                ];
+                n_in += inside(q) as usize;
+                lo = [lo[0].min(q[0]), lo[1].min(q[1])];
+                hi = [hi[0].max(q[0]), hi[1].max(q[1])];
+            }
             match seen.iter_mut().find(|s| s.0 == r) {
                 Some(s) => {
-                    s.1 += inside;
+                    s.1 += n_in;
                     s.2 += pts.len();
+                    s.3 = [s.3[0].min(lo[0]), s.3[1].min(lo[1])];
+                    s.4 = [s.4[0].max(hi[0]), s.4[1].max(hi[1])];
                 }
-                None => seen.push((r, inside, pts.len())),
+                None => seen.push((r, n_in, pts.len(), lo, hi)),
             }
         }
-        for (r, inside, n) in seen {
-            if n > 0 && inside as f64 >= LASSO_SHARE * n as f64 && !self.edit.selection.contains(&r)
-            {
+        for (r, n_in, n, lo, hi) in seen {
+            if n == 0 || self.edit.selection.contains(&r) {
+                continue;
+            }
+            let middle = [(lo[0] + hi[0]) * 0.5, (lo[1] + hi[1]) * 0.5];
+            if n_in as f64 >= SELECT_SHARE * n as f64 || inside(middle) {
                 self.edit.selection.push(r);
             }
         }
@@ -1529,6 +1516,7 @@ impl App {
         let mut ov = ui::Overlay::default();
         self.import_overlay(&mut ov);
         self.changes_overlay(&mut ov);
+        self.presence_overlay(&mut ov);
         if let Some((a, b)) = self.edit.shape_drag {
             let (a, b) = self.snap_line(a, b);
             let g = self.shape_geom_px(a, b);

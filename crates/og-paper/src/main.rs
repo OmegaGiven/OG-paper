@@ -7,7 +7,23 @@
 fn main() {}
 
 /// `og-paper [canvas.ogp]` — opens (or creates) the given canvas.
+/// `og-paper --serve canvas.ogp [--port N]` — hosts it with no window.
 #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 fn main() {
-    og_paper::run_desktop(std::env::args_os().nth(1).map(std::path::PathBuf::from));
+    let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    if args.first().is_some_and(|a| a == "--serve") {
+        let Some(path) = args.get(1) else {
+            eprintln!("usage: og-paper --serve canvas.ogp [--port N]");
+            std::process::exit(2);
+        };
+        let port = args
+            .iter()
+            .position(|a| a == "--port")
+            .and_then(|i| args.get(i + 1))
+            .and_then(|p| p.to_str()?.parse().ok())
+            .unwrap_or(8991);
+        og_paper::serve(path.into(), port);
+        return;
+    }
+    og_paper::run_desktop(args.into_iter().next().map(std::path::PathBuf::from));
 }

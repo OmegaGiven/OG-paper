@@ -9,7 +9,7 @@ import init, {
   og_copy, og_paste_own, og_paste_image, og_paste_text, og_pdf_page,
   og_bookmark_add, og_bookmark_go, og_bookmark_remove, og_bookmark_rename, og_bookmark_to_bar,
   og_search, og_search_results, og_search_go, og_export, og_export_take, og_has_selection,
-  og_sticker_take, og_sticker_svg, og_sticker_place, og_import, og_merge, og_changes_take, og_merge_quiet, og_set_folder,
+  og_sticker_take, og_sticker_svg, og_sticker_place, og_import, og_merge, og_changes_take, og_merge_quiet, og_set_folder, og_net_url, og_net_take, og_net_open, og_net_recv, og_net_closed, og_join, og_poke,
   og_timeline, og_timeline_range, og_timeline_restore, og_snapshot_request, og_snapshot_take,
 } from './pkg/og_paper.js';
 
@@ -462,7 +462,7 @@ export async function start({ mode = 'app' } = {}) {
   const standalone = matchMedia('(display-mode: fullscreen), (display-mode: standalone)').matches;
   const canFs = document.documentElement.requestFullscreen && !standalone;
   const syncMenu = () => {
-    const items = ['new', 'open', 'import', 'merge', 'changes', 'folder', 'save', 'export', 'paste', 'library', 'picture', 'search', 'bookmarks', 'timeline', 'home', 'grid', 'dark', 'diagram', 'layout', 'radialbar', 'showtools', 'showpanel', 'showbar', 'hotkeys'];
+    const items = ['new', 'open', 'import', 'merge', 'changes', 'folder', 'live', 'save', 'export', 'paste', 'library', 'picture', 'search', 'bookmarks', 'timeline', 'home', 'grid', 'dark', 'diagram', 'layout', 'radialbar', 'showtools', 'showpanel', 'showbar', 'hotkeys'];
     if (canFs && !document.fullscreenElement) items.push('fullscreen');
     if (isTry) items.push('tour');
     og_set_menu(items.join(','));
@@ -615,6 +615,53 @@ export async function start({ mode = 'app' } = {}) {
     say(`Loaded ${f.name}`);
     show(null);
   };
+  // ---- live connection: the app speaks its protocol, the page carries it ----
+  let ws = null;
+  function netClose() {
+    if (ws) { const w = ws; ws = null; w.onclose = null; try { w.close(); } catch (e) {} }
+  }
+  function netConnect(url) {
+    netClose();
+    let w;
+    try { w = new WebSocket(url); } catch (e) { og_net_closed(String(e.message || e)); setTimeout(og_poke, 3200); return; }
+    w.binaryType = 'arraybuffer';
+    ws = w;
+    w.onopen = () => og_net_open();
+    w.onmessage = e => og_net_recv(new Uint8Array(e.data));
+    w.onclose = e => {
+      if (ws !== w) return;
+      ws = null;
+      og_net_closed(e.reason || (location.protocol === 'https:' && url.startsWith('ws:') ? 'an https page needs a wss:// address' : 'connection closed'));
+      setTimeout(og_poke, 3200);
+    };
+  }
+  function netFlush() {
+    if (!ws || ws.readyState !== 1) return;
+    for (let b = og_net_take(); b; b = og_net_take()) ws.send(b);
+  }
+  // A share link opened in the browser: join (asking first if it would
+  // replace a different canvas that has drawing in it).
+  let joinDone = false;
+  function joinFromHash() {
+    if (joinDone || !location.hash.startsWith('#join=')) return;
+    const st = status();
+    if (!st.ready) return;
+    joinDone = true;
+    const key = 'og-joined:' + location.hash.split('&k=')[0];
+    let known = null;
+    try { known = localStorage.getItem(key); } catch (e) {}
+    if (st.strokes > 0 && known !== st.canvas &&
+        !confirm('Joining a shared canvas replaces the canvas in this browser. Download a copy of this one first if you want to keep it.\n\nJoin now?')) return;
+    og_join(location.href);
+    const remember = setInterval(() => {
+      const s2 = status();
+      if (s2.net && s2.net.startsWith('Live')) {
+        try { localStorage.setItem(key, s2.canvas); } catch (e) {}
+        clearInterval(remember);
+      }
+    }, 1000);
+  }
+  setInterval(joinFromHash, 500);
   // ---- sync folder: each device keeps its own copy in a shared folder ----
   // (File System Access API: Chromium browsers. The folder handle is kept
   // in IndexedDB per canvas, so syncing resumes after a reload once the
@@ -1043,6 +1090,8 @@ export async function start({ mode = 'app' } = {}) {
         }
       }
       else if (r === 'folder') folderToggle();
+      else if (r === 'net-connect') netConnect(og_net_url());
+      else if (r === 'net-close') netClose();
       else if (r === 'merge') { importPicker.dataset.mode = 'merge'; importPicker.value = ''; importPicker.click(); }
       else if (r === 'new') newCanvas();
       else if (r === 'bookmarks') show('bookmarks');
@@ -1104,6 +1153,7 @@ export async function start({ mode = 'app' } = {}) {
         cards.tour.querySelector('.og-progress div').style.width = `${(100 * tourDone.size) / TOUR.length}%`;
       }
     }
+    netFlush();
     requestAnimationFrame(tick);
   }
   tick();

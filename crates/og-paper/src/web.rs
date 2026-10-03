@@ -47,6 +47,12 @@ pub enum Cmd {
     Merge(Vec<u8>, bool),
     /// The page started or stopped syncing through a folder.
     Folder(bool),
+    /// Something happened on the live connection (the page's WebSocket).
+    Net(crate::net::Ev),
+    /// Join a shared canvas by its link (from the page address).
+    Join(String),
+    /// Just wake up (a timer of the page's: the connection may retry).
+    Poke,
     /// Export: format, only the selection, paper background.
     Export(String, bool, bool),
     /// Make the moment shown in the timeline the current canvas (undoable).
@@ -92,6 +98,8 @@ thread_local! {
     static STICKER: RefCell<Option<Vec<u8>>> = RefCell::default();
     static EXPORT: RefCell<Option<Result<Vec<u8>, String>>> = RefCell::default();
     static CHANGES: RefCell<Option<Vec<u8>>> = RefCell::default();
+    static NET_URL: RefCell<String> = RefCell::default();
+    static NET_OUT: RefCell<std::collections::VecDeque<Vec<u8>>> = RefCell::default();
     static SEARCH_OUT: RefCell<String> = RefCell::new("[]".into());
     static HAS_SELECTION: Cell<bool> = const { Cell::new(false) };
 }
@@ -227,6 +235,7 @@ pub fn og_set_menu(items: &str) {
                 "merge" => AppItem::Merge,
                 "changes" => AppItem::Changes,
                 "folder" => AppItem::Folder,
+                "live" => AppItem::Live,
                 "dark" => AppItem::Dark,
                 "showtools" => AppItem::ShowTools,
                 "showpanel" => AppItem::ShowPanel,
@@ -334,6 +343,61 @@ pub fn og_export_take() -> Result<Option<Vec<u8>>, JsValue> {
 
 pub fn set_export(r: Result<Vec<u8>, String>) {
     EXPORT.with(|e| *e.borrow_mut() = Some(r));
+}
+
+/// Open the live connection to `url` (the page makes the WebSocket).
+pub fn net_connect(url: &str) {
+    NET_URL.with(|u| *u.borrow_mut() = url.to_string());
+    NET_OUT.with(|o| o.borrow_mut().clear());
+    emit("net-connect");
+}
+
+pub fn net_close() {
+    emit("net-close");
+}
+
+/// Queue a frame for the live connection.
+pub fn net_send(b: Vec<u8>) {
+    NET_OUT.with(|o| o.borrow_mut().push_back(b));
+}
+
+/// Where a "net-connect" request should connect.
+#[wasm_bindgen]
+pub fn og_net_url() -> String {
+    NET_URL.with(|u| u.borrow().clone())
+}
+
+/// The next frame to send on the live connection, if any.
+#[wasm_bindgen]
+pub fn og_net_take() -> Option<Vec<u8>> {
+    NET_OUT.with(|o| o.borrow_mut().pop_front())
+}
+
+#[wasm_bindgen]
+pub fn og_net_open() {
+    push(Cmd::Net(crate::net::Ev::Open(0)));
+}
+
+#[wasm_bindgen]
+pub fn og_net_recv(bytes: Vec<u8>) {
+    push(Cmd::Net(crate::net::Ev::Data(0, bytes)));
+}
+
+#[wasm_bindgen]
+pub fn og_net_closed(why: String) {
+    push(Cmd::Net(crate::net::Ev::Closed(0, why)));
+}
+
+/// Join a shared canvas by its link.
+#[wasm_bindgen]
+pub fn og_join(link: String) {
+    push(Cmd::Join(link));
+}
+
+/// Wake the app (lets a lost connection retry on time).
+#[wasm_bindgen]
+pub fn og_poke() {
+    push(Cmd::Poke);
 }
 
 /// A changes-only copy to download (see "changes" requests).

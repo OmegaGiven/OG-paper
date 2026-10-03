@@ -196,6 +196,23 @@ pub struct Overlay {
     pub lasso: Option<Vec<Pos2>>,
     /// A selected line or arrow: its points, and the + between them.
     pub joints: Option<(Vec<Pos2>, Vec<Pos2>)>,
+    /// People on a live canvas: where, their name, their color, and the
+    /// direction they are in when they are off screen.
+    pub labels: Vec<(Pos2, String, Color32, Option<Vec2>)>,
+}
+
+/// What the Share live panel shows (from `net`).
+#[derive(Clone, Debug, Default)]
+pub struct LiveInfo {
+    pub hosting: bool,
+    pub state: String,
+    /// Others: peer id and name.
+    pub people: Vec<(u64, String)>,
+    /// (what, link) to copy.
+    pub links: Vec<(String, String)>,
+    /// 0 newest, 1 host wins, 2 guests win.
+    pub policy: u8,
+    pub view_only: bool,
 }
 
 impl PartialEq for InkSettings {
@@ -258,6 +275,7 @@ pub enum AppItem {
     Merge,
     Changes,
     Folder,
+    Live,
     New,
     Open,
     Save,
@@ -290,6 +308,7 @@ impl AppItem {
             AppItem::Merge => "Merge copy",
             AppItem::Changes => "Save changes",
             AppItem::Folder => "Sync folder",
+            AppItem::Live => "Share live",
             AppItem::New => "New canvas",
             AppItem::Open => "Open",
             AppItem::Save => "Save copy",
@@ -321,6 +340,7 @@ impl AppItem {
             AppItem::Merge => Action::MergeCopy,
             AppItem::Changes => Action::SaveChanges,
             AppItem::Folder => Action::SyncFolder,
+            AppItem::Live => Action::LivePanel,
             AppItem::New => Action::New,
             AppItem::Open => Action::Open,
             AppItem::Save => Action::SaveAs,
@@ -391,6 +411,11 @@ pub struct UiState {
     pub importing: bool,
     /// Syncing through a shared folder.
     pub folder_on: bool,
+    /// The live connection, if any (set by the app each frame).
+    pub live: Option<LiveInfo>,
+    pub live_open: bool,
+    pub join_text: String,
+    pub name_text: Option<String>,
     /// Hidden by the person (Settings): the tool button, the tool panel,
     /// the quick toolbar.
     pub hide_tools: bool,
@@ -551,6 +576,7 @@ impl Default for UiState {
                 AppItem::Merge,
                 AppItem::Changes,
                 AppItem::Folder,
+                AppItem::Live,
                 AppItem::Save,
                 AppItem::Export,
                 AppItem::Paste,
@@ -575,6 +601,10 @@ impl Default for UiState {
             dark: false,
             importing: false,
             folder_on: false,
+            live: None,
+            live_open: false,
+            join_text: String::new(),
+            name_text: None,
             queued: Vec::new(),
             views: Default::default(),
             view_now: None,
@@ -829,6 +859,20 @@ pub enum Action {
     SaveChanges,
     /// Start or stop syncing through a shared folder.
     SyncFolder,
+    /// Open or close the Share live panel.
+    LivePanel,
+    /// Host this canvas (desktop).
+    HostStart,
+    /// Stop hosting, or leave a shared canvas.
+    NetStop,
+    /// Join by the link typed in Share live.
+    Join,
+    /// The host's rule for rival edits.
+    SetPolicy(u8),
+    /// Fly to someone's view (true: and follow it).
+    GoToPeer(u64, bool),
+    /// The name typed in Share live becomes the one others see.
+    SetName,
     ImportPlace,
     ImportCancel,
     SaveAs,
@@ -1007,12 +1051,45 @@ fn geo(ctx: &egui::Context, st: &UiState) -> Geo {
 /// Draw the UI; returns actions for the app to perform.
 pub fn draw(ctx: &egui::Context, st: &mut UiState) -> Vec<Action> {
     let mut actions = Vec::new();
-    if st.layout_edit {
-        layout_editor(ctx, st);
-        return actions;
-    }
-    if st.importing {
-        import_bar(ctx, &mut actions);
+    // A press anywhere but on an open menu closes it (on the canvas, the
+    // app also skips drawing for that tap). What is where comes from the
+    // last frame: the fans' own buttons and items, the panels' areas.
+    let press = ctx.input(|i| {
+        i.pointer
+            .any_pressed()
+            .then(|| i.pointer.interact_pos())
+            .flatten()
+    });
+    if let Some(pos) = press {
+        let on_widget = |id: Id| {
+            ctx.read_response(id)
+                .is_some_and(|r| r.rect.expand(4.0).contains(pos))
+        };
+        let on_fan = on_widget(Id::new("tool_btn"))
+            || on_widget(Id::new("app_btn"))
+            || on_widget(Id::new("rbar_btn"))
+            || [false, true]
+                .into_iter()
+                .any(|r| on_widget(Id::new(("ur", r))))
+            || (0..TOOLS.len()).any(|i| on_widget(Id::new(("tool", i))))
+            || (0..st.app_items.len() + 4).any(|i| on_widget(Id::new(("app_item", i))))
+            || (0..hotbar::BAR + 4).any(|i| on_widget(Id::new(("rbar", i))))
+            || (0..st.toolbars.len())
+                .any(|k| (0..hotbar::BAR).any(|i| on_widget(Id::new(("rbar_o", k, i)))));
+        let hit = ctx.layer_id_at(pos).map(|l| l.id);
+        let on = |names: &[&str]| hit.is_some_and(|id| names.iter().any(|n| id == Id::new(*n)));
+        if st.menu != Menu::None && !on_fan {
+            st.menu = Menu::None;
+        }
+        if st.bar_menu && !on(&["toolbar_menu", "quick_bar", "radial_bar"]) && !on_fan {
+            st.bar_menu = false;
+        }
+        if st.bag_open && !on(&["inventory", "quick_bar", "radial_bar"]) && !on_fan {
+            st.bag_open = false;
+        }
+        if st.live_open && !on(&["live"]) && !on_fan {
+            st.live_open = false;
+        }
     }
     let g = geo(ctx, st);
     let t = ctx.animate_bool_with_time(Id::new("tools_open"), st.menu == Menu::Tools, 0.12);
@@ -1195,6 +1272,9 @@ pub fn draw(ctx: &egui::Context, st: &mut UiState) -> Vec<Action> {
     }
     if st.keys_open {
         hotkeys_panel(ctx, st, &mut actions);
+    }
+    if st.live_open {
+        live_panel(ctx, st, &mut actions);
     }
     actions.append(&mut st.queued);
 
@@ -2982,6 +3062,33 @@ fn paint_overlay(ctx: &egui::Context, ov: &Overlay, touch: bool) {
             p.add(Shape::line(pts.clone(), Stroke::new(*w, *col)));
         }
     }
+    for (at, name, col, dir) in &ov.labels {
+        let font = egui::FontId::proportional(12.0);
+        let galley = ctx.fonts_mut(|f| f.layout_no_wrap(name.clone(), font, Color32::WHITE));
+        let size = galley.size() + vec2(12.0, 6.0);
+        let r = match dir {
+            // Off screen: the pill sits inside the edge, an arrow toward them.
+            Some(d) => {
+                let tip = *at + *d * 10.0;
+                let back = *at - *d * 2.0;
+                let side = vec2(-d.y, d.x) * 6.0;
+                p.add(Shape::convex_polygon(
+                    vec![tip, back + side, back - side],
+                    *col,
+                    Stroke::NONE,
+                ));
+                let c = *at - *d * (size.x.max(size.y) * 0.5 + 4.0);
+                Rect::from_center_size(c, size)
+            }
+            None => {
+                p.circle_filled(*at, 5.0, *col);
+                p.circle_stroke(*at, 5.0, Stroke::new(1.5, Color32::WHITE));
+                Rect::from_min_size(*at + vec2(8.0, -size.y - 2.0), size)
+            }
+        };
+        p.rect_filled(r, 6.0, *col);
+        p.galley(r.min + vec2(6.0, 3.0), galley, Color32::WHITE);
+    }
     let blue = Color32::from_rgb(70, 110, 230);
     if let Some(r) = ov.marquee {
         p.rect_filled(r, 0.0, Color32::from_rgba_unmultiplied(70, 110, 230, 24));
@@ -3221,6 +3328,7 @@ fn app_menu(ctx: &egui::Context, st: &mut UiState, g: &Geo, actions: &mut Vec<Ac
                         || (item == AppItem::Grid && st.grid != GridMode::Off)
                         || (item == AppItem::Dark && st.dark)
                         || (item == AppItem::Folder && st.folder_on)
+                        || (item == AppItem::Live && st.live.is_some())
                         || (item == AppItem::Diagram && st.diagram)
                         || (item == AppItem::RadialBar && st.radial_bar)
                         || (item == AppItem::ShowTools && !st.hide_tools)
@@ -3368,6 +3476,25 @@ fn app_icon(
                     }
                 }
             }
+        }
+        AppItem::Live => {
+            // Two people.
+            p.circle_stroke(c + vec2(-0.4, -0.35) * s, s * 0.3, st);
+            p.circle_stroke(c + vec2(0.45, -0.25) * s, s * 0.26, st);
+            line(&[
+                vec2(-0.95, 0.85),
+                vec2(-0.85, 0.25),
+                vec2(-0.4, 0.1),
+                vec2(0.05, 0.25),
+                vec2(0.15, 0.85),
+            ]);
+            line(&[
+                vec2(0.3, 0.75),
+                vec2(0.4, 0.3),
+                vec2(0.75, 0.2),
+                vec2(0.95, 0.35),
+                vec2(1.0, 0.75),
+            ]);
         }
         AppItem::Folder => {
             // A folder with two arrows going round.
@@ -5012,6 +5139,143 @@ fn brush_section(
 
 /// Settings > Hotkeys: every tool, look and command with its key; tap a key
 /// to change it (then press the new one), × to clear it.
+/// Share live: host this canvas or join one, who is here, the links.
+fn live_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) {
+    let screen = ctx.content_rect();
+    let w = 400.0f32.min(screen.width() - 24.0);
+    let web = cfg!(target_arch = "wasm32");
+    egui::Area::new(Id::new("live"))
+        .order(Order::Foreground)
+        .pivot(Align2::CENTER_CENTER)
+        .fixed_pos(screen.center())
+        .show(ctx, |ui| {
+            ui.style_mut().visuals = egui::Visuals::light();
+            egui::Frame::new()
+                .fill(FACE)
+                .stroke(Stroke::new(1.0, EDGE))
+                .corner_radius(12.0)
+                .inner_margin(12.0)
+                .shadow(egui::Shadow { offset: [0, 3], blur: 14, spread: 0, color: Color32::from_black_alpha(45) })
+                .show(ui, |ui| {
+                    ui.set_width(w);
+                    ui.horizontal(|ui| {
+                        ui.strong("Share live");
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button("×").on_hover_text("Close").clicked() {
+                                st.live_open = false;
+                            }
+                        });
+                    });
+                    // Your name.
+                    let name = st.name_text.get_or_insert_with(crate::presence::my_name);
+                    ui.horizontal(|ui| {
+                        ui.label("Your name");
+                        let r = ui.add(egui::TextEdit::singleline(name).desired_width(180.0));
+                        if r.lost_focus() {
+                            actions.push(Action::SetName);
+                        }
+                    });
+                    ui.separator();
+                    match st.live.clone() {
+                        None => {
+                            ui.label(
+                                egui::RichText::new(
+                                    "Draw together: host this canvas so others join with a link, or join someone's.",
+                                )
+                                .small(),
+                            );
+                            ui.add_space(4.0);
+                            if web {
+                                ui.label(
+                                    egui::RichText::new("Hosting needs the desktop app (or og-paper --serve).")
+                                        .small()
+                                        .weak(),
+                                );
+                            } else if ui
+                                .button("Host this canvas")
+                                .on_hover_text("Others join with a link; everyone keeps a copy")
+                                .clicked()
+                            {
+                                actions.push(Action::HostStart);
+                            }
+                            ui.add_space(6.0);
+                            ui.horizontal(|ui| {
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut st.join_text)
+                                        .hint_text("Paste a link (ws://… or …#join=…)")
+                                        .desired_width(w - 70.0),
+                                );
+                                if ui.button("Join").clicked() && !st.join_text.trim().is_empty() {
+                                    actions.push(Action::Join);
+                                }
+                            });
+                        }
+                        Some(info) => {
+                            ui.label(egui::RichText::new(&info.state).strong());
+                            if info.view_only {
+                                ui.label(egui::RichText::new("View link: you can look around and follow, not draw.").small().weak());
+                            }
+                            if info.people.is_empty() {
+                                ui.label(egui::RichText::new("Nobody else yet").small().weak());
+                            }
+                            for (peer, who) in &info.people {
+                                ui.horizontal(|ui| {
+                                    ui.label(who);
+                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                        if ui.small_button("Follow").on_hover_text("Ride along with their view").clicked() {
+                                            actions.push(Action::GoToPeer(*peer, true));
+                                        }
+                                        if ui.small_button("Go to").clicked() {
+                                            actions.push(Action::GoToPeer(*peer, false));
+                                        }
+                                    });
+                                });
+                            }
+                            if !info.links.is_empty() {
+                                ui.add_space(6.0);
+                                for (what, link) in &info.links {
+                                    ui.horizontal(|ui| {
+                                        ui.label(egui::RichText::new(what).small());
+                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                            if ui.small_button("Copy").clicked() {
+                                                ui.ctx().copy_text(link.clone());
+                                            }
+                                        });
+                                    });
+                                    ui.label(egui::RichText::new(link).small().monospace().weak());
+                                }
+                                ui.label(
+                                    egui::RichText::new(
+                                        "Browsers on https pages need a wss:// address (e.g. Tailscale serve in front of this port).",
+                                    )
+                                    .small()
+                                    .weak(),
+                                );
+                            }
+                            if info.hosting {
+                                ui.add_space(6.0);
+                                ui.label("When two people change the same thing apart:");
+                                ui.horizontal(|ui| {
+                                    for (code, label) in [(0u8, "Newest wins"), (1, "Host wins"), (2, "Guest wins")] {
+                                        if ui.selectable_label(info.policy == code, label).clicked() {
+                                            actions.push(Action::SetPolicy(code));
+                                        }
+                                    }
+                                });
+                            }
+                            ui.add_space(6.0);
+                            if ui
+                                .button(if info.hosting { "Stop hosting" } else { "Leave" })
+                                .clicked()
+                            {
+                                actions.push(Action::NetStop);
+                            }
+                        }
+                    }
+                });
+        });
+}
+
 fn hotkeys_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) {
     let screen = ctx.content_rect();
     let w = 380.0f32.min(screen.width() - 24.0);
