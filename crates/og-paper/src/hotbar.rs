@@ -282,6 +282,7 @@ fn tool_key(t: Tool) -> &'static str {
         Tool::Lasso => "lasso",
         Tool::Bucket => "bucket",
         Tool::Texture => "texture",
+        Tool::Portal => "portal",
     }
 }
 
@@ -300,6 +301,7 @@ fn tool_from(k: &str) -> Option<Tool> {
         "lasso" => Tool::Lasso,
         "bucket" => Tool::Bucket,
         "texture" => Tool::Texture,
+        "portal" => Tool::Portal,
         _ => return None,
     })
 }

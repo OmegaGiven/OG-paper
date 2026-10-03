@@ -75,7 +75,40 @@ pub enum ObjData {
         size: f64,
         seed: u32,
     },
+    /// A window onto another view of the canvas: an outline (a shape's, or
+    /// freehand when `geom.pts` holds a loop) and what shows inside it.
+    Portal {
+        style: ShapeStyle,
+        geom: Geom,
+        width: f64,
+        seed: u32,
+        view: PortalView,
+    },
 }
+
+/// What a portal shows: a saved view, as a bookmark keeps it.
+#[derive(Clone, Debug)]
+pub struct PortalView {
+    /// The view's name (the bookmark it came from), for the panel.
+    pub name: String,
+    pub cam: Camera,
+    /// Smaller side of the screen (px) the view was saved on: that much of
+    /// it fills the portal's smaller side.
+    pub view_px: f64,
+}
+
+impl PartialEq for PortalView {
+    fn eq(&self, o: &Self) -> bool {
+        self.name == o.name
+            && self.cam.cell == o.cam.cell
+            && self.cam.off == o.cam.off
+            && self.cam.scale == o.cam.scale
+            && self.view_px == o.view_px
+    }
+}
+
+/// A portal's window background (the paper).
+pub const PORTAL_PAPER: u32 = u32::from_le_bytes([245, 242, 235, 255]);
 
 /// A picture's crop when all of it shows.
 pub const FULL_CROP: [f32; 4] = [0.0, 0.0, 1.0, 1.0];
@@ -104,6 +137,8 @@ pub struct Objects {
     /// The stroke that places a picture (its corners): picture id, opacity
     /// and crop.
     pub image_of: HashMap<u32, (u64, u8, [f32; 4])>,
+    /// A portal's window (its first stroke, a fill): the portal's group.
+    pub portal_of: HashMap<u32, u32>,
 }
 
 impl Objects {
@@ -133,6 +168,9 @@ impl Objects {
             for &s in &g.strokes {
                 self.image_of.insert(s, (id, opacity, crop));
             }
+        }
+        if let (ObjData::Portal { .. }, Some(&s)) = (&g.data, g.strokes.first()) {
+            self.portal_of.insert(s, gi);
         }
         self.groups.push(g);
         gi
@@ -251,7 +289,8 @@ impl ObjData {
             ObjData::Shape { geom, .. }
             | ObjData::Text { geom, .. }
             | ObjData::Image { geom, .. }
-            | ObjData::Table { geom, .. } => geom,
+            | ObjData::Table { geom, .. }
+            | ObjData::Portal { geom, .. } => geom,
         }
     }
 
@@ -306,6 +345,19 @@ impl ObjData {
                 geom: geom_map(geom, &f, k),
                 size: size * k,
                 seed: *seed,
+            },
+            ObjData::Portal {
+                style,
+                geom,
+                width,
+                seed,
+                view,
+            } => ObjData::Portal {
+                style: *style,
+                geom: geom_map(geom, &f, k),
+                width: width * k,
+                seed: *seed,
+                view: view.clone(),
             },
         }
     }
@@ -371,6 +423,19 @@ impl ObjData {
                     seed: *seed,
                 }
             }
+            ObjData::Portal {
+                style,
+                geom,
+                width,
+                seed,
+                view,
+            } => ObjData::Portal {
+                style: *style,
+                geom: op.geom(geom),
+                width: *width,
+                seed: *seed,
+                view: view.clone(),
+            },
         }
     }
 
@@ -407,6 +472,73 @@ impl ObjData {
                 size,
                 seed,
             } => table_pieces(cells, style, geom, *size, *seed),
+            ObjData::Portal {
+                style,
+                geom,
+                width,
+                seed,
+                ..
+            } => portal_pieces(style, geom, *width, *seed),
+        }
+    }
+
+    /// A portal as a plain shape: a window filled with paper. Older apps
+    /// read portals as this (see `snapshot`).
+    pub fn portal_as_shape(&self) -> Option<ObjData> {
+        let ObjData::Portal {
+            style,
+            geom,
+            width,
+            seed,
+            ..
+        } = self
+        else {
+            return None;
+        };
+        Some(ObjData::Shape {
+            style: ShapeStyle {
+                fill: PORTAL_PAPER,
+                fill_style: shapes::FillStyle::Solid,
+                ..*style
+            },
+            geom: geom.clone(),
+            width: *width,
+            seed: *seed,
+        })
+    }
+
+    /// A shape made a portal onto `view` (see `portal_as_shape`).
+    pub fn into_portal(self, view: PortalView) -> ObjData {
+        match self {
+            ObjData::Shape {
+                style,
+                geom,
+                width,
+                seed,
+            } => ObjData::Portal {
+                style: ShapeStyle {
+                    fill_style: shapes::FillStyle::None,
+                    ..style
+                },
+                geom,
+                width,
+                seed,
+                view,
+            },
+            ObjData::Portal {
+                style,
+                geom,
+                width,
+                seed,
+                ..
+            } => ObjData::Portal {
+                style,
+                geom,
+                width,
+                seed,
+                view,
+            },
+            d => d,
         }
     }
 
@@ -425,6 +557,58 @@ impl ObjData {
             })
             .collect()
     }
+}
+
+/// A portal's loop: its freehand points, or its shape's outline.
+pub fn portal_outline(style: &ShapeStyle, geom: &Geom) -> Vec<[f64; 2]> {
+    if geom.pts.len() >= 3 {
+        geom.pts.clone()
+    } else {
+        let mut st = *style;
+        if st.kind.is_linear() {
+            st.kind = shapes::ShapeKind::Rect;
+        }
+        shapes::outline(&st, geom)
+    }
+}
+
+/// A portal's strokes: first the window (a fill the renderer draws the
+/// view into), then the outline.
+fn portal_pieces(style: &ShapeStyle, geom: &Geom, width: f64, seed: u32) -> Vec<Piece> {
+    let poly = portal_outline(style, geom);
+    if poly.len() < 3 {
+        return vec![];
+    }
+    let mut out = vec![Piece {
+        pts: poly.clone(),
+        width: 0.0,
+        brush: Brush::Fill,
+        dash: Dash::Solid,
+        color: PORTAL_PAPER,
+        bridges: vec![],
+    }];
+    let [r, g, b, a] = style.stroke.to_le_bytes();
+    let stroke = u32::from_le_bytes([r, g, b, ((a as u32 * style.opacity as u32) / 255) as u8]);
+    if geom.pts.len() >= 3 {
+        let mut ring = poly;
+        ring.push(ring[0]);
+        out.push(Piece {
+            pts: ring,
+            width,
+            brush: Brush::Marker,
+            dash: style.dash,
+            color: stroke,
+            bridges: vec![],
+        });
+    } else {
+        let mut st = *style;
+        st.fill_style = shapes::FillStyle::None;
+        if st.kind.is_linear() {
+            st.kind = shapes::ShapeKind::Rect;
+        }
+        out.extend(shapes::pieces(&st, geom, width, seed));
+    }
+    out
 }
 
 /// Text box size (frame units) for `text` at cap height `size`.

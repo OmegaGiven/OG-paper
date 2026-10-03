@@ -12,7 +12,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use ogpaper_core::{Brush, Dash, DrawList, Scene, TileInst};
+use ogpaper_core::{Brush, Dash, DrawList, Scene, StrokeInst, TileInst};
 use winit::window::Window;
 
 /// Segments per instance; must match MAX_SEG in the shader.
@@ -103,11 +103,77 @@ fn dab_gpu(
 }
 
 /// What interrupts a run of ink in draw order.
-enum Break {
+/// One draw in a frame, in order. Portals nest: each draws its window
+/// while raising the stencil (MaskIn), its view at the raised value, then
+/// lowers it again (MaskOut), so everything is clipped to its window.
+#[derive(Clone, Copy, Debug)]
+enum Op {
+    Tiles(u32, u32),
+    /// Ink instances a..b.
+    Ink(u32, u32),
+    /// Highlighter instances a..b.
+    Hl(u32, u32),
     /// Picture number k.
     Pic(usize),
     /// Dab instances a..b.
     Dabs(u32, u32),
+    /// A portal's window (ink instance i): drawn, stencil raised.
+    MaskIn(u32),
+    /// The same window again: stencil lowered, nothing drawn.
+    MaskOut(u32),
+    /// Draw only where the stencil holds this (the portal depth).
+    Ref(u32),
+}
+
+/// The views shown through portals this frame (see `portal`). Layer 0 is
+/// the canvas itself; layer k+1 is `layers[k]`.
+#[derive(Default)]
+pub struct Portals {
+    pub layers: Vec<PortalLayer>,
+    /// (layer, index in its draw list of a portal's window) -> the layer
+    /// (index into `layers`) seen through it.
+    pub child: HashMap<(usize, usize), usize>,
+}
+
+/// One portal's view: what to draw, in px from `offset` (screen px).
+pub struct PortalLayer {
+    pub draw: DrawList,
+    pub offset: [f32; 2],
+}
+
+const STENCIL: wgpu::TextureFormat = wgpu::TextureFormat::Stencil8;
+
+/// Stencil test `compare` against the reference; `pass` on success.
+fn stencil(
+    compare: wgpu::CompareFunction,
+    pass: wgpu::StencilOperation,
+) -> wgpu::DepthStencilState {
+    let face = wgpu::StencilFaceState {
+        compare,
+        fail_op: wgpu::StencilOperation::Keep,
+        depth_fail_op: wgpu::StencilOperation::Keep,
+        pass_op: pass,
+    };
+    wgpu::DepthStencilState {
+        format: STENCIL,
+        depth_write_enabled: None,
+        depth_compare: None,
+        stencil: wgpu::StencilState {
+            front: face,
+            back: face,
+            read_mask: 0xff,
+            write_mask: 0xff,
+        },
+        bias: wgpu::DepthBiasState::default(),
+    }
+}
+
+/// Content: drawn where the stencil equals the current portal depth.
+fn clipped() -> Option<wgpu::DepthStencilState> {
+    Some(stencil(
+        wgpu::CompareFunction::Equal,
+        wgpu::StencilOperation::Keep,
+    ))
 }
 
 /// egui output for this frame.
@@ -263,6 +329,11 @@ pub struct Renderer {
     bind: wgpu::BindGroup,
     ink_pipe: wgpu::RenderPipeline,
     hl_pipe: wgpu::RenderPipeline,
+    /// Portal windows: raise / lower the stencil.
+    mask_in: wgpu::RenderPipeline,
+    mask_out: wgpu::RenderPipeline,
+    /// The stencil buffer (its size), made on demand.
+    stencil_tex: Option<(wgpu::TextureView, [u32; 2])>,
     dab_pipe: wgpu::RenderPipeline,
     dabs: Growable,
     /// Dabs per brush-engine stroke, in its own units (made once).
@@ -505,7 +576,7 @@ impl Renderer {
                     })],
                 },
                 primitive: wgpu::PrimitiveState::default(),
-                depth_stencil: None,
+                depth_stencil: clipped(),
                 multisample: wgpu::MultisampleState::default(),
                 fragment: Some(wgpu::FragmentState {
                     module: &shader,
@@ -524,6 +595,46 @@ impl Renderer {
         let inst = std::mem::size_of::<InstGpu>();
         let ink_pipe = pipe("vs_stroke", "fs_stroke", over, inst, &stroke_attrs);
         let hl_pipe = pipe("vs_stroke", "fs_highlight", min, inst, &stroke_attrs);
+        // Portal windows: the ink shader's fill, raising or lowering the stencil.
+        let mask_pipe = |pass: wgpu::StencilOperation, writes: wgpu::ColorWrites| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("portal window"),
+                layout: Some(&layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_stroke"),
+                    compilation_options: Default::default(),
+                    buffers: &[Some(wgpu::VertexBufferLayout {
+                        array_stride: inst as u64,
+                        step_mode: wgpu::VertexStepMode::Instance,
+                        attributes: &stroke_attrs,
+                    })],
+                },
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: Some(stencil(wgpu::CompareFunction::Equal, pass)),
+                multisample: wgpu::MultisampleState::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("fs_stroke"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: Some(over),
+                        write_mask: writes,
+                    })],
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let mask_in = mask_pipe(
+            wgpu::StencilOperation::IncrementClamp,
+            wgpu::ColorWrites::ALL,
+        );
+        let mask_out = mask_pipe(
+            wgpu::StencilOperation::DecrementClamp,
+            wgpu::ColorWrites::empty(),
+        );
         let tile_pipe = pipe(
             "vs_tile",
             "fs_tile",
@@ -553,7 +664,7 @@ impl Renderer {
                 })],
             },
             primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
+            depth_stencil: clipped(),
             multisample: wgpu::MultisampleState::default(),
             fragment: Some(wgpu::FragmentState {
                 module: &dab_shader,
@@ -614,7 +725,7 @@ impl Renderer {
                 })],
             },
             primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
+            depth_stencil: clipped(),
             multisample: wgpu::MultisampleState::default(),
             fragment: Some(wgpu::FragmentState {
                 module: &img_shader,
@@ -688,7 +799,7 @@ impl Renderer {
                 buffers: &[],
             },
             primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
+            depth_stencil: clipped(),
             multisample: wgpu::MultisampleState::default(),
             fragment: Some(wgpu::FragmentState {
                 module: &grid_shader,
@@ -791,6 +902,9 @@ impl Renderer {
             bind,
             ink_pipe,
             hl_pipe,
+            mask_in,
+            mask_out,
+            stencil_tex: None,
             tile_pipe,
             egui,
         })
@@ -902,6 +1016,7 @@ impl Renderer {
         scene: &Scene,
         draw: &DrawList,
         objs: &crate::objects::Objects,
+        portals: &Portals,
         wet: Option<Wet<'_>>,
         ui: UiPaint,
     ) -> bool {
@@ -969,79 +1084,32 @@ impl Renderer {
             }),
         );
 
-        // One instance per window of MAX_SEG segments; highlighter separately.
-        let mut ink = Vec::with_capacity(draw.strokes.len());
-        let mut hl = Vec::new();
         let (vw, vh) = (self.config.width as f32, self.config.height as f32);
-        // Pictures in draw order: (ink instances before it, picture id, quad).
-        let mut pics: Vec<(usize, u64, ImgInst)> = Vec::new();
-        // Breaks in the ink: (ink instances before it, what).
-        let mut breaks: Vec<(usize, Break)> = Vec::new();
-        let mut dabs: Vec<DabGpu> = Vec::new();
-        for i in &draw.strokes {
-            let s = &scene.strokes[i.stroke as usize];
-            if s.brush == Brush::Dabs && s.width * i.scale >= DAB_MIN_PX {
-                if let Some(p) = scene.brush_of(i.stroke) {
-                    let cached = self.dab_cache.entry(i.stroke).or_insert_with(|| {
-                        ogpaper_core::brush::dabs(
-                            scene.stroke_points(i.stroke),
-                            s.width,
-                            s.color,
-                            &p,
-                        )
-                    });
-                    let a = dabs.len() as u32;
-                    dabs.extend(
-                        cached
-                            .iter()
-                            .map(|d| dab_gpu(d, &p, i.ox, i.oy, i.scale, s.width)),
-                    );
-                    let b = dabs.len() as u32;
-                    match breaks.last_mut() {
-                        // Next to the last dabs with no ink between: one run.
-                        Some((at, Break::Dabs(_, e))) if *at == ink.len() && *e == a => *e = b,
-                        _ => breaks.push((ink.len(), Break::Dabs(a, b))),
-                    }
-                    continue;
-                }
-            }
-            if s.brush == Brush::Fill && s.color == 0 {
-                // An invisible outline; a picture's corners if it places one.
-                if let Some(&(id, opacity, crop)) = objs.image_of.get(&i.stroke) {
-                    let p = scene.stroke_points(i.stroke);
-                    if p.len() == 4 {
-                        let mut corners = [0.0; 8];
-                        for (k, q) in p.iter().enumerate() {
-                            corners[2 * k] = i.ox + q[0] * i.scale;
-                            corners[2 * k + 1] = i.oy + q[1] * i.scale;
-                        }
-                        let misc = [vw, vh, opacity as f32 / 255.0, 0.0];
-                        breaks.push((ink.len(), Break::Pic(pics.len())));
-                        pics.push((
-                            ink.len(),
-                            id,
-                            ImgInst {
-                                corners,
-                                misc,
-                                crop,
-                            },
-                        ));
-                    }
-                }
-                continue;
-            }
-            let list = if s.brush == Brush::Highlighter {
-                &mut hl
-            } else {
-                &mut ink
-            };
-            let len = if s.brush == Brush::Fill {
-                1 // one instance covers the whole polygon
-            } else {
-                s.len as usize
-            };
-            push_windows(list, i.stroke, len, i.ox, i.oy, i.scale);
-        }
+        let mut bd = Build {
+            scene,
+            objs,
+            portals,
+            dab_cache: &mut self.dab_cache,
+            vw,
+            vh,
+            ink: Vec::with_capacity(draw.strokes.len()),
+            hl: Vec::new(),
+            dabs: Vec::new(),
+            pics: Vec::new(),
+            tiles: Vec::new(),
+            ops: Vec::new(),
+            run: 0,
+        };
+        bd.layer(0, draw, [0.0, 0.0], 0);
+        let Build {
+            mut ink,
+            mut hl,
+            mut dabs,
+            pics,
+            tiles,
+            mut ops,
+            ..
+        } = bd;
         let wet = wet.filter(|w| !w.pts.is_empty());
         // A brush-engine stroke being drawn: its dabs, in screen px, on top.
         let wet = match wet {
@@ -1065,7 +1133,7 @@ impl Renderer {
                     made.iter()
                         .map(|d| dab_gpu(d, &p, 0.0, 0.0, 1.0, w.width_px)),
                 );
-                breaks.push((ink.len(), Break::Dabs(a, dabs.len() as u32)));
+                ops.push(Op::Dabs(a, dabs.len() as u32));
                 None
             }
             w => w,
@@ -1091,12 +1159,15 @@ impl Renderer {
             let r = rec(base as u32, n as u32, w.brush, w.dash, w.width_px, w.color);
             self.strokes
                 .write(&self.queue, slot, bytemuck::bytes_of(&r));
-            let list = if w.brush == Brush::Highlighter {
-                &mut hl
+            if w.brush == Brush::Highlighter {
+                let a = hl.len() as u32;
+                push_windows(&mut hl, slot as u32, n, 0.0, 0.0, 1.0);
+                ops.push(Op::Hl(a, hl.len() as u32));
             } else {
-                &mut ink
-            };
-            push_windows(list, slot as u32, n, 0.0, 0.0, 1.0);
+                let a = ink.len() as u32;
+                push_windows(&mut ink, slot as u32, n, 0.0, 0.0, 1.0);
+                ops.push(Op::Ink(a, ink.len() as u32));
+            }
         }
         self.ink
             .upload(&self.device, &self.queue, bytemuck::cast_slice(&ink));
@@ -1105,16 +1176,34 @@ impl Renderer {
         self.hl
             .upload(&self.device, &self.queue, bytemuck::cast_slice(&hl));
         self.tiles
-            .upload(&self.device, &self.queue, as_bytes(&draw.tiles));
-        for (_, id, _) in &pics {
+            .upload(&self.device, &self.queue, as_bytes(&tiles));
+        for (id, _) in &pics {
             if !self.img_tex.contains_key(id) {
                 let bind = objs.images.get(id).and_then(|a| self.picture(a));
                 self.img_tex.insert(*id, bind);
             }
         }
-        let quads: Vec<ImgInst> = pics.iter().map(|p| p.2).collect();
+        let quads: Vec<ImgInst> = pics.iter().map(|p| p.1).collect();
         self.imgs
             .upload(&self.device, &self.queue, bytemuck::cast_slice(&quads));
+        if self.stencil_tex.as_ref().is_none_or(|t| t.1 != size) {
+            let tex = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("portal stencil"),
+                size: wgpu::Extent3d {
+                    width: size[0],
+                    height: size[1],
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: STENCIL,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                view_formats: &[],
+            });
+            let v = tex.create_view(&wgpu::TextureViewDescriptor::default());
+            self.stencil_tex = Some((v, size));
+        }
 
         let screen = egui_wgpu::ScreenDescriptor {
             size_in_pixels: [self.config.width, self.config.height],
@@ -1134,20 +1223,104 @@ impl Renderer {
             self.egui
                 .update_buffers(&self.device, &self.queue, &mut enc, &ui.prims, &screen);
         {
+            let stencil_view = &self.stencil_tex.as_ref().expect("stencil").0;
+            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("main"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: 0.96,
+                            g: 0.95,
+                            b: 0.92,
+                            a: 1.0,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: stencil_view,
+                    depth_ops: None,
+                    stencil_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(0),
+                        store: wgpu::StoreOp::Discard,
+                    }),
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_stencil_reference(0);
+            if let Some(grid) = self.grid {
+                self.queue
+                    .write_buffer(&self.grid_buf, 0, bytemuck::bytes_of(&grid));
+                pass.set_pipeline(&self.grid_pipe);
+                pass.set_bind_group(0, &self.grid_bind, &[]);
+                pass.draw(0..3, 0..1);
+            }
+            let segs = 0..(MAX_SEG * 6) as u32;
+            for op in &ops {
+                match *op {
+                    Op::Tiles(a, b) if b > a => {
+                        pass.set_pipeline(&self.tile_pipe);
+                        pass.set_bind_group(0, &self.bind, &[]);
+                        pass.set_vertex_buffer(0, self.tiles.buf.slice(..));
+                        pass.draw(0..6, a..b);
+                    }
+                    Op::Ink(a, b) if b > a => {
+                        pass.set_pipeline(&self.ink_pipe);
+                        pass.set_bind_group(0, &self.bind, &[]);
+                        pass.set_vertex_buffer(0, self.ink.buf.slice(..));
+                        pass.draw(segs.clone(), a..b);
+                    }
+                    Op::Hl(a, b) if b > a => {
+                        pass.set_pipeline(&self.hl_pipe);
+                        pass.set_bind_group(0, &self.bind, &[]);
+                        pass.set_vertex_buffer(0, self.hl.buf.slice(..));
+                        pass.draw(segs.clone(), a..b);
+                    }
+                    Op::Pic(k) => {
+                        if let Some(Some(bind)) = self.img_tex.get(&pics[k].0) {
+                            pass.set_pipeline(&self.img_pipe);
+                            pass.set_bind_group(0, bind, &[]);
+                            pass.set_vertex_buffer(0, self.imgs.buf.slice(..));
+                            pass.draw(0..6, k as u32..k as u32 + 1);
+                        }
+                    }
+                    Op::Dabs(a, b) if b > a => {
+                        pass.set_pipeline(&self.dab_pipe);
+                        pass.set_bind_group(0, &self.bind, &[]);
+                        pass.set_vertex_buffer(0, self.dabs.buf.slice(..));
+                        pass.draw(0..6, a..b);
+                    }
+                    Op::MaskIn(i) | Op::MaskOut(i) => {
+                        pass.set_pipeline(if matches!(op, Op::MaskIn(_)) {
+                            &self.mask_in
+                        } else {
+                            &self.mask_out
+                        });
+                        pass.set_bind_group(0, &self.bind, &[]);
+                        pass.set_vertex_buffer(0, self.ink.buf.slice(..));
+                        pass.draw(segs.clone(), i..i + 1);
+                    }
+                    Op::Ref(r) => pass.set_stencil_reference(r),
+                    _ => {}
+                }
+            }
+        }
+        {
+            // The UI on top, unclipped.
             let mut pass = enc
                 .begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("main"),
+                    label: Some("ui"),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                         view: &view,
                         depth_slice: None,
                         resolve_target: None,
                         ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color {
-                                r: 0.96,
-                                g: 0.95,
-                                b: 0.92,
-                                a: 1.0,
-                            }),
+                            load: wgpu::LoadOp::Load,
                             store: wgpu::StoreOp::Store,
                         },
                     })],
@@ -1157,57 +1330,6 @@ impl Renderer {
                     multiview_mask: None,
                 })
                 .forget_lifetime();
-            if let Some(grid) = self.grid {
-                self.queue
-                    .write_buffer(&self.grid_buf, 0, bytemuck::bytes_of(&grid));
-                pass.set_pipeline(&self.grid_pipe);
-                pass.set_bind_group(0, &self.grid_bind, &[]);
-                pass.draw(0..3, 0..1);
-            }
-            pass.set_bind_group(0, &self.bind, &[]);
-            if !draw.tiles.is_empty() {
-                pass.set_pipeline(&self.tile_pipe);
-                pass.set_vertex_buffer(0, self.tiles.buf.slice(..));
-                pass.draw(0..6, 0..draw.tiles.len() as u32);
-            }
-            // Ink in runs between pictures, so both keep their draw order.
-            let mut from = 0;
-            let ink_run = |pass: &mut wgpu::RenderPass<'static>, a: usize, b: usize| {
-                if b > a {
-                    pass.set_pipeline(&self.ink_pipe);
-                    pass.set_bind_group(0, &self.bind, &[]);
-                    pass.set_vertex_buffer(0, self.ink.buf.slice(..));
-                    pass.draw(0..(MAX_SEG * 6) as u32, a as u32..b as u32);
-                }
-            };
-            for (at, br) in &breaks {
-                ink_run(&mut pass, from, *at);
-                from = *at;
-                match *br {
-                    Break::Pic(k) => {
-                        if let Some(Some(bind)) = self.img_tex.get(&pics[k].1) {
-                            pass.set_pipeline(&self.img_pipe);
-                            pass.set_bind_group(0, bind, &[]);
-                            pass.set_vertex_buffer(0, self.imgs.buf.slice(..));
-                            pass.draw(0..6, k as u32..k as u32 + 1);
-                        }
-                    }
-                    Break::Dabs(a, b) if b > a => {
-                        pass.set_pipeline(&self.dab_pipe);
-                        pass.set_bind_group(0, &self.bind, &[]);
-                        pass.set_vertex_buffer(0, self.dabs.buf.slice(..));
-                        pass.draw(0..6, a..b);
-                    }
-                    Break::Dabs(..) => {}
-                }
-            }
-            ink_run(&mut pass, from, ink.len());
-            pass.set_bind_group(0, &self.bind, &[]);
-            if !hl.is_empty() {
-                pass.set_pipeline(&self.hl_pipe);
-                pass.set_vertex_buffer(0, self.hl.buf.slice(..));
-                pass.draw(0..(MAX_SEG * 6) as u32, 0..hl.len() as u32);
-            }
             self.egui.render(&mut pass, &ui.prims, &screen);
         }
         if let Some((_, bind, _)) = &self.flip_tex {
@@ -1237,6 +1359,140 @@ impl Renderer {
             self.egui.free_texture(id);
         }
         true
+    }
+}
+
+/// Gathers a frame's instances and draws, canvas and portals alike.
+struct Build<'a> {
+    scene: &'a Scene,
+    objs: &'a crate::objects::Objects,
+    portals: &'a Portals,
+    dab_cache: &'a mut HashMap<u32, Vec<ogpaper_core::Dab>>,
+    vw: f32,
+    vh: f32,
+    ink: Vec<InstGpu>,
+    hl: Vec<InstGpu>,
+    dabs: Vec<DabGpu>,
+    /// Pictures in draw order: id and quad.
+    pics: Vec<(u64, ImgInst)>,
+    tiles: Vec<TileInst>,
+    ops: Vec<Op>,
+    /// First ink instance not yet in an op.
+    run: usize,
+}
+
+impl Build<'_> {
+    fn flush(&mut self) {
+        if self.ink.len() > self.run {
+            self.ops
+                .push(Op::Ink(self.run as u32, self.ink.len() as u32));
+        }
+        self.run = self.ink.len();
+    }
+
+    /// Layer `li` (its draw list, moved by `off` px) at portal depth `depth`.
+    fn layer(&mut self, li: usize, draw: &DrawList, off: [f32; 2], depth: u32) {
+        if !draw.tiles.is_empty() {
+            let a = self.tiles.len() as u32;
+            self.tiles.extend(draw.tiles.iter().map(|t| TileInst {
+                x: t.x + off[0],
+                y: t.y + off[1],
+                ..*t
+            }));
+            self.ops.push(Op::Tiles(a, self.tiles.len() as u32));
+        }
+        let hl_from = self.hl.len();
+        let scene = self.scene;
+        let objs = self.objs;
+        for (k, i0) in draw.strokes.iter().enumerate() {
+            let i = StrokeInst {
+                ox: i0.ox + off[0],
+                oy: i0.oy + off[1],
+                ..*i0
+            };
+            let s = &scene.strokes[i.stroke as usize];
+            if let Some(&child) = self.portals.child.get(&(li, k)) {
+                // A portal: its window raises the stencil, its view draws
+                // inside, then the window lowers it again.
+                self.flush();
+                let at = self.ink.len() as u32;
+                push_windows(&mut self.ink, i.stroke, 1, i.ox, i.oy, i.scale);
+                self.run = self.ink.len();
+                self.ops.push(Op::MaskIn(at));
+                self.ops.push(Op::Ref(depth + 1));
+                let l = &self.portals.layers[child];
+                self.layer(child + 1, &l.draw, l.offset, depth + 1);
+                self.flush();
+                self.ops.push(Op::MaskOut(at));
+                self.ops.push(Op::Ref(depth));
+                continue;
+            }
+            if s.brush == Brush::Dabs && s.width * i.scale >= DAB_MIN_PX {
+                if let Some(p) = scene.brush_of(i.stroke) {
+                    let cached = self.dab_cache.entry(i.stroke).or_insert_with(|| {
+                        ogpaper_core::brush::dabs(
+                            scene.stroke_points(i.stroke),
+                            s.width,
+                            s.color,
+                            &p,
+                        )
+                    });
+                    let a = self.dabs.len() as u32;
+                    self.dabs.extend(
+                        cached
+                            .iter()
+                            .map(|d| dab_gpu(d, &p, i.ox, i.oy, i.scale, s.width)),
+                    );
+                    let b = self.dabs.len() as u32;
+                    self.flush();
+                    match self.ops.last_mut() {
+                        // Next to the last dabs with no ink between: one run.
+                        Some(Op::Dabs(_, e)) if *e == a => *e = b,
+                        _ => self.ops.push(Op::Dabs(a, b)),
+                    }
+                    continue;
+                }
+            }
+            if s.brush == Brush::Fill && s.color == 0 {
+                // An invisible outline; a picture's corners if it places one.
+                if let Some(&(id, opacity, crop)) = objs.image_of.get(&i.stroke) {
+                    let p = scene.stroke_points(i.stroke);
+                    if p.len() == 4 {
+                        let mut corners = [0.0; 8];
+                        for (k, q) in p.iter().enumerate() {
+                            corners[2 * k] = i.ox + q[0] * i.scale;
+                            corners[2 * k + 1] = i.oy + q[1] * i.scale;
+                        }
+                        let misc = [self.vw, self.vh, opacity as f32 / 255.0, 0.0];
+                        self.flush();
+                        self.ops.push(Op::Pic(self.pics.len()));
+                        self.pics.push((
+                            id,
+                            ImgInst {
+                                corners,
+                                misc,
+                                crop,
+                            },
+                        ));
+                    }
+                }
+                continue;
+            }
+            let len = if s.brush == Brush::Fill {
+                1 // one instance covers the whole polygon
+            } else {
+                s.len as usize
+            };
+            if s.brush == Brush::Highlighter {
+                push_windows(&mut self.hl, i.stroke, len, i.ox, i.oy, i.scale);
+            } else {
+                push_windows(&mut self.ink, i.stroke, len, i.ox, i.oy, i.scale);
+            }
+        }
+        self.flush();
+        if self.hl.len() > hl_from {
+            self.ops.push(Op::Hl(hl_from as u32, self.hl.len() as u32));
+        }
     }
 }
 

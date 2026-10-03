@@ -90,6 +90,10 @@ enum Item {
         /// The part shown: u0, v0, u1, v1.
         crop: [f64; 4],
     },
+    /// What follows, up to the matching `ClipEnd`, shows only inside this
+    /// outline (a portal's window).
+    ClipStart(Vec<[f64; 2]>),
+    ClipEnd,
 }
 
 /// The vector list and its frame: origin and size in screen px.
@@ -167,18 +171,119 @@ impl App {
             lo = [lo[0].min(q[0] - r), lo[1].min(q[1] - r)];
             hi = [hi[0].max(q[0] + r), hi[1].max(q[1] + r)];
         };
-        let mut insts: Vec<_> = self.draw.strokes.iter().collect();
-        insts.sort_by(|a, b| {
+        let portals = self.portal_layers();
+        self.export_layer(
+            &self.draw,
+            [0.0, 0.0],
+            0,
+            &portals,
+            only.as_deref(),
+            &mut items,
+            &mut grow,
+        );
+        let [w, h] = self.size();
+        let (origin, size) = if only.is_some() {
+            if lo[0] > hi[0] {
+                return Err("The selection has nothing on screen to export".into());
+            }
+            let pad = 12.0 * self.ppp();
+            (
+                [lo[0] - pad, lo[1] - pad],
+                [hi[0] - lo[0] + 2.0 * pad, hi[1] - lo[1] + 2.0 * pad],
+            )
+        } else {
+            ([0.0, 0.0], [w, h])
+        };
+        Ok(Page {
+            items,
+            origin,
+            size,
+            ppp: self.ppp(),
+            background: opts.background,
+        })
+    }
+
+    /// The vector items of layer `li` of the frame (0: the canvas, else a
+    /// portal's view; see `portal`), moved by `off` px, in draw order.
+    #[allow(clippy::too_many_arguments)]
+    fn export_layer(
+        &self,
+        draw: &ogpaper_core::DrawList,
+        off: [f32; 2],
+        li: usize,
+        portals: &crate::render::Portals,
+        only: Option<&[u32]>,
+        items: &mut Vec<Item>,
+        grow: &mut dyn FnMut([f64; 2], f64),
+    ) {
+        let mut insts: Vec<(usize, ogpaper_core::StrokeInst)> = draw
+            .strokes
+            .iter()
+            .enumerate()
+            .map(|(k, i)| {
+                (
+                    k,
+                    ogpaper_core::StrokeInst {
+                        ox: i.ox + off[0],
+                        oy: i.oy + off[1],
+                        ..*i
+                    },
+                )
+            })
+            .collect();
+        insts.sort_by(|(_, a), (_, b)| {
             let (za, zb) = (
                 self.scene.strokes[a.stroke as usize].z,
                 self.scene.strokes[b.stroke as usize].z,
             );
             za.total_cmp(&zb).then(a.stroke.cmp(&b.stroke))
         });
-        for inst in insts {
+        for (k, inst) in &insts {
+            let inst = *inst;
+            if let Some(&child) = portals.child.get(&(li, *k)) {
+                let id = inst.stroke;
+                if self.scene.strokes[id as usize].deleted
+                    || only.is_some_and(|o| o.binary_search(&id).is_err())
+                {
+                    continue;
+                }
+                // A portal: its window, then its view clipped to it.
+                let pts: Vec<[f64; 2]> = self
+                    .scene
+                    .stroke_points(id)
+                    .iter()
+                    .map(|p| {
+                        [
+                            inst.ox as f64 + p[0] as f64 * inst.scale as f64,
+                            inst.oy as f64 + p[1] as f64 * inst.scale as f64,
+                        ]
+                    })
+                    .collect();
+                pts.iter().for_each(|&q| grow(q, 0.0));
+                let (rgb, alpha) = rgb_of(self.scene.strokes[id as usize].color);
+                items.push(Item::Fill {
+                    rgb,
+                    alpha,
+                    pts: pts.clone(),
+                });
+                items.push(Item::ClipStart(pts));
+                let l = &portals.layers[child];
+                self.export_layer(
+                    &l.draw,
+                    l.offset,
+                    child + 1,
+                    portals,
+                    None,
+                    items,
+                    &mut |_, _| {},
+                );
+                items.push(Item::ClipEnd);
+                continue;
+            }
+            let inst = &inst;
             let id = inst.stroke;
             let s = &self.scene.strokes[id as usize];
-            if s.deleted || only.as_ref().is_some_and(|o| o.binary_search(&id).is_err()) {
+            if s.deleted || only.is_some_and(|o| o.binary_search(&id).is_err()) {
                 continue;
             }
             let pts: Vec<[f64; 3]> = self
@@ -270,26 +375,36 @@ impl App {
                 runs: runs_of(&pts, s.brush, width),
             });
         }
-        let [w, h] = self.size();
-        let (origin, size) = if only.is_some() {
-            if lo[0] > hi[0] {
-                return Err("The selection has nothing on screen to export".into());
-            }
-            let pad = 12.0 * self.ppp();
-            (
-                [lo[0] - pad, lo[1] - pad],
-                [hi[0] - lo[0] + 2.0 * pad, hi[1] - lo[1] + 2.0 * pad],
-            )
-        } else {
-            ([0.0, 0.0], [w, h])
-        };
-        Ok(Page {
-            items,
-            origin,
-            size,
-            ppp: self.ppp(),
-            background: opts.background,
-        })
+    }
+
+    /// Clips and fills+inks exported for `draw` (tests).
+    #[cfg(test)]
+    pub(crate) fn export_test_items(
+        &self,
+        draw: &ogpaper_core::DrawList,
+        portals: &crate::render::Portals,
+    ) -> (usize, usize) {
+        let mut items = Vec::new();
+        self.export_layer(
+            draw,
+            [0.0, 0.0],
+            0,
+            portals,
+            None,
+            &mut items,
+            &mut |_, _| {},
+        );
+        let clips = items
+            .iter()
+            .filter(|i| matches!(i, Item::ClipStart(_)))
+            .count();
+        let ends = items.iter().filter(|i| matches!(i, Item::ClipEnd)).count();
+        assert_eq!(clips, ends);
+        let ink = items
+            .iter()
+            .filter(|i| matches!(i, Item::Ink { .. }))
+            .count();
+        (clips, ink)
     }
 
     /// The exported file's bytes.
@@ -392,6 +507,7 @@ impl Page {
                 hex(PAPER)
             );
         }
+        let mut clips = 0;
         for it in &self.items {
             match it {
                 Item::Ink {
@@ -505,6 +621,22 @@ impl Page {
                         base64(&a.bytes)
                     );
                 }
+                Item::ClipStart(pts) => {
+                    clips += 1;
+                    let _ = write!(s, "<clipPath id=\"portal{clips}\"><path d=\"");
+                    for (i, &q) in pts.iter().enumerate() {
+                        let p = self.map(q, k);
+                        let _ = write!(
+                            s,
+                            "{}{},{} ",
+                            if i == 0 { "M" } else { "L" },
+                            num(p[0]),
+                            num(p[1])
+                        );
+                    }
+                    let _ = writeln!(s, "Z\"/></clipPath><g clip-path=\"url(#portal{clips})\">");
+                }
+                Item::ClipEnd => s.push_str("</g>\n"),
             }
         }
         s.push_str("</svg>\n");
@@ -711,6 +843,21 @@ impl Page {
                         num6(-(1.0 - crop[3]) / dv)
                     );
                 }
+                Item::ClipStart(pts) => {
+                    c.push_str("q ");
+                    for (i, &q) in pts.iter().enumerate() {
+                        let p = self.map(q, k);
+                        let _ = write!(
+                            c,
+                            "{} {} {} ",
+                            num(p[0]),
+                            num(p[1]),
+                            if i == 0 { "m" } else { "l" }
+                        );
+                    }
+                    c.push_str("h W n\n");
+                }
+                Item::ClipEnd => c.push_str("Q\n"),
             }
         }
         let content = pdf.add_stream("", c.as_bytes());

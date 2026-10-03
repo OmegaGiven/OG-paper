@@ -31,6 +31,7 @@ mod pack;
 mod pages;
 mod pdf;
 mod plugin;
+mod portal;
 mod prefs;
 mod presence;
 #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
@@ -124,6 +125,8 @@ enum Gesture {
     HoldWait([f64; 2], Instant, f32),
     /// Moving a canvas being imported.
     Import,
+    /// Drawing a portal's window.
+    Portal,
 }
 
 pub struct App {
@@ -175,6 +178,10 @@ pub struct App {
     objs: objects::Objects,
     edit: edit::EditState,
     bookmarks: Vec<Bookmark>,
+    /// What new portals show (Portal tool).
+    portal_view: Option<objects::PortalView>,
+    /// A freehand portal window being drawn (screen px).
+    portal_path: Vec<[f64; 2]>,
     /// Viewing the canvas as it was after timeline event `.0`; `.1` holds the
     /// real deleted flags to put back.
     tl_view: Option<(usize, Vec<bool>)>,
@@ -272,6 +279,8 @@ impl App {
             objs: objects::Objects::default(),
             edit: edit::EditState::default(),
             bookmarks: Vec::new(),
+            portal_view: None,
+            portal_path: Vec::new(),
             tl_view: None,
             tl_from: 0,
             fly: None,
@@ -519,6 +528,7 @@ impl App {
             Tool::Eraser => Gesture::Erase,
             Tool::Picker => Gesture::Pick,
             Tool::Shapes => Gesture::Shape,
+            Tool::Portal => Gesture::Portal,
             Tool::Select | Tool::Lasso => Gesture::Select,
             Tool::Bucket => Gesture::Bucket(p),
             Tool::Text => Gesture::Text(p),
@@ -527,7 +537,7 @@ impl App {
         if self.tl_view.is_some()
             && (matches!(
                 self.gesture,
-                Gesture::Ink | Gesture::Erase | Gesture::Shape | Gesture::Select
+                Gesture::Ink | Gesture::Erase | Gesture::Shape | Gesture::Select | Gesture::Portal
             ) || self.ui.tool == Tool::Text)
         {
             // The past is read-only: browse it instead.
@@ -540,6 +550,7 @@ impl App {
                 Gesture::Ink
                     | Gesture::Erase
                     | Gesture::Shape
+                    | Gesture::Portal
                     | Gesture::Select
                     | Gesture::Bucket(_)
             ) || self.ui.tool == Tool::Text)
@@ -555,6 +566,7 @@ impl App {
             Gesture::Erase => self.erase_at(p),
             Gesture::Pick => self.pick_preview(p),
             Gesture::Shape => self.shape_begin(p),
+            Gesture::Portal => self.portal_begin(p),
             Gesture::Select => self.select_begin(p),
             _ => {}
         }
@@ -582,6 +594,7 @@ impl App {
             Gesture::Pick => self.pick_preview(to),
             Gesture::Import => self.import_drag(from, to),
             Gesture::Shape => self.shape_move(to),
+            Gesture::Portal => self.portal_move(to),
             Gesture::Select => self.select_move(to),
             Gesture::Bucket(a) => {
                 if dist(a, to) > TAP_SLOP_PT * self.ppp() {
@@ -743,6 +756,7 @@ impl App {
             Gesture::Pick if !cancel => self.pick_end(),
             Gesture::Pick => self.ui.pick_preview = None,
             Gesture::Shape => self.shape_end(cancel),
+            Gesture::Portal => self.portal_end(cancel),
             Gesture::Select => self.select_end(cancel),
             Gesture::Bucket(p) if !cancel && self.tl_view.is_none() => self.bucket_fill(p),
             Gesture::Text(p) if !cancel && self.tl_view.is_none() => self.text_begin(p),
@@ -842,6 +856,7 @@ impl App {
                     objects::ObjData::Text { .. } => "text".into(),
                     objects::ObjData::Image { .. } => "image".into(),
                     objects::ObjData::Table { .. } => "table".into(),
+                    objects::ObjData::Portal { .. } => "portal".into(),
                 },
                 data: snapshot::data_bytes(&g.data),
                 strokes: g
@@ -1356,6 +1371,10 @@ impl App {
             Action::RelayShare => web::emit("relay-new"),
             Action::NewLinks => self.new_links(),
             Action::PagesPanel => self.pages_toggle(),
+            Action::PortalHere => self.portal_pick(None),
+            Action::PortalBookmark(i) => self.portal_pick(Some(i)),
+            Action::PortalGo => self.portal_go(),
+            Action::PortalRetarget => self.portal_retarget(),
             Action::PluginsPanel => {
                 self.ui.plugins_open = !self.ui.plugins_open;
                 self.ui.menu = ui::Menu::None;
@@ -1999,6 +2018,7 @@ impl App {
             }
             "tool.lasso" => self.ui.tool = Tool::Lasso,
             "tool.shapes" => self.ui.tool = Tool::Shapes,
+            "tool.portal" => self.ui.tool = Tool::Portal,
             "shape.rect" => shape(self, shapes::ShapeKind::Rect),
             "shape.ellipse" => shape(self, shapes::ShapeKind::Ellipse),
             "shape.diamond" => shape(self, shapes::ShapeKind::Diamond),
@@ -2164,7 +2184,6 @@ impl App {
 
     // ---- bookmarks and flying ---------------------------------------------
 
-    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     fn view_px(&self) -> f64 {
         let [w, h] = self.size();
         w.min(h).max(1.0)
@@ -2191,9 +2210,13 @@ impl App {
         let Some(b) = self.bookmarks.get(i) else {
             return;
         };
-        let mut target = b.cam.clone();
+        self.fly_to(b.cam.clone(), b.view_px);
+    }
+
+    /// Start flying to a saved view (`view_px`: the screen it was saved on).
+    fn fly_to(&mut self, mut target: Camera, view_px: f64) {
         target.base_px = self.cam.base_px;
-        target.zoom_at(self.view_px() / b.view_px, [0.0, 0.0]);
+        target.zoom_at(self.view_px() / view_px.max(1.0), [0.0, 0.0]);
         self.fly = Some(target);
         self.fly_last = Instant::now();
         self.redraw();
@@ -2688,6 +2711,16 @@ impl App {
         self.sync_egui_fonts();
         let pointer_down = self.egui_ctx.input(|i| i.pointer.any_down());
         self.sync_sel_panel(pointer_down);
+        if self.ui.bookmark_names.len() != self.bookmarks.len()
+            || self
+                .ui
+                .bookmark_names
+                .iter()
+                .zip(&self.bookmarks)
+                .any(|(n, b)| *n != b.name)
+        {
+            self.ui.bookmark_names = self.bookmarks.iter().map(|b| b.name.clone()).collect();
+        }
         self.build_overlay();
         self.ui.view_now = Some(hotbar::View {
             name: String::new(),
@@ -2834,12 +2867,15 @@ impl App {
             textures: out.textures_delta,
             pixels_per_point: out.pixels_per_point,
         };
-        if !self
-            .gpu
-            .as_mut()
-            .expect("gpu")
-            .render(&self.scene, &self.draw, &self.objs, wet, paint)
-        {
+        let portals = self.portal_layers();
+        if !self.gpu.as_mut().expect("gpu").render(
+            &self.scene,
+            &self.draw,
+            &self.objs,
+            &portals,
+            wet,
+            paint,
+        ) {
             log::debug!("frame not presented; retrying");
             window.request_redraw();
         }

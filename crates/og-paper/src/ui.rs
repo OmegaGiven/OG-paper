@@ -41,11 +41,13 @@ pub enum Tool {
     Lasso,
     /// Fill a closed outline with color.
     Bucket,
+    /// Draw a window (a shape or freehand) that shows another view.
+    Portal,
 }
 
 /// The tool fan, inner ring first.
 /// The tool fan. (The color picker lives in every color dial instead.)
-const TOOLS: [Tool; 10] = [
+const TOOLS: [Tool; 11] = [
     Tool::Pen,
     Tool::Texture,
     Tool::Highlighter,
@@ -55,6 +57,7 @@ const TOOLS: [Tool; 10] = [
     Tool::Lasso,
     Tool::Shapes,
     Tool::Text,
+    Tool::Portal,
     Tool::Hand,
 ];
 
@@ -81,6 +84,7 @@ impl Tool {
             Tool::Select => "Select",
             Tool::Lasso => "Lasso",
             Tool::Bucket => "Bucket",
+            Tool::Portal => "Portal",
         }
     }
 
@@ -94,7 +98,12 @@ impl Tool {
         self.brush().is_some()
             || matches!(
                 self,
-                Tool::Shapes | Tool::Text | Tool::Select | Tool::Lasso | Tool::Bucket
+                Tool::Shapes
+                    | Tool::Text
+                    | Tool::Select
+                    | Tool::Lasso
+                    | Tool::Bucket
+                    | Tool::Portal
             )
     }
 }
@@ -156,6 +165,7 @@ pub enum SelKind {
     /// Texts and tables.
     Text,
     Images,
+    Portals,
     Mixed,
 }
 
@@ -524,6 +534,13 @@ pub struct UiState {
     pub shape: ShapeStyle,
     /// Shape outline width, screen pixels at the zoom drawn at.
     pub shape_width: f32,
+    /// Portal tool: a freehand window, else one of `portal_kind`.
+    pub portal_free: bool,
+    pub portal_kind: ShapeKind,
+    /// The name of the view new portals show ("" when none is chosen).
+    pub portal_shows: String,
+    /// Bookmark names, for choosing what a portal shows.
+    pub bookmark_names: Vec<String>,
     pub color_target: ColorTarget,
     pub text: TextStyle,
     /// Text cap height, screen pixels at the zoom typed at.
@@ -685,6 +702,10 @@ impl Default for UiState {
             panel_open: None,
             shape: ShapeStyle::default(),
             shape_width: 3.0,
+            portal_free: false,
+            portal_kind: ShapeKind::Ellipse,
+            portal_shows: String::new(),
+            bookmark_names: Vec::new(),
             color_target: ColorTarget::Stroke,
             text: TextStyle::default(),
             text_size: 24.0,
@@ -935,6 +956,14 @@ pub enum Action {
     LayoutMenu,
     /// The background: 0 plain paper, 1 grid lines, 2 dots.
     SetGrid(u8),
+    /// Portal tool: new portals show this view.
+    PortalHere,
+    /// Portal tool: new portals show bookmark k.
+    PortalBookmark(usize),
+    /// Fly into the selected portal's view.
+    PortalGo,
+    /// The selected portals show the chosen view instead.
+    PortalRetarget,
     /// Open or close Plugins.
     PluginsPanel,
     /// Pick a plugin (.wasm) or pack (.ogpack) to install.
@@ -2703,6 +2732,7 @@ fn tool_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) 
                                 touch,
                                 &mut dial_hue,
                             ),
+                            Tool::Portal => portal_section(ui, st, touch, actions),
                             Tool::Text => text_section(
                                 ui,
                                 &mut st.text,
@@ -2746,6 +2776,34 @@ fn tool_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) 
                                     SelKind::Images => {
                                         opacity_slider(ui, &mut st.sel.opacity);
                                         false
+                                    }
+                                    SelKind::Portals => {
+                                        heading(ui, "Portal");
+                                        ui.horizontal_wrapped(|ui| {
+                                            if ui
+                                                .button("Go there")
+                                                .on_hover_text("Fly into the view it shows")
+                                                .clicked()
+                                            {
+                                                actions.push(Action::PortalGo);
+                                            }
+                                            if !st.portal_shows.is_empty()
+                                                && ui
+                                                    .button(format!("Show {}", st.portal_shows))
+                                                    .on_hover_text("Show the view chosen in the Portal tool instead")
+                                                    .clicked()
+                                            {
+                                                actions.push(Action::PortalRetarget);
+                                            }
+                                        });
+                                        shape_section(
+                                            ui,
+                                            &mut st.sel.shape,
+                                            None,
+                                            &mut st.color_target,
+                                            touch,
+                                            &mut dial_hue,
+                                        )
                                     }
                                     _ => false,
                                 }
@@ -3238,6 +3296,81 @@ fn font_picker(
 }
 
 /// Buttons for what can be done with a selection.
+/// Portal tool: what new portals show, and their outline.
+fn portal_section(
+    ui: &mut egui::Ui,
+    st: &mut UiState,
+    touch: bool,
+    actions: &mut Vec<Action>,
+) -> bool {
+    let sz = if touch { 34.0 } else { 28.0 };
+    heading(ui, "Shows");
+    ui.label(if st.portal_shows.is_empty() {
+        egui::RichText::new("Nothing chosen yet").weak()
+    } else {
+        egui::RichText::new(&st.portal_shows).strong()
+    });
+    ui.horizontal_wrapped(|ui| {
+        if ui
+            .button("This view")
+            .on_hover_text("Show what is on screen now; then go where the portal goes and draw it")
+            .clicked()
+        {
+            actions.push(Action::PortalHere);
+        }
+        for (i, name) in st.bookmark_names.iter().enumerate() {
+            if ui
+                .button(name)
+                .on_hover_text("Show this bookmark")
+                .clicked()
+            {
+                actions.push(Action::PortalBookmark(i));
+            }
+        }
+    });
+    heading(ui, "Window");
+    ui.horizontal_wrapped(|ui| {
+        if ui
+            .selectable_label(st.portal_free, "Freehand")
+            .on_hover_text("Draw the window's outline")
+            .clicked()
+        {
+            st.portal_free = true;
+        }
+        let kinds = [
+            ShapeKind::Rect,
+            ShapeKind::Ellipse,
+            ShapeKind::Diamond,
+            ShapeKind::Triangle,
+            ShapeKind::Star,
+            ShapeKind::Polygon,
+        ];
+        for k in kinds {
+            let (rect, resp) = ui.allocate_exact_size(Vec2::splat(sz), egui::Sense::click());
+            let on = !st.portal_free && st.portal_kind == k;
+            if on {
+                ui.painter()
+                    .rect_filled(rect, 6.0, Color32::from_rgb(222, 232, 250));
+            }
+            shape_icon(ui.painter(), rect.center(), sz * 0.36, k, INKY);
+            if resp.on_hover_text(k.name()).clicked() {
+                st.portal_free = false;
+                st.portal_kind = k;
+            }
+        }
+    });
+    heading(ui, "Outline width");
+    ui.add(egui::Slider::new(&mut st.shape_width, 0.0..=24.0).suffix(" px"));
+    ui.label(
+        egui::RichText::new(
+            "Select a portal to go there. A portal that shows itself makes a tunnel.",
+        )
+        .small()
+        .weak(),
+    );
+    false
+}
+
 fn select_actions(
     ui: &mut egui::Ui,
     kind: SelKind,
@@ -4323,6 +4456,27 @@ fn tool_icon(p: &egui::Painter, c: Pos2, r: f32, tool: Tool, ink: Color32) {
                 [c + vec2(-s * 0.35, s * 0.85), c + vec2(s * 0.35, s * 0.85)],
                 st,
             );
+        }
+        Tool::Portal => {
+            // A window onto a tunnel: rings shrinking toward a far point.
+            let s = r * 0.62;
+            p.add(egui::epaint::EllipseShape {
+                center: c,
+                radius: vec2(s, s * 0.8),
+                fill: Color32::from_rgb(222, 232, 250),
+                stroke: line,
+                angle: 0.0,
+            });
+            for (k, a) in [(0.62, 0.8), (0.36, 0.6), (0.16, 0.4)] {
+                let d = vec2(s * (1.0 - k) * 0.35, -s * (1.0 - k) * 0.2);
+                p.add(egui::epaint::EllipseShape {
+                    center: c + d,
+                    radius: vec2(s * k, s * k * 0.8),
+                    fill: Color32::TRANSPARENT,
+                    stroke: Stroke::new(line.width * 0.8, ink.gamma_multiply(a)),
+                    angle: 0.0,
+                });
+            }
         }
         Tool::Bucket => {
             // A tipped paint bucket with a drip.

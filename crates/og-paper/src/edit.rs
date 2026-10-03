@@ -1348,6 +1348,7 @@ impl App {
                 ObjData::Shape { .. } => SelKind::Shapes,
                 ObjData::Text { .. } | ObjData::Table { .. } => SelKind::Text,
                 ObjData::Image { .. } => SelKind::Images,
+                ObjData::Portal { .. } => SelKind::Portals,
             },
         });
         let first = kinds.next().unwrap_or(SelKind::None);
@@ -1371,7 +1372,7 @@ impl App {
                 });
             }
             Some(ObjRef::Group(g)) => match &self.objs.groups[*g as usize].data {
-                ObjData::Shape { style, .. } => s.shape = *style,
+                ObjData::Shape { style, .. } | ObjData::Portal { style, .. } => s.shape = *style,
                 ObjData::Text { style, .. } | ObjData::Table { style, .. } => s.text = *style,
                 ObjData::Image { opacity, .. } => s.opacity = *opacity,
             },
@@ -1493,6 +1494,22 @@ impl App {
                             opacity
                         },
                     },
+                    ObjData::Portal {
+                        mut style,
+                        geom,
+                        width,
+                        seed,
+                        view,
+                    } => {
+                        merge_shape(&mut style, &b.shape, &a.shape);
+                        ObjData::Portal {
+                            style,
+                            geom,
+                            width,
+                            seed,
+                            view,
+                        }
+                    }
                 };
                 let grp = &app.objs.groups[g as usize];
                 if changed == grp.data {
@@ -1521,7 +1538,18 @@ impl App {
         self.import_overlay(&mut ov);
         self.changes_overlay(&mut ov);
         self.presence_overlay(&mut ov);
-        if let Some((a, b)) = self.edit.shape_drag {
+        if self.ui.tool == Tool::Portal {
+            for (pts, w, c, fill) in self.portal_preview() {
+                let [r, gg, bb, al] = c.to_le_bytes();
+                let col = egui::Color32::from_rgba_unmultiplied(r, gg, bb, al);
+                ov.lines.push((
+                    pts.iter().map(|&p| to_pt(p)).collect(),
+                    (w / ppp) as f32,
+                    col,
+                    fill,
+                ));
+            }
+        } else if let Some((a, b)) = self.edit.shape_drag {
             let (a, b) = self.snap_line(a, b);
             let g = self.shape_geom_px(a, b);
             let w = self.ui.shape_width as f64 * ppp;

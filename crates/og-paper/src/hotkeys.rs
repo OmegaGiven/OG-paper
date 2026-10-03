@@ -135,6 +135,7 @@ pub fn bindings() -> Vec<Binding> {
         ("shape.arrow", "Arrow", Some("a")),
         ("shape.line", "Line", Some("l")),
         ("tool.text", "Text", Some("t")),
+        ("tool.portal", "Portal", Some("p")),
         ("tool.hand", "Pan", Some("h")),
     ] {
         add(id, label, "Tools", d);

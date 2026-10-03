@@ -8,7 +8,7 @@
 //! in browser storage and downloads it as an offline copy (`.ogpt`). It is
 //! not the `.ogp` format and holds no undo history.
 //!
-//! Layout (little endian): b"OGPT", version u8 (5; 1 to 4 are still read), camera,
+//! Layout (little endian): b"OGPT", version u8 (6; 1 to 5 are still read), camera,
 //! then
 //! - strokes: count u32; each: addr, width f32, color u32, brush u8,
 //!   deleted u8, uid u128, point count u32, points (f32 x4 each),
@@ -24,6 +24,9 @@
 //!   item u128, alive u8, stamp; replacements: count u32, each item u128,
 //!   replaced u128, stamp. A stamp is ms u64, n u32, peer u64. Then
 //!   optionally a flags byte: bit 0 = only the changes since a sync.
+//! - v6 portals: count u32; each: group index u32, then the portal's view
+//!   (see [`put_portal`]). The group itself is stored as the shape older
+//!   apps show in its place (a window of paper).
 //!
 //! Compatibility: a newer version may only add at the end (a new section
 //! after the last; never a field inside an existing record), so an older
@@ -42,7 +45,9 @@ use crate::shapes::{ArrowType, FillStyle, Geom, Head, ShapeKind, ShapeStyle, Slo
 use crate::timeline::{Bookmark, Event, Timeline};
 
 const MAGIC: &[u8; 4] = b"OGPT";
-const VERSION: u8 = 5;
+const VERSION: u8 = 6;
+/// Marks a portal's view after its shape in a lone object's bytes.
+const PORTAL_TAG: &[u8; 4] = b"OGPV";
 
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 pub struct Snapshot {
@@ -68,9 +73,16 @@ pub struct Snapshot {
 ///   length + UTF-8); then font name, align, color, opacity, geometry, size,
 ///   seed as for text
 ///
+/// - portal: written as its shape (`ObjData::portal_as_shape`); its view
+///   follows apart (in a snapshot's v6 section, or after b"OGPV" in a lone
+///   object's bytes, which older apps leave unread)
+///
 /// Geometry: centre f64 x2, half size f64 x2, rotation f64, point count u32,
 /// points f64 x2. All lengths in the group cell's units.
 pub fn put_data(b: &mut Vec<u8>, d: &ObjData) {
+    if let Some(shape) = d.portal_as_shape() {
+        return put_data(b, &shape);
+    }
     let geom = |b: &mut Vec<u8>, g: &Geom| {
         for v in [g.center[0], g.center[1], g.half[0], g.half[1], g.rot] {
             b.extend_from_slice(&v.to_le_bytes());
@@ -145,6 +157,7 @@ pub fn put_data(b: &mut Vec<u8>, d: &ObjData) {
                 }
             }
         }
+        ObjData::Portal { .. } => unreachable!("written as its shape"),
         ObjData::Table {
             cells,
             style,
@@ -175,16 +188,35 @@ pub fn put_data(b: &mut Vec<u8>, d: &ObjData) {
     }
 }
 
-/// Read what [`put_data`] wrote.
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
-pub fn get_data(bytes: &[u8]) -> Result<ObjData, String> {
-    Reader { b: bytes, at: 0 }.data()
+/// A portal's view: name (u32 length + UTF-8), camera, view_px f64.
+fn put_portal(b: &mut Vec<u8>, v: &crate::objects::PortalView) {
+    b.extend_from_slice(&(v.name.len() as u32).to_le_bytes());
+    b.extend_from_slice(v.name.as_bytes());
+    put_cam(b, &v.cam);
+    b.extend_from_slice(&v.view_px.to_le_bytes());
 }
 
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+/// Read a lone object's bytes (see [`data_bytes`]).
+pub fn get_data(bytes: &[u8]) -> Result<ObjData, String> {
+    let mut r = Reader { b: bytes, at: 0 };
+    let d = r.data()?;
+    if r.b.len() - r.at >= 4 && r.take(4)? == PORTAL_TAG {
+        if let Ok(v) = r.portal() {
+            return Ok(d.into_portal(v));
+        }
+    }
+    Ok(d)
+}
+
+/// A lone object's bytes (files, the library, toolbars): [`put_data`], and
+/// a portal's view after it.
 pub fn data_bytes(d: &ObjData) -> Vec<u8> {
     let mut b = Vec::new();
     put_data(&mut b, d);
+    if let ObjData::Portal { view, .. } = d {
+        b.extend_from_slice(PORTAL_TAG);
+        put_portal(&mut b, view);
+    }
     b
 }
 
@@ -270,6 +302,20 @@ pub fn encode(
         stamp(&mut b, &r.edit);
     }
     b.push(share.partial as u8);
+    let portals: Vec<(usize, &crate::objects::PortalView)> = objs
+        .groups
+        .iter()
+        .enumerate()
+        .filter_map(|(i, g)| match &g.data {
+            ObjData::Portal { view, .. } => Some((i, view)),
+            _ => None,
+        })
+        .collect();
+    b.extend_from_slice(&(portals.len() as u32).to_le_bytes());
+    for (i, v) in portals {
+        b.extend_from_slice(&(i as u32).to_le_bytes());
+        put_portal(&mut b, v);
+    }
     b
 }
 
@@ -428,6 +474,20 @@ pub fn decode(bytes: &[u8], base_px: f64) -> Result<Snapshot, String> {
             });
         }
         let partial = r.at < bytes.len() && r.u8()? & 1 != 0;
+        if v >= 6 && r.at < bytes.len() {
+            let n = r.u32()? as usize;
+            for _ in 0..n.min(objs.groups.len()) {
+                let i = r.u32()? as usize;
+                let mut view = r.portal()?;
+                view.cam.base_px = base_px;
+                if let Some(g) = objs.groups.get_mut(i) {
+                    g.data = g.data.clone().into_portal(view);
+                    if let Some(&s) = g.strokes.first() {
+                        objs.portal_of.insert(s, i as u32);
+                    }
+                }
+            }
+        }
         Some(crate::share::CopyLog {
             canvas,
             events,
@@ -498,6 +558,13 @@ impl<'a> Reader<'a> {
             self.take(8)?.try_into().expect("8 bytes"),
         ))
     }
+    fn portal(&mut self) -> Result<crate::objects::PortalView, String> {
+        let name = self.string()?;
+        let cam = self.cam(1.0)?;
+        let view_px = self.f64()?;
+        Ok(crate::objects::PortalView { name, cam, view_px })
+    }
+
     fn cam(&mut self, base_px: f64) -> Result<Camera, String> {
         let cell = self.addr()?;
         let off = [self.f64()?, self.f64()?];
