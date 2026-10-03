@@ -3,6 +3,13 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 // Copyright (c) 2026 OmegaGiven and contributors
 
+//! Compatibility, so older and newer apps and servers keep working
+//! together: a new kind of message gets a new tag (receivers ignore tags
+//! they do not know), and new fields only ever go at the end of a message
+//! (receivers read the fields they know and ignore the rest). Hello and
+//! Welcome carry the sender's protocol version ([`PROTOCOL`]; 0 when
+//! absent, from apps before it was added).
+//!
 //! Messages between OG Paper apps sharing a canvas live (see `net`), one
 //! per WebSocket (or data channel) frame. Little endian: a tag byte, then
 //! the fields in order. Strings are a u32 byte count + UTF-8; a version is
@@ -20,8 +27,16 @@
 //! - 7 Error: text (the sender closes after it)
 //! - 8 Need pictures: count u32, ids u64 (pictures a copy lacks)
 //! - 9 Pictures: count u32; each id u64, file as bytes
+//! - 10 List pages (to a server)
+//! - 11 Pages: count u32; each canvas u128, name, edit key, view key,
+//!   changed ms u64 (an empty edit key: this link only views)
+//! - 12 New page: name · 13 Rename page: canvas u128, name · 14 Delete
+//!   page: canvas u128
 
 use num_bigint::BigInt;
+
+/// This app's protocol version (see the compatibility rules above).
+pub const PROTOCOL: u16 = 1;
 use ogpaper_core::sync::Version;
 use ogpaper_core::CellAddr;
 
@@ -33,6 +48,7 @@ pub enum Msg {
         version: Version,
         key: String,
         name: String,
+        proto: u16,
     },
     Welcome {
         canvas: u128,
@@ -41,6 +57,7 @@ pub enum Msg {
         policy: u8,
         edit: bool,
         name: String,
+        proto: u16,
     },
     Changes(Vec<u8>),
     Presence {
@@ -64,6 +81,23 @@ pub enum Msg {
     NeedImages(Vec<u64>),
     /// Picture files: id (content hash) and bytes.
     Images(Vec<(u64, Vec<u8>)>),
+    ListPages,
+    Pages(Vec<PageInfo>),
+    NewPage(String),
+    RenamePage(u128, String),
+    DeletePage(u128),
+}
+
+/// One page a server hosts.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PageInfo {
+    pub canvas: u128,
+    pub name: String,
+    /// The page's edit key (empty when asked with a view link).
+    pub edit: String,
+    pub view: String,
+    /// When it last changed (ms since the Unix epoch).
+    pub changed: u64,
 }
 
 struct W(Vec<u8>);
@@ -118,6 +152,12 @@ impl R<'_> {
     fn u8(&mut self) -> Result<u8, String> {
         Ok(self.take(1)?[0])
     }
+    /// A field added later: 0 when the sender was older.
+    fn u16_or_0(&mut self) -> u16 {
+        self.take(2)
+            .map(|b| u16::from_le_bytes([b[0], b[1]]))
+            .unwrap_or(0)
+    }
     fn u32(&mut self) -> Result<u32, String> {
         Ok(u32::from_le_bytes(self.take(4)?.try_into().expect("4")))
     }
@@ -158,6 +198,7 @@ impl Msg {
                 version,
                 key,
                 name,
+                proto,
             } => {
                 w.u8(1);
                 w.u128(*canvas);
@@ -165,6 +206,7 @@ impl Msg {
                 w.str(&version.to_text());
                 w.str(key);
                 w.str(name);
+                w.0.extend_from_slice(&proto.to_le_bytes());
             }
             Msg::Welcome {
                 canvas,
@@ -173,6 +215,7 @@ impl Msg {
                 policy,
                 edit,
                 name,
+                proto,
             } => {
                 w.u8(2);
                 w.u128(*canvas);
@@ -181,6 +224,7 @@ impl Msg {
                 w.u8(*policy);
                 w.u8(*edit as u8);
                 w.str(name);
+                w.0.extend_from_slice(&proto.to_le_bytes());
             }
             Msg::Changes(b) => {
                 w.u8(3);
@@ -244,6 +288,31 @@ impl Msg {
                     w.bytes(b);
                 }
             }
+            Msg::ListPages => w.u8(10),
+            Msg::Pages(all) => {
+                w.u8(11);
+                w.u32(all.len() as u32);
+                for p in all {
+                    w.u128(p.canvas);
+                    w.str(&p.name);
+                    w.str(&p.edit);
+                    w.str(&p.view);
+                    w.u64(p.changed);
+                }
+            }
+            Msg::NewPage(name) => {
+                w.u8(12);
+                w.str(name);
+            }
+            Msg::RenamePage(c, name) => {
+                w.u8(13);
+                w.u128(*c);
+                w.str(name);
+            }
+            Msg::DeletePage(c) => {
+                w.u8(14);
+                w.u128(*c);
+            }
         }
         w.0
     }
@@ -257,6 +326,7 @@ impl Msg {
                 version: Version::parse(&r.str()?),
                 key: r.str()?,
                 name: r.str()?,
+                proto: r.u16_or_0(),
             },
             2 => Msg::Welcome {
                 canvas: r.u128()?,
@@ -265,6 +335,7 @@ impl Msg {
                 policy: r.u8()?,
                 edit: r.u8()? != 0,
                 name: r.str()?,
+                proto: r.u16_or_0(),
             },
             3 => Msg::Changes(r.bytes()?),
             4 => Msg::Presence {
@@ -320,6 +391,27 @@ impl Msg {
                 }
                 Msg::Images(all)
             }
+            10 => Msg::ListPages,
+            11 => {
+                let n = r.u32()? as usize;
+                if n > (b.len() - r.at) / 36 {
+                    return Err("short message".into());
+                }
+                let mut all = Vec::with_capacity(n);
+                for _ in 0..n {
+                    all.push(PageInfo {
+                        canvas: r.u128()?,
+                        name: r.str()?,
+                        edit: r.str()?,
+                        view: r.str()?,
+                        changed: r.u64()?,
+                    });
+                }
+                Msg::Pages(all)
+            }
+            12 => Msg::NewPage(r.str()?),
+            13 => Msg::RenamePage(r.u128()?, r.str()?),
+            14 => Msg::DeletePage(r.u128()?),
             t => return Err(format!("unknown message {t}")),
         })
     }
@@ -349,6 +441,7 @@ mod tests {
                 version: v.clone(),
                 key: "k3y".into(),
                 name: "Sam ✏".into(),
+                proto: PROTOCOL,
             },
             Msg::Welcome {
                 canvas: 5,
@@ -357,6 +450,7 @@ mod tests {
                 policy: 2,
                 edit: true,
                 name: "Plan".into(),
+                proto: 7,
             },
             Msg::Changes(vec![1, 2, 3]),
             Msg::Presence {
@@ -378,11 +472,40 @@ mod tests {
             Msg::Error("no".into()),
             Msg::NeedImages(vec![1, u64::MAX]),
             Msg::Images(vec![(7, vec![1, 2, 3]), (8, vec![])]),
+            Msg::ListPages,
+            Msg::Pages(vec![PageInfo {
+                canvas: 9 << 100,
+                name: "Plan ✏".into(),
+                edit: "eAB".into(),
+                view: "vCD".into(),
+                changed: 123,
+            }]),
+            Msg::NewPage("New".into()),
+            Msg::RenamePage(5, "R".into()),
+            Msg::DeletePage(6),
         ];
         for m in all {
             assert_eq!(Msg::decode(&m.encode()).unwrap(), m);
         }
         assert!(Msg::decode(&[3, 9, 0, 0, 0]).is_err());
+        // An older sender (no protocol field) and a newer one (fields
+        // added after it) both still read.
+        let mut old = Msg::Gone(9).encode();
+        old.extend_from_slice(b"future fields");
+        assert_eq!(Msg::decode(&old).unwrap(), Msg::Gone(9));
+        let hello = Msg::Hello {
+            canvas: 1,
+            peer: 2,
+            version: Version::default(),
+            key: "k".into(),
+            name: "n".into(),
+            proto: 3,
+        };
+        let b = hello.encode();
+        match Msg::decode(&b[..b.len() - 2]).unwrap() {
+            Msg::Hello { proto, .. } => assert_eq!(proto, 0),
+            _ => panic!(),
+        }
         assert!(Msg::decode(&[99]).is_err());
     }
 }

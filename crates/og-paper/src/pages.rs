@@ -1,0 +1,410 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+// Copyright (c) 2026 OmegaGiven and contributors
+
+//! Pages: the canvases on this device and on the servers you added.
+//!
+//! A server (see `hub`) is added once by its server link and kept in the
+//! prefs (`servers`, space separated). Its page list is fetched over a
+//! short sealed connection to its directory. Opening a server page keeps a
+//! copy on this device that remembers its link (`link.<canvas>` in the
+//! prefs), so opening that copy later reconnects by itself and your
+//! offline work goes up.
+//!
+//! On desktop the pages on this device are the canvas files in the OG Paper
+//! folder; the web page keeps one copy per canvas in browser storage and
+//! hands the list over (`og_set_pages`).
+
+#[cfg(not(target_arch = "wasm32"))]
+use std::path::PathBuf;
+
+use crate::net::{parse_link, Ev, Link};
+use crate::seal::Keys;
+use crate::ui::{LocalPage, ServerView};
+use crate::wire::{Msg, PageInfo};
+use crate::App;
+
+/// Connection ids for directory requests (server i uses DIR_CONN + i).
+pub const DIR_CONN: u64 = 1000;
+
+pub struct ServerConn {
+    pub link: Link,
+    keys: Keys,
+    pub pages: Vec<PageInfo>,
+    pub state: String,
+    /// The request to send once connected.
+    pending: Option<Msg>,
+    #[cfg(not(target_arch = "wasm32"))]
+    client: Option<crate::net::native::Client>,
+}
+
+/// The servers kept in the prefs.
+pub fn load_servers() -> Vec<ServerConn> {
+    crate::prefs::load()
+        .get("servers")
+        .map(|s| {
+            s.split_whitespace()
+                .filter_map(|l| {
+                    let link = parse_link(l)?;
+                    let keys = Keys::parse(&link.key)?;
+                    Some(ServerConn {
+                        link,
+                        keys,
+                        pages: Vec::new(),
+                        state: "Not checked yet".into(),
+                        pending: None,
+                        #[cfg(not(target_arch = "wasm32"))]
+                        client: None,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn save_servers(all: &[ServerConn]) {
+    let mut p = crate::prefs::load();
+    let v: Vec<String> = all
+        .iter()
+        .map(|s| format!("{}/?k={}", s.link.url, s.link.key))
+        .collect();
+    p.insert("servers".into(), v.join(" "));
+    crate::prefs::save(&p);
+}
+
+/// A server's short name: its host.
+fn host_of(url: &str) -> String {
+    url.split("://")
+        .nth(1)
+        .unwrap_or(url)
+        .split('/')
+        .next()
+        .unwrap_or(url)
+        .to_string()
+}
+
+/// Canvas files in the OG Paper folder, newest first (desktop).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn local_files() -> Vec<(PathBuf, String, u64)> {
+    let Some(dir) = crate::canvas_dir() else {
+        return Vec::new();
+    };
+    let mut out: Vec<(PathBuf, String, u64)> = std::fs::read_dir(dir)
+        .map(|rd| {
+            rd.flatten()
+                .map(|e| e.path())
+                .filter(|p| p.extension().is_some_and(|x| x == "ogp"))
+                .map(|p| {
+                    let t = std::fs::metadata(&p)
+                        .and_then(|m| m.modified())
+                        .ok()
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map_or(0, |d| d.as_millis() as u64);
+                    let name = p
+                        .file_stem()
+                        .map(|s| s.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    (p, name, t)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    out.sort_by(|a, b| b.2.cmp(&a.2));
+    out
+}
+
+impl App {
+    /// Open or close the Pages panel (listing what is here, and checking
+    /// the servers).
+    pub(crate) fn pages_toggle(&mut self) {
+        self.ui.pages_open = !self.ui.pages_open;
+        self.ui.menu = crate::ui::Menu::None;
+        if self.ui.pages_open {
+            if self.servers.is_empty() {
+                self.servers = load_servers();
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            self.refresh_local();
+            for i in 0..self.servers.len() {
+                self.server_request(i, Msg::ListPages);
+            }
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn refresh_local(&mut self) {
+        let current = self.file.as_ref().map(|f| f.path().to_path_buf());
+        self.local_paths.clear();
+        self.ui.local_pages = local_files()
+            .into_iter()
+            .map(|(p, name, t)| {
+                let page = LocalPage {
+                    key: String::new(),
+                    name,
+                    changed: t,
+                    current: current.as_ref() == Some(&p),
+                };
+                self.local_paths.push(p);
+                page
+            })
+            .collect();
+    }
+
+    /// What the panel shows of the servers.
+    pub(crate) fn server_views(&self) -> Vec<ServerView> {
+        self.servers
+            .iter()
+            .map(|s| ServerView {
+                name: host_of(&s.link.url),
+                state: s.state.clone(),
+                can_edit: s.keys.can_edit(),
+                pages: s
+                    .pages
+                    .iter()
+                    .map(|p| (p.name.clone(), p.changed, p.canvas == self.share.canvas))
+                    .collect(),
+            })
+            .collect()
+    }
+
+    /// Add a server by its link and list its pages.
+    pub(crate) fn add_server(&mut self, link: &str) {
+        let Some(l) = parse_link(link) else {
+            self.say("That is not a server link (it starts with ws:// or wss://)");
+            return;
+        };
+        let Some(keys) = Keys::parse(&l.key) else {
+            self.say("That link's key is incomplete: copy the whole server link");
+            return;
+        };
+        if self.servers.iter().any(|s| s.link.url == l.url) {
+            self.say("That server is already in the list");
+            return;
+        }
+        self.servers.push(ServerConn {
+            link: l,
+            keys,
+            pages: Vec::new(),
+            state: "Checking…".into(),
+            pending: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            client: None,
+        });
+        save_servers(&self.servers);
+        self.ui.add_server_text.clear();
+        self.server_request(self.servers.len() - 1, Msg::ListPages);
+    }
+
+    pub(crate) fn remove_server(&mut self, i: usize) {
+        if i < self.servers.len() {
+            self.servers.remove(i);
+            save_servers(&self.servers);
+        }
+    }
+
+    /// Send `m` to server `i`'s directory (it answers with the page list).
+    pub(crate) fn server_request(&mut self, i: usize, m: Msg) {
+        let Some(s) = self.servers.get_mut(i) else {
+            return;
+        };
+        s.pending = Some(m);
+        s.state = "Checking…".into();
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            s.client = Some(crate::net::native::Client::connect(s.link.url.clone()));
+        }
+        #[cfg(target_arch = "wasm32")]
+        crate::web::dir_connect(DIR_CONN + i as u64, &s.link.url);
+    }
+
+    /// Directory connections: take what came in (desktop polls here; the
+    /// web page's events come through `dir_event`).
+    pub(crate) fn pages_tick(&mut self) {
+        #[cfg(not(target_arch = "wasm32"))]
+        for i in 0..self.servers.len() {
+            let evs = self.servers[i]
+                .client
+                .as_ref()
+                .map(|c| c.poll())
+                .unwrap_or_default();
+            for e in evs {
+                let e = match e {
+                    Ev::Open(_) => Ev::Open(DIR_CONN + i as u64),
+                    Ev::Data(_, b) => Ev::Data(DIR_CONN + i as u64, b),
+                    Ev::Closed(_, w) => Ev::Closed(DIR_CONN + i as u64, w),
+                };
+                self.dir_event(e);
+            }
+        }
+    }
+
+    /// An event on a directory connection.
+    pub(crate) fn dir_event(&mut self, e: Ev) {
+        let conn = match &e {
+            Ev::Open(c) | Ev::Data(c, _) | Ev::Closed(c, _) => *c,
+        };
+        let i = (conn - DIR_CONN) as usize;
+        let Some(s) = self.servers.get_mut(i) else {
+            return;
+        };
+        match e {
+            Ev::Open(_) => {
+                if let Some(m) = s.pending.take() {
+                    let b = s.keys.seal(&m.encode(), true);
+                    self.dir_send(i, b);
+                }
+            }
+            Ev::Data(_, b) => {
+                if b == b"OG-PAPER:BAD-KEY" {
+                    s.state = "The server did not accept this link".into();
+                    return;
+                }
+                if let Some(Ok(Msg::Pages(list))) = s.keys.open(&b).map(|(p, _)| Msg::decode(&p)) {
+                    s.state = format!(
+                        "{} page{}",
+                        list.len(),
+                        if list.len() == 1 { "" } else { "s" }
+                    );
+                    s.pages = list;
+                    self.dir_close(i);
+                }
+            }
+            Ev::Closed(_, why) => {
+                if s.state == "Checking…" {
+                    s.state = format!("Could not reach it ({why})");
+                }
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    s.client = None;
+                }
+            }
+        }
+        self.redraw();
+    }
+
+    fn dir_send(&mut self, i: usize, b: Vec<u8>) {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(c) = self.servers.get(i).and_then(|s| s.client.as_ref()) {
+            c.send(b);
+        }
+        #[cfg(target_arch = "wasm32")]
+        crate::web::net_send(DIR_CONN + i as u64, b);
+    }
+
+    fn dir_close(&mut self, i: usize) {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(s) = self.servers.get_mut(i) {
+            s.client = None;
+        }
+        #[cfg(target_arch = "wasm32")]
+        crate::web::dir_close(DIR_CONN + i as u64);
+    }
+
+    /// The link that joins page `p` of server `i`.
+    fn page_link(&self, i: usize, p: usize) -> Option<(u128, String)> {
+        let s = self.servers.get(i)?;
+        let page = s.pages.get(p)?;
+        let key = if page.edit.is_empty() {
+            &page.view
+        } else {
+            &page.edit
+        };
+        Some((
+            page.canvas,
+            format!("{}/p/{:032x}?k={key}", s.link.url, page.canvas),
+        ))
+    }
+
+    /// Open a server page: this device's copy if it has one, connected to
+    /// the server (a new copy if not). The link is remembered so the copy
+    /// reconnects whenever it is opened.
+    pub(crate) fn open_server_page(&mut self, i: usize, p: usize) {
+        let Some((canvas, link)) = self.page_link(i, p) else {
+            return;
+        };
+        let mut prefs = crate::prefs::load();
+        prefs.insert(format!("link.{canvas:032x}"), link.clone());
+        crate::prefs::save(&prefs);
+        if canvas == self.share.canvas {
+            if self.net.is_none() {
+                self.join(&link);
+            }
+            return;
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let known = crate::prefs::load()
+                .get(&format!("file.{canvas:032x}"))
+                .map(PathBuf::from)
+                .filter(|p| p.exists());
+            match known {
+                // open_file reconnects by the remembered link.
+                Some(path) => self.open_file(path),
+                None => self.join(&link),
+            }
+            self.refresh_local();
+        }
+        // The page saves the open canvas, opens its copy if it has one,
+        // then joins.
+        #[cfg(target_arch = "wasm32")]
+        crate::web::open_shared(canvas, &link);
+        self.ui.pages_open = false;
+    }
+
+    /// The pages kept in this browser, from the page's JSON
+    /// (`[{"c": "<canvas hex>", "name": "…", "t": ms}]`).
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn web_pages(&mut self, json: &str) {
+        let me = format!("{:032x}", self.share.canvas);
+        let field = |obj: &str, name: &str| -> Option<String> {
+            let k = format!("\"{name}\":");
+            let i = obj.find(&k)? + k.len();
+            let rest = obj[i..].trim_start();
+            if let Some(r) = rest.strip_prefix('"') {
+                let mut out = String::new();
+                let mut esc = false;
+                for ch in r.chars() {
+                    match (esc, ch) {
+                        (true, c) => {
+                            out.push(c);
+                            esc = false;
+                        }
+                        (false, '\\') => esc = true,
+                        (false, '"') => break,
+                        (false, c) => out.push(c),
+                    }
+                }
+                Some(out)
+            } else {
+                Some(rest.split([',', '}']).next()?.trim().to_string())
+            }
+        };
+        self.ui.local_pages = json
+            .split('{')
+            .skip(1)
+            .filter_map(|obj| {
+                let key = field(obj, "c")?;
+                Some(LocalPage {
+                    current: key == me,
+                    name: field(obj, "name").unwrap_or_else(|| "Untitled".into()),
+                    changed: field(obj, "t").and_then(|t| t.parse().ok()).unwrap_or(0),
+                    key,
+                })
+            })
+            .collect();
+    }
+
+    /// Reconnect a canvas that was opened from a server, if it was.
+    pub(crate) fn reconnect_page(&mut self) {
+        if self.net.is_some() || self.headless {
+            return;
+        }
+        let link = crate::prefs::load()
+            .get(&format!("link.{:032x}", self.share.canvas))
+            .cloned();
+        if let Some(link) = link {
+            self.join(&link);
+        }
+    }
+}

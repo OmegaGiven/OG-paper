@@ -1,8 +1,10 @@
-# Headless OG Paper host: serves one canvas to OG Paper apps and browsers.
+# OG Paper server: hosts many pages for OG Paper apps and browsers.
 #   docker build -t og-paper .
-#   docker run -d -p 8991:8991 -v og-paper:/data og-paper
-# Links (with their keys) are printed in the container log; keys are kept
-# in /data so they stay the same across restarts.
+#   docker run -d --name og-paper -p 8991:8991 -v og-paper:/data og-paper
+# The server links (with their keys) are printed in the log:
+#   docker logs og-paper
+# Add one in the app under Pages > Add server. Pages, keys and the server
+# key live in /data. Set OGP_SERVER_KEY to choose the server key yourself.
 FROM rust:1-bookworm AS build
 WORKDIR /src
 COPY . .
@@ -15,6 +17,6 @@ COPY --from=build /src/target/release/og-paper /usr/local/bin/og-paper
 ENV HOME=/data
 VOLUME /data
 EXPOSE 8991
-# Add "--public", "wss://your.host" to the command so the links name the
-# address guests really use (a reverse proxy or Tailscale serve gives wss).
-CMD ["og-paper", "--serve", "/data/canvas.ogp", "--port", "8991"]
+# Add "--public", "wss://your.host" so the printed links name the address
+# people really use (a reverse proxy or Tailscale serve gives wss).
+CMD ["og-paper", "--serve-dir", "/data/pages", "--port", "8991"]

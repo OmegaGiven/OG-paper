@@ -25,6 +25,11 @@
 //!   replaced u128, stamp. A stamp is ms u64, n u32, peer u64. Then
 //!   optionally a flags byte: bit 0 = only the changes since a sync.
 //!
+//! Compatibility: a newer version may only add at the end (a new section
+//! after the last; never a field inside an existing record), so an older
+//! app reads a newer copy as far as it knows it. A version byte above this
+//! app's is read as this app's.
+//!
 //! A camera is addr, off f64 x2, scale f64. An addr is level i64 then x and y
 //! as (byte count u32, signed LE bytes).
 
@@ -275,9 +280,12 @@ pub fn decode(bytes: &[u8], base_px: f64) -> Result<Snapshot, String> {
         return Err("not an OG Paper snapshot".into());
     }
     let v = r.u8()?;
-    if !(1..=VERSION).contains(&v) {
+    if v == 0 {
         return Err(format!("unsupported snapshot version {v}"));
     }
+    // A newer copy: newer versions only add at the end, so read what this
+    // version knows and leave the rest.
+    let v = v.min(VERSION);
     let cam = r.cam(base_px)?;
     let n = r.u32()?;
     let mut scene = Scene::new();

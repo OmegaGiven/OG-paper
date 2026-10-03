@@ -10,6 +10,8 @@ fn main() {}
 /// `og-paper --serve canvas.ogp [--port N] [--public wss://host]` — hosts
 /// it with no window (`--public`: the address guests reach it by, for links).
 /// `og-paper --relay [--port N] [--data DIR]` — a relay for shared canvases.
+/// `og-paper --serve-dir DIR [--port N] [--public wss://host]` — a server
+/// for many pages (a NAS, a container).
 #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 fn main() {
     let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
@@ -19,6 +21,15 @@ fn main() {
             .and_then(|i| args.get(i + 1))
             .and_then(|p| p.to_str().map(String::from))
     };
+    if args.first().is_some_and(|a| a == "--serve-dir") {
+        let Some(dir) = args.get(1) else {
+            eprintln!("usage: og-paper --serve-dir DIR [--port N] [--public wss://host]");
+            std::process::exit(2);
+        };
+        let port = opt("--port").and_then(|p| p.parse().ok()).unwrap_or(8991);
+        og_paper::serve_dir(dir.into(), port, opt("--public"));
+        return;
+    }
     if args.first().is_some_and(|a| a == "--relay") {
         let port = opt("--port").and_then(|p| p.parse().ok()).unwrap_or(8993);
         let dir = opt("--data")

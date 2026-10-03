@@ -73,6 +73,10 @@ pub struct Host {
 pub enum HostLink {
     #[cfg(not(target_arch = "wasm32"))]
     Server(native::Server),
+    /// One page of a server hosting many: its connections come and go
+    /// through the server's shared listener (see `hub`).
+    #[cfg(not(target_arch = "wasm32"))]
+    Hub(native::Handle),
     #[cfg(target_arch = "wasm32")]
     Rtc,
 }
@@ -82,6 +86,8 @@ impl HostLink {
         match self {
             #[cfg(not(target_arch = "wasm32"))]
             HostLink::Server(s) => s.send(id, b),
+            #[cfg(not(target_arch = "wasm32"))]
+            HostLink::Hub(h) => h.send(id, b),
             #[cfg(target_arch = "wasm32")]
             HostLink::Rtc => crate::web::net_send(id, b),
         }
@@ -91,6 +97,8 @@ impl HostLink {
         match self {
             #[cfg(not(target_arch = "wasm32"))]
             HostLink::Server(s) => s.close(id),
+            #[cfg(not(target_arch = "wasm32"))]
+            HostLink::Hub(h) => h.close(id),
             #[cfg(target_arch = "wasm32")]
             HostLink::Rtc => crate::web::rtc_close(id),
         }
@@ -100,6 +108,8 @@ impl HostLink {
         match self {
             #[cfg(not(target_arch = "wasm32"))]
             HostLink::Server(s) => s.poll(),
+            #[cfg(not(target_arch = "wasm32"))]
+            HostLink::Hub(_) => Vec::new(),
             #[cfg(target_arch = "wasm32")]
             HostLink::Rtc => Vec::new(),
         }
@@ -109,6 +119,8 @@ impl HostLink {
         match self {
             #[cfg(not(target_arch = "wasm32"))]
             HostLink::Server(s) => s.stop(),
+            #[cfg(not(target_arch = "wasm32"))]
+            HostLink::Hub(_) => {}
             #[cfg(target_arch = "wasm32")]
             HostLink::Rtc => crate::web::emit("rtc-stop"),
         }
@@ -282,6 +294,38 @@ impl App {
         self.say(format!(
             "Hosting on port {port}: share a link from Share live"
         ));
+    }
+
+    /// Host this canvas as one page of a server (see `hub`): the server's
+    /// listener carries its connections. The page's keys are kept per
+    /// canvas like a desktop host's.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn host_attach(&mut self, link: native::Handle) {
+        self.net_stop();
+        let (edit_token, keys) = self.page_keys();
+        let view_token = keys.view_token();
+        let code = crate::prefs::load()
+            .get(&format!("policy.{:032x}", self.share.canvas))
+            .and_then(|v| v.parse::<u8>().ok())
+            .unwrap_or(0);
+        self.share.log.policy = Policy::from_code(code, self.share.clock.peer());
+        self.net = Some(Net {
+            role: Role::Host(Host {
+                port: 1,
+                edit_token,
+                view_token,
+                conns: HashMap::new(),
+                link: HostLink::Hub(link),
+            }),
+            keys,
+            pushed: 0,
+        });
+    }
+
+    /// This canvas's host keys (made and kept on first use).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn page_keys(&self) -> (String, crate::seal::Keys) {
+        page_keys_for(self.share.canvas)
     }
 
     /// Set the host's conflict policy (0 newest, 1 host wins, 2 guests win).
@@ -543,6 +587,13 @@ impl App {
     }
 
     pub(crate) fn net_event(&mut self, e: Ev) {
+        // The web page's directory connections (Pages) share this road.
+        #[cfg(target_arch = "wasm32")]
+        if matches!(&e, Ev::Open(c) | Ev::Data(c, _) | Ev::Closed(c, _) if *c >= crate::pages::DIR_CONN)
+        {
+            self.dir_event(e);
+            return;
+        }
         match e {
             Ev::Open(id) => {
                 if let Some(Net {
@@ -586,6 +637,7 @@ impl App {
                         "view".into()
                     },
                     name: crate::presence::my_name(),
+                    proto: crate::wire::PROTOCOL,
                 };
                 self.send(0, &hello);
             }
@@ -709,6 +761,7 @@ impl App {
                     policy: self.share.log.policy.code(),
                     edit,
                     name: self.ui.file_name.clone(),
+                    proto: crate::wire::PROTOCOL,
                 };
                 self.send(id, &welcome);
                 self.say(format!(
@@ -761,6 +814,7 @@ impl App {
                 policy,
                 edit,
                 name,
+                ..
             } => {
                 if canvas != self.share.canvas {
                     self.switch_to_shared(canvas, &name);
@@ -832,7 +886,7 @@ impl App {
                 self.redraw();
             }
             m @ (Msg::Presence { .. } | Msg::Wet { .. }) => self.peer_msg(&m),
-            Msg::Hello { .. } | Msg::NeedImages(_) | Msg::Images(_) => {}
+            _ => {}
         }
     }
 
@@ -1165,6 +1219,24 @@ impl App {
     }
 }
 
+/// A canvas's host keys, made and kept (in the prefs) on first use: the
+/// edit token and the keys.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn page_keys_for(canvas: u128) -> (String, crate::seal::Keys) {
+    let mut prefs = crate::prefs::load();
+    let k = format!("host.{canvas:032x}");
+    match prefs.get(&k).and_then(|t| crate::seal::Keys::parse(t)) {
+        Some(keys) if keys.can_edit() => (prefs[&k].clone(), keys),
+        _ => {
+            let t = crate::seal::Keys::edit_token(&crate::seal::random_secret());
+            prefs.insert(k, t.clone());
+            crate::prefs::save(&prefs);
+            let keys = crate::seal::Keys::parse(&t).expect("new key");
+            (t, keys)
+        }
+    }
+}
+
 /// The public web app (a host's browser link points at it).
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 const WEB_APP: &str = "https://omegagiven.github.io/OG-paper/app/";
@@ -1205,6 +1277,28 @@ pub(crate) mod native {
         rx: Receiver<Ev>,
         outs: Outs,
         stop: Arc<AtomicBool>,
+        /// The path each connection asked for (`/`, `/p/<canvas>`, …).
+        paths: Arc<Mutex<HashMap<u64, String>>>,
+    }
+
+    /// Sends to a server's connections (shared by the pages it hosts).
+    #[derive(Clone)]
+    pub struct Handle {
+        outs: Outs,
+    }
+
+    impl Handle {
+        pub fn send(&self, id: u64, b: Vec<u8>) {
+            if let Some(s) = self.outs.lock().expect("outs").get(&id) {
+                let _ = s.send(Out::Data(b));
+            }
+        }
+
+        pub fn close(&self, id: u64) {
+            if let Some(s) = self.outs.lock().expect("outs").get(&id) {
+                let _ = s.send(Out::Close);
+            }
+        }
     }
 
     impl Server {
@@ -1215,7 +1309,8 @@ pub(crate) mod native {
             let (tx, rx) = channel();
             let outs: Outs = Arc::default();
             let stop = Arc::new(AtomicBool::new(false));
-            let (o, s) = (outs.clone(), stop.clone());
+            let paths: Arc<Mutex<HashMap<u64, String>>> = Arc::default();
+            let (o, s, ps) = (outs.clone(), stop.clone(), paths.clone());
             std::thread::spawn(move || {
                 let next = AtomicU64::new(1);
                 while !s.load(Ordering::Relaxed) {
@@ -1224,10 +1319,11 @@ pub(crate) mod native {
                             let id = next.fetch_add(1, Ordering::Relaxed);
                             let (otx, orx) = channel();
                             o.lock().expect("outs").insert(id, otx);
-                            let (tx, o, s) = (tx.clone(), o.clone(), s.clone());
+                            let (tx, o, s, ps) = (tx.clone(), o.clone(), s.clone(), ps.clone());
                             std::thread::spawn(move || {
                                 let why = match accept(stream) {
-                                    Ok(ws) => {
+                                    Ok((ws, path)) => {
+                                        ps.lock().expect("paths").insert(id, path);
                                         let _ = tx.send(Ev::Open(id));
                                         pump(ws, id, &tx, &orx, &s)
                                     }
@@ -1235,6 +1331,7 @@ pub(crate) mod native {
                                 };
                                 o.lock().expect("outs").remove(&id);
                                 let _ = tx.send(Ev::Closed(id, why));
+                                ps.lock().expect("paths").remove(&id);
                             });
                         }
                         Err(e) if e.kind() == ErrorKind::WouldBlock => {
@@ -1249,7 +1346,19 @@ pub(crate) mod native {
                 rx,
                 outs,
                 stop,
+                paths,
             })
+        }
+
+        /// The path connection `id` asked for.
+        pub fn path(&self, id: u64) -> Option<String> {
+            self.paths.lock().expect("paths").get(&id).cloned()
+        }
+
+        pub fn handle(&self) -> Handle {
+            Handle {
+                outs: self.outs.clone(),
+            }
         }
 
         pub fn send(&self, id: u64, b: Vec<u8>) {
@@ -1276,16 +1385,23 @@ pub(crate) mod native {
         }
     }
 
-    fn accept(stream: TcpStream) -> Result<WebSocket<TcpStream>, String> {
+    /// The WebSocket handshake; the connection and the path it asked for.
+    fn accept(stream: TcpStream) -> Result<(WebSocket<TcpStream>, String), String> {
         stream.set_nonblocking(false).map_err(|e| e.to_string())?;
         stream
             .set_read_timeout(Some(Duration::from_secs(10)))
             .map_err(|e| e.to_string())?;
-        let ws = tungstenite::accept(stream).map_err(|e| e.to_string())?;
+        let mut path = String::from("/");
+        let cb = |req: &tungstenite::handshake::server::Request,
+                  resp: tungstenite::handshake::server::Response| {
+            path = req.uri().path().to_string();
+            Ok(resp)
+        };
+        let ws = tungstenite::accept_hdr(stream, cb).map_err(|e| e.to_string())?;
         ws.get_ref()
             .set_read_timeout(Some(Duration::from_millis(15)))
             .map_err(|e| e.to_string())?;
-        Ok(ws)
+        Ok((ws, path))
     }
 
     /// Move frames both ways until the connection ends; the reason.

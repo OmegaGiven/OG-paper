@@ -18,6 +18,8 @@ mod folder;
 mod font;
 mod hotbar;
 mod hotkeys;
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+mod hub;
 mod images;
 mod import;
 mod joints;
@@ -25,6 +27,7 @@ mod layout;
 mod library;
 mod net;
 mod objects;
+mod pages;
 mod pdf;
 mod prefs;
 mod presence;
@@ -138,6 +141,11 @@ pub struct App {
     follow: Option<u64>,
     /// Joined with a view link: looking, not changing.
     view_only: bool,
+    /// Servers added in Pages, with their page lists.
+    servers: Vec<pages::ServerConn>,
+    /// The files behind Pages' list of this device's pages (desktop).
+    #[cfg(not(target_arch = "wasm32"))]
+    local_paths: Vec<PathBuf>,
     /// Serving with no window (`--serve`): no view to share.
     headless: bool,
     /// The address guests use, when it is not this machine's own (a proxy,
@@ -236,6 +244,9 @@ impl App {
             sent: Default::default(),
             follow: None,
             view_only: false,
+            servers: Vec::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            local_paths: Vec::new(),
             headless: false,
             public_addr: None,
             #[cfg(not(target_arch = "wasm32"))]
@@ -708,6 +719,19 @@ impl App {
         }
     }
 
+    /// Note which file holds this canvas (Pages opens it from a server).
+    #[cfg(not(target_arch = "wasm32"))]
+    fn remember_file(&mut self) {
+        if let Some(f) = &self.file {
+            let mut p = prefs::load();
+            p.insert(
+                format!("file.{:032x}", self.share.canvas),
+                f.path().display().to_string(),
+            );
+            prefs::save(&p);
+        }
+    }
+
     /// Make sure the canvas has a file to save into (a new one in the
     /// OG Paper folder if it has none yet), holding everything so far.
     #[cfg(not(target_arch = "wasm32"))]
@@ -715,7 +739,8 @@ impl App {
         if self.file.is_some() {
             return;
         }
-        match default_path().and_then(|p| OgpFile::create(&p).map_err(|e| e.to_string())) {
+        let name = self.ui.file_name.clone();
+        match default_path_for(&name).and_then(|p| OgpFile::create(&p).map_err(|e| e.to_string())) {
             Ok(f) => {
                 if self.ui.file_name == "Untitled" {
                     self.ui.file_name = file_label(f.path());
@@ -726,6 +751,7 @@ impl App {
                 self.groups_saved = 0;
                 self.persist_groups();
                 self.persist_share();
+                self.remember_file();
             }
             Err(e) => self.say(format!("Could not create a file: {e}")),
         }
@@ -925,6 +951,8 @@ impl App {
                     self.persist_share();
                 }
                 self.folder_resume();
+                self.remember_file();
+                self.reconnect_page();
                 if let Some(f) = &self.file {
                     for (id, b) in f.images().unwrap_or_default() {
                         if let Ok(a) = images::load(b) {
@@ -1256,6 +1284,69 @@ impl App {
             #[cfg(target_arch = "wasm32")]
             Action::RelayShare => web::emit("relay-new"),
             Action::NewLinks => self.new_links(),
+            Action::PagesPanel => self.pages_toggle(),
+            Action::AddServer => {
+                let t = self.ui.add_server_text.clone();
+                self.add_server(&t);
+            }
+            Action::RemoveServer(i) => self.remove_server(i),
+            Action::RefreshServer(i) => self.server_request(i, wire::Msg::ListPages),
+            Action::NewServerPage(i) => {
+                let name = format!(
+                    "Page {}",
+                    self.servers.get(i).map_or(1, |s| s.pages.len() + 1)
+                );
+                self.server_request(i, wire::Msg::NewPage(name));
+            }
+            Action::OpenServerPage(i, p) => self.open_server_page(i, p),
+            #[cfg(not(target_arch = "wasm32"))]
+            Action::OpenLocal(i) => {
+                if let Some(p) = self.local_paths.get(i).cloned() {
+                    self.net_stop();
+                    self.open_file(p);
+                    self.refresh_local();
+                }
+            }
+            #[cfg(target_arch = "wasm32")]
+            Action::OpenLocal(i) => {
+                if let Some(key) = self.ui.local_pages.get(i).map(|p| p.key.clone()) {
+                    self.net_stop();
+                    web::page_request("open-page", &key);
+                }
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            Action::NewLocal => {
+                self.net_stop();
+                self.new_canvas();
+                self.refresh_local();
+            }
+            #[cfg(target_arch = "wasm32")]
+            Action::NewLocal => {
+                self.net_stop();
+                web::page_request("new-page", "");
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            Action::DeleteLocal(i) => {
+                if let Some(p) = self.local_paths.get(i).cloned() {
+                    if self.file.as_ref().is_some_and(|f| f.path() == p) {
+                        self.say("That page is open: open another one first");
+                    } else {
+                        let _ = std::fs::rename(&p, p.with_extension("ogp.deleted"));
+                        self.say("Page put aside (renamed .ogp.deleted in the OG Paper folder)");
+                        self.refresh_local();
+                    }
+                }
+            }
+            #[cfg(target_arch = "wasm32")]
+            Action::DeleteLocal(i) => {
+                if let Some(p) = self.ui.local_pages.get(i) {
+                    if p.current {
+                        self.say("That page is open: open another one first");
+                    } else {
+                        web::page_request("delete-page", &p.key);
+                    }
+                }
+            }
             Action::LivePanel => {
                 self.ui.live_open = !self.ui.live_open;
                 self.ui.menu = ui::Menu::None;
@@ -1794,6 +1885,7 @@ impl App {
             "cmd.picture" => self.action(Action::Picture),
             "cmd.import" => self.action(Action::Import),
             "cmd.merge" => self.action(Action::MergeCopy),
+            "cmd.pages" => self.action(Action::PagesPanel),
             "cmd.changes" => self.action(Action::SaveChanges),
             "cmd.folder" => self.action(Action::SyncFolder),
             "cmd.search" => self.action(Action::Search),
@@ -2097,6 +2189,7 @@ impl App {
                 | Cmd::Merge(..)
                 | Cmd::Folder(_)
                 | Cmd::Poke
+                | Cmd::Pages(_)
                 | Cmd::SearchGo(_)
                 | Cmd::Export(..)
                 | Cmd::BookmarkGo(_)
@@ -2117,6 +2210,7 @@ impl App {
                     Some(Ok(s)) => {
                         self.load_scene(s.scene, s.cam);
                         self.share = share::Share::loaded(&self.scene, s.share);
+                        self.reconnect_page();
                         self.timeline = s.timeline;
                         self.bookmarks = s.bookmarks;
                         self.objs = s.objs;
@@ -2223,6 +2317,7 @@ impl App {
             Cmd::Net(e) => self.net_event(e),
             Cmd::Join(link) => self.join(&link),
             Cmd::RtcHost(e) => self.host_start_rtc(e),
+            Cmd::Pages(json) => self.web_pages(&json),
             Cmd::RelayShare(key) => {
                 let addr = self.ui.relay_text.clone().unwrap_or_default();
                 self.relay_share(&addr, &key);
@@ -2338,7 +2433,7 @@ impl App {
             -99.0
         };
         web::set_status(format!(
-            "{{\"ready\":true,\"zoom\":{:.3},\"strokes\":{},\"drawn\":{},\"erased\":{},\"undos\":{},\"deepDraw\":{:.2},\"flying\":{},\"dirty\":{},\"bookmarks\":[{}],\"timeline\":{},\"dark\":{},\"canvas\":\"{:032x}\",\"peer\":\"{:016x}\",\"net\":{}}}",
+            "{{\"ready\":true,\"zoom\":{:.3},\"strokes\":{},\"drawn\":{},\"erased\":{},\"undos\":{},\"deepDraw\":{:.2},\"flying\":{},\"dirty\":{},\"bookmarks\":[{}],\"timeline\":{},\"dark\":{},\"canvas\":\"{:032x}\",\"peer\":\"{:016x}\",\"net\":{},\"name\":{}}}",
             self.cam.log10_zoom(),
             self.scene.strokes.iter().filter(|s| !s.deleted).count(),
             st.drawn,
@@ -2353,6 +2448,7 @@ impl App {
             self.share.canvas,
             self.share.clock.peer(),
             web::json_str(&self.live_info().map(|l| l.state).unwrap_or_default()),
+            web::json_str(&self.ui.file_name),
         ));
         if self.fly.is_some() {
             self.redraw();
@@ -2425,6 +2521,10 @@ impl App {
         self.ui.importing = self.import.is_some();
         self.net_tick();
         self.ui.live = self.live_info();
+        self.pages_tick();
+        if self.ui.pages_open {
+            self.ui.servers = self.server_views();
+        }
         #[cfg(not(target_arch = "wasm32"))]
         {
             self.ui.folder_on = self.folder.is_some();
@@ -2871,24 +2971,41 @@ fn load_user_fonts() {
     }
 }
 
-/// Where a new canvas is saved before you pick a name: ~/OG Paper/.
+/// The folder canvases are kept in (desktop: ~/OG Paper; Android: the
+/// app's storage).
 #[cfg(not(target_arch = "wasm32"))]
-fn default_path() -> Result<PathBuf, String> {
-    let dir = match DATA_DIR.get() {
-        // Android: the app's private storage.
+pub(crate) fn canvas_dir() -> Option<PathBuf> {
+    Some(match DATA_DIR.get() {
         Some(d) => d.join("canvases"),
         None => std::env::var_os("HOME")
             .or_else(|| std::env::var_os("USERPROFILE"))
-            .map(PathBuf::from)
-            .ok_or("no home directory")?
+            .map(PathBuf::from)?
             .join("OG Paper"),
-    };
+    })
+}
+
+/// A free file name in the canvas folder, from `name`.
+#[cfg(not(target_arch = "wasm32"))]
+fn default_path_for(name: &str) -> Result<PathBuf, String> {
+    let dir = canvas_dir().ok_or("no home directory")?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let base: String = name
+        .chars()
+        .map(|c| if "/\\:*?\"<>|".contains(c) { '-' } else { c })
+        .collect::<String>()
+        .trim()
+        .trim_end_matches(".ogp")
+        .to_string();
+    let base = if base.is_empty() {
+        "Untitled".into()
+    } else {
+        base
+    };
     for n in 1.. {
         let p = dir.join(if n == 1 {
-            "Untitled.ogp".to_string()
+            format!("{base}.ogp")
         } else {
-            format!("Untitled {n}.ogp")
+            format!("{base} {n}.ogp")
         });
         if !p.exists() {
             return Ok(p);
@@ -2933,6 +3050,13 @@ pub fn serve(path: PathBuf, port: u16, public: Option<String>) {
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
+}
+
+/// `og-paper --serve-dir DIR [--port N] [--public wss://host]`: host many
+/// pages (see `hub`).
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+pub fn serve_dir(dir: PathBuf, port: u16, public: Option<String>) {
+    hub::run(dir, port, public);
 }
 
 /// `og-paper --relay [--port N] [--data DIR]`: keep and pass on sealed

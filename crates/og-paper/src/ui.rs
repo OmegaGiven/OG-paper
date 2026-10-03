@@ -201,6 +201,28 @@ pub struct Overlay {
     pub labels: Vec<(Pos2, String, Color32, Option<Vec2>)>,
 }
 
+/// A page on this device, as Pages lists it.
+#[derive(Clone, Debug, Default)]
+pub struct LocalPage {
+    /// The web page's id for it (its canvas); empty on desktop.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    pub key: String,
+    pub name: String,
+    /// When it last changed (ms since the Unix epoch).
+    pub changed: u64,
+    pub current: bool,
+}
+
+/// A server in Pages: its name, how it is, and its pages (name, changed,
+/// open here).
+#[derive(Clone, Debug, Default)]
+pub struct ServerView {
+    pub name: String,
+    pub state: String,
+    pub can_edit: bool,
+    pub pages: Vec<(String, u64, bool)>,
+}
+
 /// What the Share live panel shows (from `net`).
 #[derive(Clone, Debug, Default)]
 pub struct LiveInfo {
@@ -276,6 +298,7 @@ pub enum AppItem {
     Changes,
     Folder,
     Live,
+    Pages,
     New,
     Open,
     Save,
@@ -309,6 +332,7 @@ impl AppItem {
             AppItem::Changes => "Save changes",
             AppItem::Folder => "Sync folder",
             AppItem::Live => "Share live",
+            AppItem::Pages => "Pages",
             AppItem::New => "New canvas",
             AppItem::Open => "Open",
             AppItem::Save => "Save copy",
@@ -341,6 +365,7 @@ impl AppItem {
             AppItem::Changes => Action::SaveChanges,
             AppItem::Folder => Action::SyncFolder,
             AppItem::Live => Action::LivePanel,
+            AppItem::Pages => Action::PagesPanel,
             AppItem::New => Action::New,
             AppItem::Open => Action::Open,
             AppItem::Save => Action::SaveAs,
@@ -416,6 +441,10 @@ pub struct UiState {
     pub live_open: bool,
     pub join_text: String,
     pub relay_text: Option<String>,
+    pub pages_open: bool,
+    pub local_pages: Vec<LocalPage>,
+    pub servers: Vec<ServerView>,
+    pub add_server_text: String,
     pub name_text: Option<String>,
     /// Hidden by the person (Settings): the tool button, the tool panel,
     /// the quick toolbar.
@@ -571,6 +600,7 @@ impl Default for UiState {
             message: None,
             touch_ui: false,
             app_items: vec![
+                AppItem::Pages,
                 AppItem::New,
                 AppItem::Open,
                 AppItem::Import,
@@ -606,6 +636,10 @@ impl Default for UiState {
             live_open: false,
             join_text: String::new(),
             relay_text: None,
+            pages_open: false,
+            local_pages: Vec::new(),
+            servers: Vec::new(),
+            add_server_text: String::new(),
             name_text: None,
             queued: Vec::new(),
             views: Default::default(),
@@ -871,6 +905,18 @@ pub enum Action {
     RelayShare,
     /// New keys: links handed out so far stop working.
     NewLinks,
+    /// Open or close Pages (this device's pages and the servers').
+    PagesPanel,
+    OpenLocal(usize),
+    NewLocal,
+    DeleteLocal(usize),
+    /// Add the server whose link is typed in Pages.
+    AddServer,
+    RemoveServer(usize),
+    RefreshServer(usize),
+    NewServerPage(usize),
+    /// Server, page.
+    OpenServerPage(usize, usize),
     /// Stop hosting, or leave a shared canvas.
     NetStop,
     /// Join by the link typed in Share live.
@@ -1098,6 +1144,9 @@ pub fn draw(ctx: &egui::Context, st: &mut UiState) -> Vec<Action> {
         if st.live_open && !on(&["live"]) && !on_fan {
             st.live_open = false;
         }
+        if st.pages_open && !on(&["pages"]) && !on_fan {
+            st.pages_open = false;
+        }
     }
     if st.layout_edit {
         layout_editor(ctx, st);
@@ -1290,6 +1339,9 @@ pub fn draw(ctx: &egui::Context, st: &mut UiState) -> Vec<Action> {
     }
     if st.live_open {
         live_panel(ctx, st, &mut actions);
+    }
+    if st.pages_open {
+        pages_panel(ctx, st, &mut actions);
     }
     actions.append(&mut st.queued);
 
@@ -3492,6 +3544,19 @@ fn app_icon(
                 }
             }
         }
+        AppItem::Pages => {
+            // A stack of pages.
+            line(&[vec2(-0.55, -0.95), vec2(0.75, -0.95), vec2(0.75, 0.55)]);
+            line(&[
+                vec2(-0.8, -0.7),
+                vec2(0.5, -0.7),
+                vec2(0.5, 0.9),
+                vec2(-0.8, 0.9),
+                vec2(-0.8, -0.7),
+            ]);
+            line(&[vec2(-0.5, -0.25), vec2(0.2, -0.25)]);
+            line(&[vec2(-0.5, 0.15), vec2(0.2, 0.15)]);
+        }
         AppItem::Live => {
             // Two people.
             p.circle_stroke(c + vec2(-0.4, -0.35) * s, s * 0.3, st);
@@ -5154,6 +5219,161 @@ fn brush_section(
 
 /// Settings > Hotkeys: every tool, look and command with its key; tap a key
 /// to change it (then press the new one), × to clear it.
+/// "5 min ago" and such.
+fn ago(ms: u64) -> String {
+    if ms == 0 {
+        return String::new();
+    }
+    let now = crate::timeline::now_ms().max(0) as u64;
+    let s = now.saturating_sub(ms) / 1000;
+    match s {
+        0..60 => "just now".into(),
+        60..3600 => format!("{} min ago", s / 60),
+        3600..86400 => format!("{} h ago", s / 3600),
+        _ => format!("{} days ago", s / 86400),
+    }
+}
+
+/// Pages: the pages on this device and on the servers added here.
+fn pages_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) {
+    let screen = ctx.content_rect();
+    let w = 420.0f32.min(screen.width() - 24.0);
+    egui::Area::new(Id::new("pages"))
+        .order(Order::Foreground)
+        .pivot(Align2::CENTER_CENTER)
+        .fixed_pos(screen.center())
+        .show(ctx, |ui| {
+            ui.style_mut().visuals = egui::Visuals::light();
+            egui::Frame::new()
+                .fill(FACE)
+                .stroke(Stroke::new(1.0, EDGE))
+                .corner_radius(12.0)
+                .inner_margin(12.0)
+                .shadow(egui::Shadow { offset: [0, 3], blur: 14, spread: 0, color: Color32::from_black_alpha(45) })
+                .show(ui, |ui| {
+                    ui.set_width(w);
+                    ui.horizontal(|ui| {
+                        ui.strong("Pages");
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button("×").on_hover_text("Close").clicked() {
+                                st.pages_open = false;
+                            }
+                        });
+                    });
+                    // Scroll only when the list is long (a scroll area sized
+                    // on an earlier, shorter list cuts off its foot).
+                    let rows = st.local_pages.len()
+                        + st.servers.iter().map(|s| s.pages.len() + 2).sum::<usize>()
+                        + 9;
+                    let max_h = screen.height() * 0.72;
+                    let tall = rows as f32 * 24.0 > max_h;
+                    let mut body = |ui: &mut egui::Ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new("On this device").strong());
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if ui.small_button("+ New page").clicked() {
+                                    actions.push(Action::NewLocal);
+                                }
+                            });
+                        });
+                        if st.local_pages.is_empty() {
+                            ui.label(egui::RichText::new("Nothing saved here yet").small().weak());
+                        }
+                        for (i, p) in st.local_pages.iter().enumerate() {
+                            ui.horizontal(|ui| {
+                                let name = if p.current {
+                                    egui::RichText::new(format!("{} (open)", p.name)).strong()
+                                } else {
+                                    egui::RichText::new(&p.name)
+                                };
+                                ui.label(name);
+                                ui.label(egui::RichText::new(ago(p.changed)).small().weak());
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    if !p.current {
+                                        if ui.small_button("Delete").clicked() {
+                                            actions.push(Action::DeleteLocal(i));
+                                        }
+                                        if ui.small_button("Open").clicked() {
+                                            actions.push(Action::OpenLocal(i));
+                                        }
+                                    }
+                                });
+                            });
+                        }
+                        ui.add_space(10.0);
+                        ui.label(egui::RichText::new("Servers").strong());
+                        if st.servers.is_empty() {
+                            ui.label(
+                                egui::RichText::new(
+                                    "Add a server (og-paper --serve-dir, e.g. on a NAS) by its server link to see and open its pages.",
+                                )
+                                .small()
+                                .weak(),
+                            );
+                        }
+                        for (i, s) in st.servers.iter().enumerate() {
+                            ui.add_space(4.0);
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new(&s.name).strong());
+                                ui.label(egui::RichText::new(&s.state).small().weak());
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    if ui.small_button("Remove").on_hover_text("Forget this server here (its pages stay on it)").clicked() {
+                                        actions.push(Action::RemoveServer(i));
+                                    }
+                                    if s.can_edit && ui.small_button("+ Page").clicked() {
+                                        actions.push(Action::NewServerPage(i));
+                                    }
+                                    if ui.small_button("↻").on_hover_text("Check again").clicked() {
+                                        actions.push(Action::RefreshServer(i));
+                                    }
+                                });
+                            });
+                            for (j, (name, changed, open)) in s.pages.iter().enumerate() {
+                                ui.horizontal(|ui| {
+                                    ui.add_space(12.0);
+                                    if *open {
+                                        ui.label(egui::RichText::new(format!("{name} (open)")).strong());
+                                    } else {
+                                        ui.label(name);
+                                    }
+                                    ui.label(egui::RichText::new(ago(*changed)).small().weak());
+                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                        if ui.small_button(if *open { "Connect" } else { "Open" }).clicked() {
+                                            actions.push(Action::OpenServerPage(i, j));
+                                        }
+                                    });
+                                });
+                            }
+                        }
+                        ui.add_space(8.0);
+                        ui.horizontal(|ui| {
+                            ui.add(
+                                egui::TextEdit::singleline(&mut st.add_server_text)
+                                    .hint_text("Server link (ws://… ?k=…)")
+                                    .desired_width(w - 80.0),
+                            );
+                            if ui.button("Add").clicked() && !st.add_server_text.trim().is_empty() {
+                                actions.push(Action::AddServer);
+                            }
+                        });
+                        ui.label(
+                            egui::RichText::new("Opening a server page keeps a copy here; it reconnects whenever you open it, and what you did offline goes up.")
+                                .small()
+                                .weak(),
+                        );
+                    };
+                    if tall {
+                        egui::ScrollArea::vertical()
+                            .id_salt("pages_scroll")
+                            .max_height(max_h)
+                            .show(ui, body);
+                    } else {
+                        body(ui);
+                    }
+                });
+        });
+}
+
 /// Share live: host this canvas or join one, who is here, the links.
 fn live_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) {
     let screen = ctx.content_rect();

@@ -35,6 +35,7 @@ every device, so old copies still merge.
 | Host this canvas | your desktop app, or `og-paper --serve` | yes | guests keep drawing; sync on reconnect | Share live |
 | Host in this browser | none (WebRTC) | yes | needs a new invite after a drop | Share live (web) |
 | Relay | `og-paper --relay` | yes | yes: changes wait at the relay | Share live > Share via relay |
+| Server (many pages, e.g. on a NAS) | `og-paper --serve-dir` or Docker | yes | yes: each page reconnects when opened | Settings ⚙ > Pages |
 
 ### Merge copy and Save changes
 
@@ -77,6 +78,24 @@ pastes it, both draw together over a WebRTC data channel. Public STUN is
 used to cross NATs; networks that need a relay (TURN) will not connect.
 Keep the host's tab open.
 
+### Server with many pages (NAS)
+
+```
+docker build -t og-paper .
+docker run -d --name og-paper -p 8991:8991 -v og-paper:/data og-paper
+docker logs og-paper        # shows the server links
+```
+
+or without Docker: `og-paper --serve-dir ./pages [--port 8991] [--public wss://host]`.
+
+The log prints two server links: one that can make, rename and delete pages,
+and a view-only one. In the app open Settings ⚙ > Pages, paste a server link
+under Servers and press Add. The server's pages appear; Open joins one and
+keeps a copy on this device, listed under "On this device". Opening that copy
+later reconnects by itself, so work done offline goes up. "+ Page" makes a
+new page on the server (with the editing link). Each page keeps its own
+keys; set `OGP_SERVER_KEY` to choose the server key yourself.
+
 ### Relay
 
 ```
@@ -100,6 +119,14 @@ on; it cannot read them.
   working.
 - Pictures travel on demand over live connections (each checked against its
   content hash); relays receive them inline.
+
+## Versions
+
+Older and newer apps, servers and copies keep working together: new kinds
+of message get new tags that older apps ignore, new fields are only ever
+added at the end of a message or copy (older apps read what they know), and
+hello messages carry a protocol version so a server can tell what it talks
+to. Links made before end-to-end sealing (plain hex keys) no longer work.
 
 ## Limits
 

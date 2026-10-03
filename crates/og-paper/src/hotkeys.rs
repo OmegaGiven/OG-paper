@@ -157,6 +157,7 @@ pub fn bindings() -> Vec<Binding> {
     for (id, label, d) in [
         ("cmd.undo", "Undo", Some("ctrl+z")),
         ("cmd.redo", "Redo", Some("ctrl+shift+z")),
+        ("cmd.pages", "Pages", None),
         ("cmd.new", "New canvas", Some("ctrl+n")),
         ("cmd.open", "Open", Some("ctrl+o")),
         ("cmd.save", "Save copy", Some("ctrl+s")),

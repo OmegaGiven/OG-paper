@@ -55,6 +55,8 @@ pub enum Cmd {
     RtcHost(String),
     /// Share through the relay in Share live with this new edit key.
     RelayShare(String),
+    /// The pages kept in this browser (JSON from the page).
+    Pages(String),
     /// Just wake up (a timer of the page's: the connection may retry).
     Poke,
     /// Export: format, only the selection, paper background.
@@ -104,6 +106,8 @@ thread_local! {
     static CHANGES: RefCell<Option<Vec<u8>>> = RefCell::default();
     static NET_URL: RefCell<String> = RefCell::default();
     static RTC_CLOSE: RefCell<Vec<u64>> = RefCell::default();
+    static DIR_REQ: RefCell<Vec<(u64, String)>> = RefCell::default();
+    static PAGE_REQ: RefCell<String> = RefCell::default();
     static NET_OUT: RefCell<std::collections::VecDeque<(u64, Vec<u8>)>> = RefCell::default();
     static SEARCH_OUT: RefCell<String> = RefCell::new("[]".into());
     static HAS_SELECTION: Cell<bool> = const { Cell::new(false) };
@@ -241,6 +245,7 @@ pub fn og_set_menu(items: &str) {
                 "changes" => AppItem::Changes,
                 "folder" => AppItem::Folder,
                 "live" => AppItem::Live,
+                "pages" => AppItem::Pages,
                 "dark" => AppItem::Dark,
                 "showtools" => AppItem::ShowTools,
                 "showpanel" => AppItem::ShowPanel,
@@ -365,6 +370,53 @@ pub fn net_close() {
 /// WebRTC channel; others: a hosted guest's channel).
 pub fn net_send(conn: u64, b: Vec<u8>) {
     NET_OUT.with(|o| o.borrow_mut().push_back((conn, b)));
+}
+
+/// Open a directory connection `conn` to a server (the page makes it).
+pub fn dir_connect(conn: u64, url: &str) {
+    DIR_REQ.with(|d| d.borrow_mut().push((conn, url.to_string())));
+    emit("dir-connect");
+}
+
+/// Close a directory connection.
+pub fn dir_close(conn: u64) {
+    RTC_CLOSE.with(|c| c.borrow_mut().push(conn));
+    emit("dir-close");
+}
+
+/// Directory connections to open: JSON `[[conn, url], …]`.
+#[wasm_bindgen]
+pub fn og_dir_requests() -> String {
+    let all = DIR_REQ.with(|d| std::mem::take(&mut *d.borrow_mut()));
+    let items: Vec<String> = all
+        .iter()
+        .map(|(c, u)| format!("[{c},{}]", json_str(u)))
+        .collect();
+    format!("[{}]", items.join(","))
+}
+
+/// Ask the page to open, start or delete a page (`what`), or open a
+/// server page's copy and join it (`open-shared`, with `arg` =
+/// `<canvas hex> <link>`).
+pub fn page_request(what: &'static str, arg: &str) {
+    PAGE_REQ.with(|p| *p.borrow_mut() = arg.to_string());
+    emit(what);
+}
+
+pub fn open_shared(canvas: u128, link: &str) {
+    page_request("open-shared", &format!("{canvas:032x} {link}"));
+}
+
+/// The argument of the last page request.
+#[wasm_bindgen]
+pub fn og_page_arg() -> String {
+    PAGE_REQ.with(|p| p.borrow().clone())
+}
+
+/// The pages kept in this browser: JSON `[{"c": canvas hex, "name", "t"}]`.
+#[wasm_bindgen]
+pub fn og_set_pages(json: String) {
+    push(Cmd::Pages(json));
 }
 
 /// Drop a hosted guest's WebRTC channel.

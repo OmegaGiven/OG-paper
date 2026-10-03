@@ -9,7 +9,7 @@ import init, {
   og_copy, og_paste_own, og_paste_image, og_paste_text, og_pdf_page,
   og_bookmark_add, og_bookmark_go, og_bookmark_remove, og_bookmark_rename, og_bookmark_to_bar,
   og_search, og_search_results, og_search_go, og_export, og_export_take, og_has_selection,
-  og_sticker_take, og_sticker_svg, og_sticker_place, og_import, og_merge, og_changes_take, og_merge_quiet, og_set_folder, og_net_url, og_net_take, og_net_open, og_net_recv, og_net_closed, og_join, og_poke, og_rtc_host, og_rtc_closing, og_view_token, og_relay_share,
+  og_sticker_take, og_sticker_svg, og_sticker_place, og_import, og_merge, og_changes_take, og_merge_quiet, og_set_folder, og_net_url, og_net_take, og_net_open, og_net_recv, og_net_closed, og_join, og_poke, og_rtc_host, og_rtc_closing, og_view_token, og_relay_share, og_dir_requests, og_page_arg, og_set_pages,
   og_timeline, og_timeline_range, og_timeline_restore, og_snapshot_request, og_snapshot_take,
 } from './pkg/og_paper.js';
 
@@ -462,7 +462,7 @@ export async function start({ mode = 'app' } = {}) {
   const standalone = matchMedia('(display-mode: fullscreen), (display-mode: standalone)').matches;
   const canFs = document.documentElement.requestFullscreen && !standalone;
   const syncMenu = () => {
-    const items = ['new', 'open', 'import', 'merge', 'changes', 'folder', 'live', 'save', 'export', 'paste', 'library', 'picture', 'search', 'bookmarks', 'timeline', 'home', 'grid', 'dark', 'diagram', 'layout', 'radialbar', 'showtools', 'showpanel', 'showbar', 'hotkeys'];
+    const items = ['new', 'open', 'import', 'merge', 'changes', 'folder', 'live', 'pages', 'save', 'export', 'paste', 'library', 'picture', 'search', 'bookmarks', 'timeline', 'home', 'grid', 'dark', 'diagram', 'layout', 'radialbar', 'showtools', 'showpanel', 'showbar', 'hotkeys'];
     if (canFs && !document.fullscreenElement) items.push('fullscreen');
     if (isTry) items.push('tour');
     og_set_menu(items.join(','));
@@ -591,7 +591,7 @@ export async function start({ mode = 'app' } = {}) {
   async function download() {
     const bytes = await snapshot(true);
     if (!bytes) return say('Could not take a copy — try again');
-    await idbPut(key, bytes);
+    await idbPut(isTry ? 'try' : 'page:' + status().canvas, bytes);
     const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-');
     const a = el('a', { download: `og-paper-${stamp}.ogpt` });
     a.href = URL.createObjectURL(new Blob([bytes], { type: 'application/octet-stream' }));
@@ -635,13 +635,35 @@ export async function start({ mode = 'app' } = {}) {
       setTimeout(og_poke, 3200);
     };
   }
+  // Pages: open a page kept in this browser (saving the open one first).
+  async function pageOpen(c) {
+    await autosave();
+    const bytes = await idbGet('page:' + c);
+    if (!bytes) return false;
+    og_load(bytes, false);
+    lsSet('og-page', c);
+    return true;
+  }
+  // Pages: short connections to servers' directories (ids from 1000).
+  const dirWs = {};
+  function dirOpen(c, url) {
+    try { dirWs[c]?.close(); } catch (e) {}
+    let w;
+    try { w = new WebSocket(url); } catch (e) { og_net_closed(c, String(e.message || e)); return; }
+    w.binaryType = 'arraybuffer';
+    dirWs[c] = w;
+    w.onopen = () => og_net_open(c);
+    w.onmessage = e => og_net_recv(c, new Uint8Array(e.data));
+    w.onclose = e => { if (dirWs[c] === w) delete dirWs[c]; og_net_closed(c, e.reason || (location.protocol === 'https:' && url.startsWith('ws:') ? 'an https page needs a wss:// address' : 'closed')); };
+  }
   // Frames come tagged with their connection: 0 is the WebSocket (or, for
   // a guest, its WebRTC channel); others are hosted guests' channels.
   function netFlush() {
     for (let b = og_net_take(); b; b = og_net_take()) {
       const conn = b[0] | (b[1] << 8) | (b[2] << 16) | (b[3] << 24);
       const frame = b.subarray(4);
-      if (conn === 0 && ws && ws.readyState === 1) ws.send(frame);
+      if (conn >= 1000) { if (dirWs[conn]?.readyState === 1) dirWs[conn].send(frame); }
+      else if (conn === 0 && ws && ws.readyState === 1) ws.send(frame);
       else if (rtc.chans[conn] && rtc.chans[conn].readyState === 'open') rtc.chans[conn].send(frame);
     }
   }
@@ -1139,8 +1161,19 @@ export async function start({ mode = 'app' } = {}) {
   });
   syncMenu();
   loadFonts();
-  const saved = await idbGet(key);
+  // Pages kept in this browser: one copy per canvas ('page:<canvas>'),
+  // listed in localStorage 'og-pages'; 'og-page' is the one last open.
+  let pages = isTry ? [] : (lsGet('og-pages') || []);
+  const pushPages = () => { if (!isTry) og_set_pages(JSON.stringify(pages)); };
+  let saved = null;
+  if (isTry) saved = await idbGet('try');
+  else {
+    const cur = lsGet('og-page');
+    if (cur) saved = await idbGet('page:' + cur);
+    if (!saved) saved = await idbGet('app'); // the single slot of before
+  }
   og_load(saved, isTry);
+  pushPages();
   if (isTry && !saved) {
     // First visit: open the tour once the canvas is up.
     setTimeout(() => { if (open === null) show('tour'); }, 600);
@@ -1158,8 +1191,18 @@ export async function start({ mode = 'app' } = {}) {
     if (saving) return;
     saving = true;
     const bytes = await snapshot(false);
-    if (bytes && await idbPut(key, bytes)) {
+    const st = status();
+    if (bytes && st.canvas && await idbPut(isTry ? 'try' : 'page:' + st.canvas, bytes)) {
       lastSave = Date.now();
+      if (!isTry) {
+        lsSet('og-page', st.canvas);
+        const p = pages.find(p => p.c === st.canvas);
+        if (p) { p.name = st.name; p.t = lastSave; }
+        else pages.unshift({ c: st.canvas, name: st.name, t: lastSave });
+        pages.sort((a, b) => b.t - a.t);
+        lsSet('og-pages', pages);
+        pushPages();
+      }
       savedNote.textContent = `Saved in this browser at ${new Date(lastSave).toLocaleTimeString()}.`;
     }
     saving = false;
@@ -1195,7 +1238,28 @@ export async function start({ mode = 'app' } = {}) {
       else if (r === 'rtc') show('rtc');
       else if (r === 'relay-new') og_relay_share(randKey());
       else if (r === 'rtc-stop') { rtcStop(); rtcKeys = null; }
-      else if (r === 'rtc-close') for (const c of og_rtc_closing()) { try { rtc.chans[c]?.close(); rtc.pcs[c]?.close(); } catch (e) {} }
+      else if (r === 'rtc-close' || r === 'dir-close') for (const c of og_rtc_closing()) {
+        try { rtc.chans[c]?.close(); rtc.pcs[c]?.close(); dirWs[c]?.close(); } catch (e) {}
+        delete dirWs[c];
+      }
+      else if (r === 'dir-connect') for (const [c, url] of JSON.parse(og_dir_requests())) dirOpen(c, url);
+      else if (r === 'open-page') pageOpen(og_page_arg());
+      else if (r === 'new-page') (async () => { await autosave(); og_blank(); })();
+      else if (r === 'delete-page') {
+        const c = og_page_arg();
+        pages = pages.filter(p => p.c !== c);
+        lsSet('og-pages', pages);
+        idbDel('page:' + c, 'canvases');
+        pushPages();
+      }
+      else if (r === 'open-shared') {
+        const [c, link] = og_page_arg().split(' ');
+        (async () => {
+          // A copy here opens (and reconnects by its remembered link);
+          // otherwise joining starts one.
+          if (!(await pageOpen(c))) og_join(link);
+        })();
+      }
       else if (r === 'merge') { importPicker.dataset.mode = 'merge'; importPicker.value = ''; importPicker.click(); }
       else if (r === 'new') newCanvas();
       else if (r === 'bookmarks') show('bookmarks');
