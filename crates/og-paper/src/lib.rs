@@ -17,6 +17,7 @@ mod font;
 mod hotbar;
 mod hotkeys;
 mod images;
+mod import;
 mod joints;
 mod layout;
 mod library;
@@ -94,6 +95,8 @@ enum Gesture {
     Select,
     /// A bucket tap: where it went down (fills on release, unless it moved).
     Bucket([f64; 2]),
+    /// Moving a canvas being imported.
+    Import,
 }
 
 pub struct App {
@@ -120,6 +123,8 @@ pub struct App {
     tl_from: usize,
     /// Animated flight to a view (bookmarks); any input cancels it.
     fly: Option<Camera>,
+    /// Another canvas being placed (Import), until placed or cancelled.
+    import: Option<import::Import>,
     /// A PDF being imported, a page per frame.
     pdf: Option<pdf::PdfJob>,
     /// A searched-for text being outlined: its group and when it started.
@@ -195,6 +200,7 @@ impl App {
             tl_view: None,
             tl_from: 0,
             fly: None,
+            import: None,
             pdf: None,
             flash: None,
             fly_last: Instant::now(),
@@ -390,6 +396,8 @@ impl App {
         self.fly = None;
         self.gesture = match self.ui.tool {
             _ if self.space => Gesture::Pan,
+            // Placing an import: any drag moves it.
+            _ if self.import.is_some() => Gesture::Import,
             Tool::Hand => Gesture::Pan,
             Tool::Eraser => Gesture::Erase,
             Tool::Picker => Gesture::Pick,
@@ -445,6 +453,7 @@ impl App {
                 self.view_changed();
             }
             Gesture::Pick => self.pick_preview(to),
+            Gesture::Import => self.import_drag(from, to),
             Gesture::Shape => self.shape_move(to),
             Gesture::Select => self.select_move(to),
             Gesture::Bucket(a) => {
@@ -715,6 +724,36 @@ impl App {
         self.redraw();
     }
 
+    /// Import another canvas file (.ogp, or a web copy .ogpt) to place.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn import_file(&mut self, path: PathBuf) {
+        let name = file_label(&path);
+        let is_copy = path.extension().is_some_and(|e| e == "ogpt");
+        if is_copy {
+            match std::fs::read(&path)
+                .map_err(|e| e.to_string())
+                .and_then(|b| snapshot::decode(&b, BASE_PX))
+            {
+                Ok(s) => self.import_begin(s.scene, s.objs, &name),
+                Err(e) => self.say(format!("Could not import {name}: {e}")),
+            }
+            return;
+        }
+        match OgpFile::open(&path) {
+            Ok((f, scene, _view, groups)) => {
+                let mut objs = groups_from_file(&scene, groups);
+                for (id, b) in f.images().unwrap_or_default() {
+                    if let Ok(a) = images::load(b) {
+                        objs.images.insert(id, a);
+                    }
+                }
+                drop(f);
+                self.import_begin(scene, objs, &name);
+            }
+            Err(e) => self.say(format!("Could not import {name}: {e}")),
+        }
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     fn open_file(&mut self, path: PathBuf) {
         self.save_view();
@@ -981,6 +1020,8 @@ impl App {
             Action::AddFont => web::emit("font"),
             #[cfg(target_arch = "wasm32")]
             Action::Picture => web::emit("picture"),
+            #[cfg(target_arch = "wasm32")]
+            Action::Import => web::emit("import"),
             #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
             Action::Picture => {
                 if let Some(p) = rfd::FileDialog::new()
@@ -995,6 +1036,17 @@ impl App {
             }
             #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
             Action::AddFont => self.add_font_dialog(),
+            #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+            Action::Import => {
+                if let Some(p) = rfd::FileDialog::new()
+                    .add_filter("OG Paper canvas", &["ogp", "ogpt"])
+                    .pick_file()
+                {
+                    self.import_file(p);
+                }
+            }
+            Action::ImportPlace => self.import_finish(true),
+            Action::ImportCancel => self.import_finish(false),
             #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
             Action::Open => {
                 if let Some(p) = rfd::FileDialog::new()
@@ -1341,6 +1393,14 @@ impl App {
                 self.sel_action(Action::EditText);
                 return true;
             }
+            Key::Named(NamedKey::Enter) if self.import.is_some() => {
+                self.import_finish(true);
+                return true;
+            }
+            Key::Named(NamedKey::Escape) if self.import.is_some() => {
+                self.import_finish(false);
+                return true;
+            }
             Key::Named(NamedKey::Escape) => {
                 // Menus first; then the selection.
                 if !self.ui.close_all() {
@@ -1492,6 +1552,7 @@ impl App {
             "cmd.export" => self.action(Action::Export),
             "cmd.paste" => self.action(Action::Paste),
             "cmd.picture" => self.action(Action::Picture),
+            "cmd.import" => self.action(Action::Import),
             "cmd.search" => self.action(Action::Search),
             "cmd.bookmarks" => self.action(Action::Bookmarks),
             "cmd.timeline" => self.action(Action::Timeline),
@@ -1789,6 +1850,7 @@ impl App {
                 | Cmd::TimelineRange(_)
                 | Cmd::Search
                 | Cmd::Sticker(..)
+                | Cmd::Import(_)
                 | Cmd::SearchGo(_)
                 | Cmd::Export(..)
                 | Cmd::BookmarkGo(_)
@@ -1907,6 +1969,10 @@ impl App {
                 web::set_search_results(format!("[{}]", json.join(",")));
             }
             Cmd::SearchGo(g) => self.search_go(g),
+            Cmd::Import(bytes) => match snapshot::decode(&bytes, BASE_PX) {
+                Ok(s) => self.import_begin(s.scene, s.objs, "that canvas"),
+                Err(e) => self.say(format!("Could not import that file: {e}")),
+            },
             Cmd::Sticker(bytes, at) => match library::Sticker::decode(&bytes) {
                 Ok(s) => {
                     let k = web_dpr() as f64;
@@ -2083,6 +2149,7 @@ impl App {
         self.ui.zoom_log10 = self.cam.log10_zoom();
         self.ui.timeline_on = self.tl_view.is_some();
         self.ui.can_undo = self.history.can_undo();
+        self.ui.importing = self.import.is_some();
         self.ui.can_redo = self.history.can_redo();
         self.ui.strokes = self.scene.strokes.iter().filter(|s| !s.deleted).count();
         self.sync_egui_fonts();

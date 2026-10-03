@@ -9,7 +9,7 @@ import init, {
   og_copy, og_paste_own, og_paste_image, og_paste_text, og_pdf_page,
   og_bookmark_add, og_bookmark_go, og_bookmark_remove, og_bookmark_rename, og_bookmark_to_bar,
   og_search, og_search_results, og_search_go, og_export, og_export_take, og_has_selection,
-  og_sticker_take, og_sticker_svg, og_sticker_place,
+  og_sticker_take, og_sticker_svg, og_sticker_place, og_import,
   og_timeline, og_timeline_range, og_timeline_restore, og_snapshot_request, og_snapshot_take,
 } from './pkg/og_paper.js';
 
@@ -462,7 +462,7 @@ export async function start({ mode = 'app' } = {}) {
   const standalone = matchMedia('(display-mode: fullscreen), (display-mode: standalone)').matches;
   const canFs = document.documentElement.requestFullscreen && !standalone;
   const syncMenu = () => {
-    const items = ['new', 'open', 'save', 'export', 'paste', 'library', 'picture', 'search', 'bookmarks', 'timeline', 'home', 'grid', 'dark', 'diagram', 'layout', 'radialbar', 'showtools', 'showpanel', 'showbar', 'hotkeys'];
+    const items = ['new', 'open', 'import', 'save', 'export', 'paste', 'library', 'picture', 'search', 'bookmarks', 'timeline', 'home', 'grid', 'dark', 'diagram', 'layout', 'radialbar', 'showtools', 'showpanel', 'showbar', 'hotkeys'];
     if (canFs && !document.fullscreenElement) items.push('fullscreen');
     if (isTry) items.push('tour');
     og_set_menu(items.join(','));
@@ -613,6 +613,15 @@ export async function start({ mode = 'app' } = {}) {
     og_load(bytes, false);
     openTimeline(false);
     say(`Loaded ${f.name}`);
+    show(null);
+  };
+  // ---- import: another saved copy, placed into this canvas ----
+  const importPicker = Object.assign(document.createElement('input'), { type: 'file', accept: '.ogpt', hidden: true, id: 'import-picker' });
+  document.body.append(importPicker);
+  importPicker.onchange = async () => {
+    const f = importPicker.files[0];
+    if (!f) return;
+    og_import(new Uint8Array(await f.arrayBuffer()));
     show(null);
   };
   // ---- text: a real textarea, so phones show their keyboard ----
@@ -934,6 +943,7 @@ export async function start({ mode = 'app' } = {}) {
     for (const r of JSON.parse(og_requests())) {
       if (r === 'save') download();
       else if (r === 'open') openCopy();
+      else if (r === 'import') { importPicker.value = ''; importPicker.click(); }
       else if (r === 'new') newCanvas();
       else if (r === 'bookmarks') show('bookmarks');
       else if (r === 'export') openExport();

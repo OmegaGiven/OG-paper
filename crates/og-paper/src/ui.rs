@@ -254,6 +254,7 @@ pub enum AppItem {
     /// Background grid: off, lines, dots.
     Grid,
     Dark,
+    Import,
     New,
     Open,
     Save,
@@ -282,6 +283,7 @@ impl AppItem {
             AppItem::ShowBar => "Quick toolbar",
             AppItem::Grid => "Grid",
             AppItem::Dark => "Dark mode",
+            AppItem::Import => "Import canvas",
             AppItem::New => "New canvas",
             AppItem::Open => "Open",
             AppItem::Save => "Save copy",
@@ -309,6 +311,7 @@ impl AppItem {
             AppItem::ShowBar => Action::ShowBar,
             AppItem::Grid => Action::Grid,
             AppItem::Dark => Action::Dark,
+            AppItem::Import => Action::Import,
             AppItem::New => Action::New,
             AppItem::Open => Action::Open,
             AppItem::Save => Action::SaveAs,
@@ -375,6 +378,8 @@ pub struct UiState {
     pub radial_bar: bool,
     /// Dark mode: the whole screen drawn with its lightness flipped.
     pub dark: bool,
+    /// Another canvas is being placed (shows Place / Cancel).
+    pub importing: bool,
     /// Hidden by the person (Settings): the tool button, the tool panel,
     /// the quick toolbar.
     pub hide_tools: bool,
@@ -531,6 +536,7 @@ impl Default for UiState {
             app_items: vec![
                 AppItem::New,
                 AppItem::Open,
+                AppItem::Import,
                 AppItem::Save,
                 AppItem::Export,
                 AppItem::Paste,
@@ -553,6 +559,7 @@ impl Default for UiState {
             hide_bar: false,
             radial_bar: false,
             dark: false,
+            importing: false,
             queued: Vec::new(),
             views: Default::default(),
             view_now: None,
@@ -799,6 +806,10 @@ pub enum Action {
     Redo,
     New,
     Open,
+    /// Bring another canvas in, to move and place.
+    Import,
+    ImportPlace,
+    ImportCancel,
     SaveAs,
     Home,
     // Selection.
@@ -978,6 +989,9 @@ pub fn draw(ctx: &egui::Context, st: &mut UiState) -> Vec<Action> {
     if st.layout_edit {
         layout_editor(ctx, st);
         return actions;
+    }
+    if st.importing {
+        import_bar(ctx, &mut actions);
     }
     let g = geo(ctx, st);
     let t = ctx.animate_bool_with_time(Id::new("tools_open"), st.menu == Menu::Tools, 0.12);
@@ -3331,6 +3345,17 @@ fn app_icon(
                 }
             }
         }
+        AppItem::Import => {
+            // An arrow down into a tray.
+            line(&[vec2(0.0, -0.95), vec2(0.0, 0.35)]);
+            line(&[vec2(-0.45, -0.1), vec2(0.0, 0.35), vec2(0.45, -0.1)]);
+            line(&[
+                vec2(-0.9, 0.3),
+                vec2(-0.9, 0.9),
+                vec2(0.9, 0.9),
+                vec2(0.9, 0.3),
+            ]);
+        }
         AppItem::Dark => {
             // A crescent moon.
             p.circle_filled(c, s * 0.85, INKY);
@@ -4652,6 +4677,42 @@ fn layout_editor(ctx: &egui::Context, st: &mut UiState) {
         p.insert("layout".into(), st.layout.encode());
         crate::prefs::save(&p);
     }
+}
+
+/// While another canvas is being placed: what to do, Place and Cancel.
+fn import_bar(ctx: &egui::Context, actions: &mut Vec<Action>) {
+    let screen = ctx.content_rect();
+    egui::Area::new(Id::new("import_bar"))
+        .order(Order::Tooltip)
+        .anchor(Align2::CENTER_TOP, vec2(0.0, 14.0))
+        .show(ctx, |ui| {
+            ui.style_mut().visuals = egui::Visuals::light();
+            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                ui.set_max_width((screen.width() - 2.0 * 76.0).clamp(200.0, 520.0));
+                ui.add(
+                    egui::Label::new(
+                        "Importing a canvas: drag to move it (pinch or scroll to zoom).",
+                    )
+                    .wrap(),
+                );
+                ui.horizontal(|ui| {
+                    if ui
+                        .button(egui::RichText::new("Place").strong())
+                        .on_hover_text("Put it here (Enter); undo removes it")
+                        .clicked()
+                    {
+                        actions.push(Action::ImportPlace);
+                    }
+                    if ui
+                        .button("Cancel")
+                        .on_hover_text("Leave it out (Esc)")
+                        .clicked()
+                    {
+                        actions.push(Action::ImportCancel);
+                    }
+                });
+            });
+        });
 }
 
 /// A preview of a brush: its dabs along a wave, drawn with egui shapes.

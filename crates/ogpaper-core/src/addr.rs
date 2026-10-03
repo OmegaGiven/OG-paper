@@ -114,6 +114,39 @@ impl CellAddr {
     pub fn side_in(&self, reference: &CellAddr) -> f64 {
         pow2(reference.level - self.level)
     }
+
+    /// This cell moved by (dx, dy) cells of level `level`: the cell of the
+    /// same level it lands in, and what is left over in its own cell units
+    /// (each in [0, 1)). Exact (nothing left over) when this cell is at
+    /// `level` or finer, however deep.
+    pub fn shifted(&self, dx: &BigInt, dy: &BigInt, level: Level) -> (CellAddr, [f64; 2]) {
+        let d = self.level - level;
+        if d >= 0 {
+            let s = d as u64;
+            let c = CellAddr {
+                level: self.level,
+                x: &self.x + (dx << s),
+                y: &self.y + (dy << s),
+            };
+            (c, [0.0, 0.0])
+        } else {
+            let s = (-d) as u64;
+            // Whole cells (rounded down) and the rest.
+            let split = |v: &BigInt| {
+                let q = v >> s;
+                let r = v - (&q << s);
+                (q, scaled(&r, d))
+            };
+            let (qx, fx) = split(dx);
+            let (qy, fy) = split(dy);
+            let c = CellAddr {
+                level: self.level,
+                x: &self.x + qx,
+                y: &self.y + qy,
+            };
+            (c, [fx, fy])
+        }
+    }
 }
 
 /// 2^e as f64 (saturates to 0 / inf far outside the f64 range).
@@ -154,6 +187,29 @@ fn scaled(v: &BigInt, e: i64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shifting_is_exact_when_finer_and_splits_when_coarser() {
+        // 3 + 1/4 cells of level 2, right; -1/2, up.
+        let (dx, dy) = (BigInt::from(13), BigInt::from(-2));
+        // A deep cell (level 40) moves by a whole number of its own cells.
+        let deep = CellAddr::new(40, 5, 5);
+        let (c, f) = deep.shifted(&dx, &dy, 4);
+        assert_eq!(f, [0.0, 0.0]);
+        assert_eq!(c.x, BigInt::from(5) + (BigInt::from(13) << 36u64));
+        assert_eq!(c.y, BigInt::from(5) - (BigInt::from(2) << 36u64));
+        // A level-2 cell: 13/4 = 3 + 1/4, and -2/4 = -1 + 1/2.
+        let coarse = CellAddr::new(2, 0, 0);
+        let (c, f) = coarse.shifted(&dx, &dy, 4);
+        assert_eq!(
+            (c.x.clone(), c.y.clone()),
+            (BigInt::from(3), BigInt::from(-1))
+        );
+        assert_eq!(f, [0.25, 0.5]);
+        // Either way the cell's origin lands in the same place.
+        let o = c.origin_in(&CellAddr::new(4, 0, 0));
+        assert_eq!([o[0] + f[0] * 4.0, o[1] + f[1] * 4.0], [13.0, -2.0]);
+    }
 
     #[test]
     fn parent_child_roundtrip_negative() {

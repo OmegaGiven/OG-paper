@@ -40,6 +40,8 @@ pub enum Cmd {
     SearchGo(u32),
     /// Place a library sticker (its bytes) at a point (CSS px) or the middle.
     Sticker(Vec<u8>, Option<[f64; 2]>),
+    /// Import another canvas (bytes of a `.ogpt` file) to place.
+    Import(Vec<u8>),
     /// Export: format, only the selection, paper background.
     Export(String, bool, bool),
     /// Make the moment shown in the timeline the current canvas (undoable).
@@ -215,6 +217,7 @@ pub fn og_set_menu(items: &str) {
                 "layout" => AppItem::Layout,
                 "hotkeys" => AppItem::Hotkeys,
                 "radialbar" => AppItem::RadialBar,
+                "import" => AppItem::Import,
                 "dark" => AppItem::Dark,
                 "showtools" => AppItem::ShowTools,
                 "showpanel" => AppItem::ShowPanel,
@@ -341,6 +344,13 @@ pub fn og_sticker_svg(bytes: Vec<u8>, px: f64) -> String {
     crate::library::Sticker::decode(&bytes)
         .map(|s| crate::export::sticker_svg(&s, px))
         .unwrap_or_default()
+}
+
+/// Import another canvas (bytes of a `.ogpt` file): it can be moved, then
+/// placed.
+#[wasm_bindgen]
+pub fn og_import(bytes: Vec<u8>) {
+    push(Cmd::Import(bytes));
 }
 
 /// Place a copy of a sticker at (x, y) CSS px, or the middle of the screen.

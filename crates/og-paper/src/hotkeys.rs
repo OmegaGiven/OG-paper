@@ -163,6 +163,7 @@ pub fn bindings() -> Vec<Binding> {
         ("cmd.export", "Export", Some("ctrl+e")),
         ("cmd.paste", "Paste", None),
         ("cmd.picture", "Insert picture / PDF", None),
+        ("cmd.import", "Import canvas", None),
         ("cmd.search", "Search text", Some("ctrl+f")),
         ("cmd.bookmarks", "Bookmarks", Some("ctrl+b")),
         ("cmd.timeline", "Timeline", Some("ctrl+h")),
