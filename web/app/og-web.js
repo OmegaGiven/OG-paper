@@ -90,7 +90,7 @@ const CSS = `
 .og-loading { position: fixed; inset: 0; z-index: 30; display: grid; place-items: center; background: #f5f3ec; color: #5d5d68;
   font: 15px system-ui, sans-serif; text-align: center; padding: 16px; }
 .og-text { position: fixed; z-index: 22; min-width: 160px; min-height: 1.4em; padding: 2px 4px; margin: -3px 0 0 -5px;
-  border: 1.5px dashed #466ee6; border-radius: 4px; background: rgba(255,255,255,.85); outline: none; resize: both;
+  border: 1.5px dashed #466ee6; border-radius: 4px; background: rgba(255,255,255,.85); outline: none; resize: none; overflow: hidden;
   font-family: "Comic Sans MS", "Segoe Print", system-ui, sans-serif; line-height: 1.25; color: #1c1c24; }
 .og-text-hint { position: fixed; z-index: 22; font: 12px system-ui, sans-serif; color: #5d5d68; background: #fcfbf8;
   border: 1px solid #d4d1c7; border-radius: 6px; padding: 2px 6px; }
@@ -642,7 +642,19 @@ export async function start({ mode = 'app' } = {}) {
       : 'Enter for a new line · Ctrl+Enter or tap away to finish · Esc to cancel');
     hint.style.left = `${req.x}px`;
     hint.style.top = `${Math.max(4, req.y - 26)}px`;
-    const grow = () => { area.style.height = 'auto'; area.style.height = `${area.scrollHeight + 2}px`; area.style.width = `${Math.max(160, Math.min(innerWidth - req.x - 12, area.scrollWidth + 24))}px`; };
+    // Fit the text: shrink first, then measure (scrollWidth never reports
+    // less than the current width, so measuring at the old width only grows).
+    const grow = () => {
+      const max = Math.max(160, innerWidth - req.x - 12);
+      area.style.width = '160px';
+      area.style.height = 'auto';
+      // Lines don't wrap until the box reaches the edge of the screen.
+      area.style.whiteSpace = 'pre';
+      const want = area.scrollWidth + 12;
+      if (want > max) area.style.whiteSpace = 'pre-wrap';
+      area.style.width = `${Math.min(max, Math.max(160, want))}px`;
+      area.style.height = `${area.scrollHeight + 2}px`;
+    };
     area.addEventListener('input', grow);
     area.addEventListener('keydown', e => {
       if (e.key === 'Escape') { e.preventDefault(); closeText(false); }
