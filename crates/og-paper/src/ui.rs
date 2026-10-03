@@ -44,7 +44,8 @@ pub enum Tool {
 }
 
 /// The tool fan, inner ring first.
-const TOOLS: [Tool; 11] = [
+/// The tool fan. (The color picker lives in every color dial instead.)
+const TOOLS: [Tool; 10] = [
     Tool::Pen,
     Tool::Texture,
     Tool::Highlighter,
@@ -54,7 +55,6 @@ const TOOLS: [Tool; 11] = [
     Tool::Lasso,
     Tool::Shapes,
     Tool::Text,
-    Tool::Picker,
     Tool::Hand,
 ];
 
@@ -542,6 +542,8 @@ pub struct UiState {
     pub bag_open: bool,
     /// A saved tool picked up in the inventory, to put in another slot.
     pub held: Option<Preset>,
+    /// The hold tool: what a right click, or a press and hold, uses.
+    pub hold: Option<Preset>,
     /// Where the tool being dragged came from (it goes back there if
     /// dropped off the slots).
     drag_src: Option<(Slots, usize)>,
@@ -683,6 +685,7 @@ impl Default for UiState {
             bar_rename: None,
             bag_open: false,
             held: None,
+            hold: None,
             drag_src: None,
             presets_dirty: false,
         }
@@ -789,6 +792,7 @@ impl UiState {
             .filter_map(|p| p.view)
             .collect();
         hotbar::Saved {
+            hold: self.hold,
             bars,
             active: self.active_bar,
             inv: self.inventory.clone(),
@@ -840,6 +844,7 @@ impl UiState {
         self.toolbars = s.bars;
         self.inventory = s.inv;
         self.views = s.views;
+        self.hold = s.hold;
     }
 
     /// Show toolbar `k` in the quick bar.
@@ -1387,6 +1392,8 @@ enum Slots {
     /// Toolbar k (the active one is `hotbar`).
     Row(usize),
     Inventory,
+    /// The hold tool (right click / press and hold).
+    Hold,
 }
 
 /// The quick bar (bottom middle) and, when its bag button is on, the
@@ -1403,8 +1410,8 @@ fn quick_bar(ctx: &egui::Context, st: &mut UiState, g: &Geo) {
     // else a row above them.
     let right = g.tool.x - g.r - 12.0;
     let left = screen.left() + m + if touch { 64.0 } else { 52.0 };
-    // The toolbar switcher and the slots.
-    let full = (hotbar::BAR + 1) as f32 * (s + gap);
+    // The toolbar switcher, the slots and the hold slot.
+    let full = (hotbar::BAR + 2) as f32 * (s + gap);
     let (n, y, cx) = if full <= right - left {
         let cx = screen
             .center()
@@ -1415,9 +1422,9 @@ fn quick_bar(ctx: &egui::Context, st: &mut UiState, g: &Geo) {
         let avail = screen.width() - 2.0 * m;
         if avail < full {
             // Fewer slots rather than slots too small to tap.
-            s = (avail / (hotbar::BAR + 1) as f32 - gap).max(if touch { 40.0 } else { 30.0 });
+            s = (avail / (hotbar::BAR + 2) as f32 - gap).max(if touch { 40.0 } else { 30.0 });
         }
-        let fit = ((avail / (s + gap)) as usize).saturating_sub(1);
+        let fit = ((avail / (s + gap)) as usize).saturating_sub(2);
         let n = fit.clamp(3, hotbar::BAR);
         (n, g.tool.y - g.r - 14.0 - s * 0.5, screen.center().x)
     };
@@ -1426,9 +1433,9 @@ fn quick_bar(ctx: &egui::Context, st: &mut UiState, g: &Geo) {
         Some(f) => {
             let avail = screen.width() - 2.0 * m;
             let fit = ((avail / (s + gap)) as usize)
-                .saturating_sub(1)
+                .saturating_sub(2)
                 .clamp(3, hotbar::BAR);
-            let row = (fit + 1) as f32 * (s + gap) - gap;
+            let row = (fit + 2) as f32 * (s + gap) - gap;
             let c = at_frac(screen, f, 0.0);
             (
                 fit,
@@ -1443,13 +1450,13 @@ fn quick_bar(ctx: &egui::Context, st: &mut UiState, g: &Geo) {
         None if st.layout.tool.is_some() => {
             let avail = screen.width() - 2.0 * m;
             let fit = ((avail / (s + gap)) as usize)
-                .saturating_sub(1)
+                .saturating_sub(2)
                 .clamp(3, hotbar::BAR);
             (fit, screen.bottom() - m - s * 0.5, screen.center().x)
         }
         None => (n, y, cx),
     };
-    let row = (n + 1) as f32 * (s + gap) - gap;
+    let row = (n + 2) as f32 * (s + gap) - gap;
     let x0 = cx - row * 0.5;
     let current = st.preset();
     let mut fx = SlotFx {
@@ -1485,9 +1492,9 @@ fn quick_bar(ctx: &egui::Context, st: &mut UiState, g: &Geo) {
         // Clear of the round buttons at the top and bottom.
         let avail = screen.height() - 2.0 * (pm + 2.0 * pr + 4.0 + 12.0);
         let fit = (((avail + gap) / (s + gap)) as usize)
-            .saturating_sub(1)
+            .saturating_sub(2)
             .clamp(3, hotbar::BAR);
-        let len = (fit + 1) as f32 * (s + gap) - gap;
+        let len = (fit + 2) as f32 * (s + gap) - gap;
         match st.layout.bar {
             // Moved (Edit layout): centred where it was put.
             Some(f) => {
@@ -1518,7 +1525,7 @@ fn quick_bar(ctx: &egui::Context, st: &mut UiState, g: &Geo) {
     let (side, stack) = if st.radial_bar && portrait {
         // Radial on a portrait screen: the toolbar list still opens as
         // columns from the left edge, the inventory beside them.
-        let len = (hotbar::BAR + 1) as f32 * (s + gap);
+        let len = (hotbar::BAR + 2) as f32 * (s + gap);
         (
             Side::Right,
             Rect::from_min_size(
@@ -1532,7 +1539,7 @@ fn quick_bar(ctx: &egui::Context, st: &mut UiState, g: &Geo) {
             Rect::from_center_size(g.bar, Vec2::splat(2.0 * g.r)),
         )
     } else if vertical {
-        let len = (n + 1) as f32 * (s + gap) - gap;
+        let len = (n + 2) as f32 * (s + gap) - gap;
         let wide = rows as f32 * (s + gap) - gap;
         let left = if leftward { col_x0 + s - wide } else { col_x0 };
         (
@@ -1542,7 +1549,7 @@ fn quick_bar(ctx: &egui::Context, st: &mut UiState, g: &Geo) {
     } else {
         (if up { Side::Above } else { Side::Below }, stack)
     };
-    // Where cell j (0 = number, 1..n = slots) of row ri goes.
+    // Where cell j (0 = number, 1..n = slots, n+1 = hold) of row ri goes.
     let cell = |ri: usize, j: usize| -> Pos2 {
         if vertical {
             let dx = ri as f32 * (s + gap);
@@ -1584,6 +1591,10 @@ fn quick_bar(ctx: &egui::Context, st: &mut UiState, g: &Geo) {
                         slot(ui, st, r, Slots::Row(k), i, &mut fx);
                     }
                 }
+                // The hold slot: the tool a right click or a press and hold
+                // uses (one for all toolbars).
+                let r = Rect::from_min_size(cell(0, n + 1), Vec2::splat(s));
+                slot(ui, st, r, Slots::Hold, 0, &mut fx);
             });
     }
     // The toolbar list, with the inventory reaching out from it.
@@ -2220,6 +2231,7 @@ fn slot_mut(st: &mut UiState, which: Slots, i: usize) -> &mut Option<Preset> {
         Slots::Row(k) if k == st.active_bar => &mut st.hotbar[i],
         Slots::Row(k) => &mut st.toolbars[k].slots[i],
         Slots::Inventory => &mut st.inventory[i],
+        Slots::Hold => &mut st.hold,
     }
 }
 
@@ -2279,6 +2291,22 @@ fn slot(ui: &mut egui::Ui, st: &mut UiState, rect: Rect, which: Slots, i: usize,
             Color32::from_gray(150),
         );
     }
+    if which == Slots::Hold {
+        // Marked apart from the numbered slots.
+        p.rect_stroke(
+            rect.shrink(2.5),
+            6.0,
+            Stroke::new(1.0, Color32::from_rgba_unmultiplied(200, 40, 90, 110)),
+            egui::StrokeKind::Inside,
+        );
+        p.text(
+            rect.left_top() + vec2(5.0, 3.0),
+            Align2::LEFT_TOP,
+            "H",
+            egui::FontId::proportional(9.0),
+            ACCENT,
+        );
+    }
     let view_name = item.and_then(|it| it.view).map(|v| {
         st.views
             .get(&v)
@@ -2301,20 +2329,36 @@ fn slot(ui: &mut egui::Ui, st: &mut UiState, rect: Rect, which: Slots, i: usize,
         _ => {}
     }
     if resp.clicked() {
-        if st.bag_open {
-            // Pick up / put down / swap.
+        if st.bag_open && st.held.is_some() {
+            // Put down (or swap with what is here) what is in hand.
             let held = st.held.take();
             st.held = std::mem::replace(slot_mut(st, which, i), held);
             fx.changed = true;
+        } else if st.bag_open && item.is_none() {
+            // An empty slot with nothing in hand: nothing to do.
         } else if let Some(it) = item {
             st.apply(&it);
         } else {
             *slot_mut(st, which, i) = Some(current);
             fx.changed = true;
-            fx.say = Some(format!("Saved {} to slot {}", describe(&current), i + 1));
+            fx.say = Some(if which == Slots::Hold {
+                format!(
+                    "Hold tool: {} (right click, or press and hold)",
+                    describe(&current)
+                )
+            } else {
+                format!("Saved {} to slot {}", describe(&current), i + 1)
+            });
         }
     }
     let tip = match &item {
+        _ if which == Slots::Hold => match &item {
+            Some(it) => format!(
+                "Hold tool: {} (right click, or press and hold, uses it)",
+                describe(it)
+            ),
+            None => "Hold tool: tap to make the current tool what a right click or a press and hold uses".into(),
+        },
         Some(_) if view_name.is_some() => {
             format!("Fly to {}", view_name.clone().unwrap_or_default())
         }

@@ -1093,7 +1093,20 @@ export async function start({ mode = 'app' } = {}) {
   }
   // The Paste button (phones and tablets have no Ctrl+V): read the
   // clipboard directly. Browsers ask permission or show a Paste prompt.
-  async function pasteButton() {
+  // iPhone / iPad Safari only lets a page read the clipboard inside a tap
+  // on a page element: Paste there goes through a "Tap to paste" button
+  // (stickers, photos and text copied on iOS all come in this way).
+  const isIOS = /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  cards.pasteNow = card('Paste');
+  cards.pasteNow.append(
+    el('p', {}, 'Tap below to paste what you copied (a sticker, photo, picture or text).'),
+    el('button', { class: 'og-btn primary wide', 'data-act': 'paste' }, 'Tap to paste'));
+  cards.pasteNow.querySelector('[data-act=paste]').onclick = () => { show(null); pasteButton(true); };
+  function pasteRequest() {
+    if (isIOS) show('pasteNow');
+    else pasteButton(false);
+  }
+  async function pasteButton(fromTap) {
     const mid = [innerWidth / 2, innerHeight / 2];
     if (!navigator.clipboard?.read && !navigator.clipboard?.readText) return say('This browser does not let pages read the clipboard — use Ctrl+V or Insert picture');
     try {
@@ -1118,6 +1131,8 @@ export async function start({ mode = 'app' } = {}) {
         else og_paste_text(text, mid[0], mid[1]);
       }
     } catch (e) {
+      // Refused outside a tap: offer the button that pastes inside one.
+      if (e?.name === 'NotAllowedError' && !fromTap) { show('pasteNow'); return; }
       // Permission refused or nothing readable: the app's own copy, if any.
       og_paste_own();
       if (e?.name === 'NotAllowedError') say('Clipboard access was blocked — allow it for this site, or use Ctrl+V');
@@ -1275,7 +1290,7 @@ export async function start({ mode = 'app' } = {}) {
       else if (r === 'export') openExport();
       else if (r === 'library') { if (open !== 'library') { libLoad(); show('library'); } else show(null); }
       else if (r === 'sticker') stickerSave();
-      else if (r === 'paste') pasteButton();
+      else if (r === 'paste') pasteRequest();
       else if (r === 'search') { if (open !== 'search') show('search'); sForm.q.focus(); sForm.q.select(); }
       else if (r === 'timeline') openTimeline(!tlOpen);
       else if (r === 'fullscreen') fullScreen();

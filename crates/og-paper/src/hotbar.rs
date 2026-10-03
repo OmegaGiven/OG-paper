@@ -15,7 +15,8 @@
 //! A tool is its key then its settings: for pens, color (RGBA hex), width,
 //! pressure (0/1), dash and opacity; for shapes and text, the hex of the same
 //! settings record a canvas file stores (see `snapshot.rs`). Version 1 files
-//! (one bar: `h slot tool…`) still load.
+//! (one bar: `h slot tool…`) still load. `x tool…` is the hold tool (older
+//! apps skip the line).
 
 use egui::Color32;
 use ogpaper_core::Dash;
@@ -48,6 +49,8 @@ pub struct Saved {
     pub inv: Vec<Option<Preset>>,
     /// Saved views that slots point at.
     pub views: std::collections::BTreeMap<u32, View>,
+    /// The hold tool (right click / press and hold).
+    pub hold: Option<Preset>,
 }
 
 /// Keep at least one empty row at the end of the inventory (and never less
@@ -166,9 +169,10 @@ pub fn defaults() -> Saved {
             ..Preset::tool(Tool::Shapes)
         }
     };
+    // Every tool once, in the tool fan's order.
     let bar = vec![
         Some(Preset::ink(Tool::Pen, black, 3.0, true, Dash::Solid)),
-        Some(Preset::ink(Tool::Pen, blue, 8.0, false, Dash::Solid)),
+        Some(Preset::tool(Tool::Texture)),
         Some(Preset::ink(
             Tool::Highlighter,
             Color32::from_rgb(255, 214, 0),
@@ -176,17 +180,21 @@ pub fn defaults() -> Saved {
             false,
             Dash::Solid,
         )),
-        Some(Preset::ink(Tool::Pen, red, 3.0, true, Dash::Solid)),
-        Some(Preset::ink(Tool::Pen, blue, 2.0, true, Dash::Solid)),
+        Some(Preset::tool(Tool::Bucket)),
+        Some(Preset::tool(Tool::Eraser)),
+        Some(Preset::tool(Tool::Select)),
+        Some(Preset::tool(Tool::Lasso)),
         Some(shape(ShapeKind::Rect, shapes::FillStyle::None)),
-        Some(shape(ShapeKind::Arrow, shapes::FillStyle::None)),
         Some(Preset {
             text: Some((TextStyle::default(), 24.0)),
             ..Preset::tool(Tool::Text)
         }),
-        Some(Preset::tool(Tool::Eraser)),
     ];
     let mut inv = vec![
+        Some(Preset::ink(Tool::Pen, blue, 8.0, false, Dash::Solid)),
+        Some(Preset::ink(Tool::Pen, red, 3.0, true, Dash::Solid)),
+        Some(Preset::ink(Tool::Pen, blue, 2.0, true, Dash::Solid)),
+        Some(shape(ShapeKind::Arrow, shapes::FillStyle::None)),
         Some(Preset::ink(Tool::Pen, green, 8.0, false, Dash::Solid)),
         Some(Preset::ink(Tool::Pen, red, 14.0, false, Dash::Solid)),
         Some(Preset::ink(
@@ -212,7 +220,6 @@ pub fn defaults() -> Saved {
         )),
         Some(shape(ShapeKind::Ellipse, shapes::FillStyle::Hachure)),
         Some(shape(ShapeKind::Diamond, shapes::FillStyle::Solid)),
-        Some(Preset::tool(Tool::Select)),
         Some(Preset::tool(Tool::Hand)),
         Some(Preset::cmd(SlotCmd::Undo)),
         Some(Preset::cmd(SlotCmd::Redo)),
@@ -249,6 +256,7 @@ pub fn defaults() -> Saved {
         active: 0,
         inv,
         views: Default::default(),
+        hold: None,
     }
 }
 
@@ -433,6 +441,9 @@ pub fn encode(saved: &Saved) -> String {
     for (id, v) in &saved.views {
         out += &format!("w {id} {} {}\n", v.cam, v.name.replace(['\n', '\r'], " "));
     }
+    if let Some(p) = &saved.hold {
+        out += &format!("x {}\n", put(p));
+    }
     out
 }
 
@@ -449,6 +460,7 @@ pub fn decode(text: &str) -> Option<Saved> {
     let mut inv: Vec<Option<Preset>> = Vec::new();
     let mut views = std::collections::BTreeMap::new();
     let mut active = 0;
+    let mut hold = None;
     let bar = |bars: &mut Vec<Toolbar>, b: usize| -> Option<()> {
         if b > 255 {
             return None;
@@ -504,6 +516,7 @@ pub fn decode(text: &str) -> Option<Saved> {
                     }
                 }
             }
+            (2, "x") => hold = get(rest),
             (2, "w") => {
                 let mut w = rest.splitn(3, ' ');
                 if let (Some(Ok(id)), Some(cam)) = (w.next().map(str::parse::<u32>), w.next()) {
@@ -543,6 +556,7 @@ pub fn decode(text: &str) -> Option<Saved> {
         active,
         inv,
         views,
+        hold,
     })
 }
 
@@ -589,6 +603,11 @@ mod tests {
         assert_eq!(decode(&text).unwrap(), saved);
         assert!(decode("nonsense").is_none());
         // A bad line leaves its slot empty.
+        // The hold tool round trips; older files simply have none.
+        let mut with_hold = defaults();
+        with_hold.hold = Some(Preset::tool(Tool::Text));
+        assert_eq!(decode(&encode(&with_hold)).unwrap().hold, with_hold.hold);
+        assert_eq!(decode("og-paper-hotbar 2\nb 0 A\n").unwrap().hold, None);
         let s3 = decode("og-paper-hotbar 2\nb 0 A\nh 0 2 pen ink zz\nh 0 4 eraser\n").unwrap();
         assert!(
             s3.bars[0].slots[2].is_none()

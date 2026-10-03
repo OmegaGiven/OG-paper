@@ -76,6 +76,8 @@ const ERASER_PT: f64 = 10.0;
 const PICK_PT: f64 = 8.0;
 /// How far (physical px) a finger may drift and still count as a tap.
 const TAP_SLOP_PT: f64 = 10.0;
+/// How long a still press takes to become the hold tool's.
+const HOLD: Duration = Duration::from_millis(450);
 
 fn dist(a: [f64; 2], b: [f64; 2]) -> f64 {
     (a[0] - b[0]).hypot(a[1] - b[1])
@@ -113,6 +115,10 @@ enum Gesture {
     /// A text tap: where it went down. Lifting without moving makes (or
     /// edits) a text there; moving first pans instead.
     Text([f64; 2]),
+    /// A touch with a hold tool set, not yet decided: held still for
+    /// `HOLD` it becomes the hold tool's gesture; moving or lifting first,
+    /// the normal tool's (from where it went down).
+    HoldWait([f64; 2], Instant, f32),
     /// Moving a canvas being imported.
     Import,
 }
@@ -144,6 +150,8 @@ pub struct App {
     follow: Option<u64>,
     /// Joined with a view link: looking, not changing.
     view_only: bool,
+    /// The tool to go back to when a hold-tool gesture ends.
+    hold_restore: Option<hotbar::Preset>,
     /// Servers added in Pages, with their page lists.
     servers: Vec<pages::ServerConn>,
     /// The files behind Pages' list of this device's pages (desktop).
@@ -247,6 +255,7 @@ impl App {
             sent: Default::default(),
             follow: None,
             view_only: false,
+            hold_restore: None,
             servers: Vec::new(),
             #[cfg(not(target_arch = "wasm32"))]
             local_paths: Vec::new(),
@@ -463,6 +472,29 @@ impl App {
         }
     }
 
+    /// Start a gesture with the hold tool (back to the current tool after).
+    fn begin_hold(&mut self, p: [f64; 2], pressure: f32) {
+        let Some(hold) = self.ui.hold else {
+            return self.begin(p, pressure);
+        };
+        if self.hold_restore.is_none() {
+            self.hold_restore = Some(self.ui.preset());
+        }
+        self.ui.apply(&hold);
+        self.begin(p, pressure);
+    }
+
+    /// Whether a touch should wait to see if it is a press and hold.
+    fn wait_for_hold(&self) -> bool {
+        self.ui
+            .hold
+            .is_some_and(|h| h.cmd.is_none() && h.view.is_none())
+            && !self.ui.menu_open()
+            && self.tl_view.is_none()
+            && !self.view_only
+            && !self.space
+    }
+
     fn begin(&mut self, p: [f64; 2], pressure: f32) {
         // A tap on the canvas while a menu is open only closes the menu.
         if self.ui.menu_open() {
@@ -548,6 +580,14 @@ impl App {
             Gesture::Bucket(a) => {
                 if dist(a, to) > TAP_SLOP_PT * self.ppp() {
                     self.gesture = Gesture::None;
+                }
+            }
+            // Moved before it was a hold: the normal tool, from the start.
+            Gesture::HoldWait(a, _, pr) => {
+                if dist(a, to) > TAP_SLOP_PT * self.ppp() {
+                    self.gesture = Gesture::None;
+                    self.begin(a, pr);
+                    self.moved(a, to, pressure);
                 }
             }
             // Past a tap's slop it is a pan, from where it went down.
@@ -674,6 +714,22 @@ impl App {
     }
 
     fn end(&mut self, cancel: bool) {
+        // Lifted before it was a hold: a tap with the normal tool.
+        if let Gesture::HoldWait(a, _, pr) = self.gesture {
+            self.gesture = Gesture::None;
+            if !cancel {
+                self.begin(a, pr);
+                return self.end(false);
+            }
+            return;
+        }
+        self.end_gesture(cancel);
+        if let Some(r) = self.hold_restore.take() {
+            self.ui.apply(&r);
+        }
+    }
+
+    fn end_gesture(&mut self, cancel: bool) {
         match self.gesture {
             Gesture::Ink if !cancel => self.ink_commit(),
             Gesture::Ink => self.wet.clear(),
@@ -1979,7 +2035,12 @@ impl App {
                 if self.touches.is_empty() {
                     self.touch_ink = Some(id);
                     self.multi_tap = None;
-                    self.begin(pos, pressure);
+                    if self.wait_for_hold() {
+                        self.fly = None;
+                        self.gesture = Gesture::HoldWait(pos, Instant::now(), pressure);
+                    } else {
+                        self.begin(pos, pressure);
+                    }
                 } else {
                     if self.touch_ink.take().is_some() {
                         // Second finger: the first touch becomes a pinch instead.
@@ -2645,6 +2706,15 @@ impl App {
         if let Some(g) = self.ui.search_pick.take() {
             self.search_go(g);
         }
+        // A still press long enough: the hold tool's gesture.
+        if let Gesture::HoldWait(a, t0, pr) = self.gesture {
+            if t0.elapsed() >= HOLD {
+                self.gesture = Gesture::None;
+                self.begin_hold(a, pr);
+            } else {
+                window.request_redraw();
+            }
+        }
         if self.merge_changes.as_ref().is_some_and(|c| c.live()) {
             window.request_redraw();
         } else {
@@ -2897,6 +2967,12 @@ impl ApplicationHandler for App {
             WindowEvent::MouseInput { state, button, .. } => match (state, button) {
                 (ElementState::Pressed, MouseButton::Left) if !consumed && !over_ui => {
                     self.begin(self.cursor, 1.0)
+                }
+                // A right click uses the hold tool, when one is set.
+                (ElementState::Pressed, MouseButton::Right)
+                    if !consumed && !over_ui && self.wait_for_hold() =>
+                {
+                    self.begin_hold(self.cursor, 1.0)
                 }
                 (ElementState::Pressed, MouseButton::Middle | MouseButton::Right) if !over_ui => {
                     self.fly = None;
