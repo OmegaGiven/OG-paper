@@ -57,6 +57,10 @@ pub enum Cmd {
     RelayShare(String),
     /// The pages kept in this browser (JSON from the page).
     Pages(String),
+    /// A plugin file to install (quietly: one kept from before).
+    Plugin(Vec<u8>, bool),
+    /// A pack file to install.
+    Pack(Vec<u8>),
     /// Just wake up (a timer of the page's: the connection may retry).
     Poke,
     /// Export: format, only the selection, paper background.
@@ -108,6 +112,7 @@ thread_local! {
     static RTC_CLOSE: RefCell<Vec<u64>> = RefCell::default();
     static DIR_REQ: RefCell<Vec<(u64, String)>> = RefCell::default();
     static PAGE_REQ: RefCell<String> = RefCell::default();
+    static PACK_STICKERS: RefCell<Vec<(String, Vec<u8>)>> = RefCell::default();
     static NET_OUT: RefCell<std::collections::VecDeque<(u64, Vec<u8>)>> = RefCell::default();
     static SEARCH_OUT: RefCell<String> = RefCell::new("[]".into());
     static HAS_SELECTION: Cell<bool> = const { Cell::new(false) };
@@ -246,6 +251,7 @@ pub fn og_set_menu(items: &str) {
                 "folder" => AppItem::Folder,
                 "live" => AppItem::Live,
                 "pages" => AppItem::Pages,
+                "plugins" => AppItem::Plugins,
                 "dark" => AppItem::Dark,
                 "showtools" => AppItem::ShowTools,
                 "showpanel" => AppItem::ShowPanel,
@@ -411,6 +417,39 @@ pub fn open_shared(canvas: u128, link: &str) {
 #[wasm_bindgen]
 pub fn og_page_arg() -> String {
     PAGE_REQ.with(|p| p.borrow().clone())
+}
+
+/// Install a plugin (`.wasm`); `quiet` for one kept from before.
+#[wasm_bindgen]
+pub fn og_plugin_install(bytes: Vec<u8>, quiet: bool) {
+    push(Cmd::Plugin(bytes, quiet));
+}
+
+/// Stickers from a pack, for the page to put in its library.
+pub fn pack_stickers(s: Vec<(String, Vec<u8>)>) {
+    if !s.is_empty() {
+        PACK_STICKERS.with(|p| p.borrow_mut().extend(s));
+        emit("pack-stickers");
+    }
+}
+
+/// The next pack sticker: its name, a tab, then its bytes (empty when none).
+#[wasm_bindgen]
+pub fn og_pack_sticker_take() -> Option<Vec<u8>> {
+    PACK_STICKERS.with(|p| {
+        p.borrow_mut().pop().map(|(n, b)| {
+            let mut v = n.into_bytes();
+            v.push(b'\t');
+            v.extend(b);
+            v
+        })
+    })
+}
+
+/// Install a pack (`.ogpack`).
+#[wasm_bindgen]
+pub fn og_pack_install(bytes: Vec<u8>) {
+    push(Cmd::Pack(bytes));
 }
 
 /// The pages kept in this browser: JSON `[{"c": canvas hex, "name", "t"}]`.

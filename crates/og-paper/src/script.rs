@@ -112,7 +112,7 @@ impl App {
         }
         if let Some(what) = c.get("get").and_then(Value::as_str) {
             return match what {
-                "texts" => Ok(json!({ "texts": self.texts(cam) })),
+                "texts" => Ok(json!({ "texts": self.texts_at(cam) })),
                 _ => Err(format!("unknown get: {what}")),
             };
         }
@@ -242,7 +242,7 @@ impl App {
     }
 
     /// Every text on the page, with where it is (home-view points).
-    fn texts(&self, cam: &Camera) -> Vec<Value> {
+    pub(crate) fn texts_at(&self, cam: &Camera) -> Vec<Value> {
         let ppc = cam.ppc();
         self.objs
             .groups

@@ -9,7 +9,7 @@ import init, {
   og_copy, og_paste_own, og_paste_image, og_paste_text, og_pdf_page,
   og_home, og_bookmark_add, og_bookmark_go, og_bookmark_remove, og_bookmark_rename, og_bookmark_to_bar,
   og_search, og_search_results, og_search_go, og_export, og_export_take, og_has_selection,
-  og_sticker_take, og_sticker_svg, og_sticker_place, og_import, og_merge, og_changes_take, og_merge_quiet, og_set_folder, og_net_url, og_net_take, og_net_open, og_net_recv, og_net_closed, og_join, og_poke, og_rtc_host, og_rtc_closing, og_view_token, og_relay_share, og_dir_requests, og_page_arg, og_set_pages,
+  og_sticker_take, og_sticker_svg, og_sticker_place, og_import, og_merge, og_changes_take, og_merge_quiet, og_set_folder, og_net_url, og_net_take, og_net_open, og_net_recv, og_net_closed, og_join, og_poke, og_rtc_host, og_rtc_closing, og_view_token, og_relay_share, og_dir_requests, og_page_arg, og_set_pages, og_plugin_install, og_pack_install, og_pack_sticker_take,
   og_timeline, og_timeline_range, og_timeline_restore, og_snapshot_request, og_snapshot_take,
 } from './pkg/og_paper.js';
 
@@ -471,7 +471,7 @@ export async function start({ mode = 'app' } = {}) {
   const standalone = matchMedia('(display-mode: fullscreen), (display-mode: standalone)').matches;
   const canFs = document.documentElement.requestFullscreen && !standalone;
   const syncMenu = () => {
-    const items = ['pages', 'new', 'open', 'import', 'merge', 'changes', 'folder', 'live', 'export', 'paste', 'library', 'picture', 'search', 'bookmarks', 'timeline', 'layout', 'diagram', 'hotkeys'];
+    const items = ['pages', 'new', 'open', 'import', 'merge', 'changes', 'folder', 'live', 'export', 'paste', 'library', 'picture', 'search', 'bookmarks', 'timeline', 'layout', 'plugins', 'diagram', 'hotkeys'];
     if (canFs && !document.fullscreenElement) items.push('fullscreen');
     if (isTry) items.push('tour');
     og_set_menu(items.join(','));
@@ -878,6 +878,26 @@ export async function start({ mode = 'app' } = {}) {
     if ((await kept.queryPermission({ mode: 'readwrite' })) === 'granted') await folderUse(kept, st.canvas);
     else say('Tap Sync folder to resume syncing this canvas');
   }, 1500);
+  // ---- plugins and packs: installed from files, kept in browser storage ----
+  const pluginPicker = el('input', { type: 'file', accept: '.wasm,.ogpack,application/wasm', hidden: '' });
+  root.append(pluginPicker);
+  pluginPicker.onchange = async () => {
+    const f = pluginPicker.files[0];
+    if (!f) return;
+    const bytes = new Uint8Array(await f.arrayBuffer());
+    if (/\.ogpack$/i.test(f.name)) { og_pack_install(bytes); return; }
+    // Kept once the app has read it and says its name ("plugin-store").
+    pendingPlugin = bytes;
+    og_plugin_install(bytes, false);
+  };
+  let pendingPlugin = null;
+  // The plugins kept from before (once the app has started).
+  async function loadPlugins() {
+    for (const name of lsGet('og-plugins') || []) {
+      const b = await idbGet('plugin:' + name);
+      if (b) og_plugin_install(b, true);
+    }
+  }
   // ---- import: another saved copy, placed into this canvas ----
   const importPicker = Object.assign(document.createElement('input'), { type: 'file', accept: '.ogpt', hidden: true, id: 'import-picker' });
   document.body.append(importPicker);
@@ -1198,6 +1218,7 @@ export async function start({ mode = 'app' } = {}) {
   }
   og_load(saved, isTry);
   pushPages();
+  loadPlugins();
   if (isTry && !saved) {
     // First visit: open the tour once the canvas is up.
     setTimeout(() => { if (open === null) show('tour'); }, 600);
@@ -1268,6 +1289,41 @@ export async function start({ mode = 'app' } = {}) {
       }
       else if (r === 'dir-connect') for (const [c, url] of JSON.parse(og_dir_requests())) dirOpen(c, url);
       else if (r === 'open-page') pageOpen(og_page_arg());
+      else if (r === 'plugin-pick') { pluginPicker.value = ''; pluginPicker.click(); }
+      else if (r === 'plugin-store' && pendingPlugin) {
+        const name = og_page_arg();
+        idbPut('plugin:' + name, pendingPlugin);
+        pendingPlugin = null;
+        const list = lsGet('og-plugins') || [];
+        if (!list.includes(name)) { list.push(name); lsSet('og-plugins', list); }
+      }
+      else if (r === 'plugin-remove') {
+        const name = og_page_arg();
+        const list = (lsGet('og-plugins') || []).filter(n => n !== name);
+        lsSet('og-plugins', list);
+        idbDel('plugin:' + name, 'canvases');
+      }
+      else if (r === 'pack-export') {
+        const b = og_changes_take();
+        if (b) {
+          const a = el('a', { download: 'My toolbars.ogpack' });
+          a.href = URL.createObjectURL(new Blob([b], { type: 'text/plain' }));
+          document.body.append(a);
+          a.click();
+          a.remove();
+          setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+        }
+      }
+      else if (r === 'pack-stickers') (async () => {
+        for (let b = og_pack_sticker_take(); b; b = og_pack_sticker_take()) {
+          const tab = b.indexOf(9);
+          const name = new TextDecoder().decode(b.subarray(0, tab));
+          const bytes = b.slice(tab + 1);
+          const id = 'pack-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+          await idbPut(id, { id, name: name || 'Sticker', bytes, t: Date.now() }, 'library');
+        }
+        libLoad();
+      })();
       else if (r === 'new-page') (async () => { await autosave(); og_blank(); })();
       else if (r === 'delete-page') {
         const c = og_page_arg();

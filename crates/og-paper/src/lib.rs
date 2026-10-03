@@ -27,8 +27,10 @@ mod layout;
 mod library;
 mod net;
 mod objects;
+mod pack;
 mod pages;
 mod pdf;
+mod plugin;
 mod prefs;
 mod presence;
 #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
@@ -153,6 +155,8 @@ pub struct App {
     view_only: bool,
     /// The tool to go back to when a hold-tool gesture ends.
     hold_restore: Option<hotbar::Preset>,
+    /// Installed plugins (see `plugin`).
+    plugins: Vec<plugin::Plugin>,
     /// Servers added in Pages, with their page lists.
     servers: Vec<pages::ServerConn>,
     /// The files behind Pages' list of this device's pages (desktop).
@@ -257,6 +261,7 @@ impl App {
             follow: None,
             view_only: false,
             hold_restore: None,
+            plugins: Vec::new(),
             servers: Vec::new(),
             #[cfg(not(target_arch = "wasm32"))]
             local_paths: Vec::new(),
@@ -1351,6 +1356,51 @@ impl App {
             Action::RelayShare => web::emit("relay-new"),
             Action::NewLinks => self.new_links(),
             Action::PagesPanel => self.pages_toggle(),
+            Action::PluginsPanel => {
+                self.ui.plugins_open = !self.ui.plugins_open;
+                self.ui.menu = ui::Menu::None;
+                self.plugins_to_ui();
+            }
+            Action::PluginPress(p, b) => self.plugin_press(p, b),
+            Action::PluginRemove(i) => self.plugin_remove(i),
+            #[cfg(target_arch = "wasm32")]
+            Action::PluginInstall => web::emit("plugin-pick"),
+            #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+            Action::PluginInstall => {
+                if let Some(p) = rfd::FileDialog::new()
+                    .add_filter("OG Paper plugin or pack", &["wasm", "ogpack"])
+                    .pick_file()
+                {
+                    match std::fs::read(&p) {
+                        Ok(b) if p.extension().is_some_and(|e| e == "ogpack") => {
+                            self.pack_install(&b)
+                        }
+                        Ok(b) => self.plugin_install(b, false),
+                        Err(e) => self.say(format!("Could not read it: {e}")),
+                    }
+                }
+            }
+            #[cfg(target_arch = "wasm32")]
+            Action::PackExport => {
+                web::set_changes(self.pack_export().into_bytes());
+                web::emit("pack-export");
+            }
+            #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+            Action::PackExport => {
+                if let Some(mut p) = rfd::FileDialog::new()
+                    .add_filter("OG Paper pack", &["ogpack"])
+                    .set_file_name("My toolbars.ogpack")
+                    .save_file()
+                {
+                    if p.extension().is_none() {
+                        p.set_extension("ogpack");
+                    }
+                    match std::fs::write(&p, self.pack_export()) {
+                        Ok(()) => self.say(format!("Saved your toolbars as {}", p.display())),
+                        Err(e) => self.say(format!("Could not save: {e}")),
+                    }
+                }
+            }
             Action::LayoutMenu => {
                 self.ui.layout_open = !self.ui.layout_open;
                 self.ui.menu = ui::Menu::None;
@@ -2290,6 +2340,7 @@ impl App {
                 | Cmd::Folder(_)
                 | Cmd::Poke
                 | Cmd::Pages(_)
+                | Cmd::Plugin(..)
                 | Cmd::SearchGo(_)
                 | Cmd::Export(..)
                 | Cmd::BookmarkGo(_)
@@ -2418,6 +2469,8 @@ impl App {
             Cmd::Join(link) => self.join(&link),
             Cmd::RtcHost(e) => self.host_start_rtc(e),
             Cmd::Pages(json) => self.web_pages(&json),
+            Cmd::Plugin(bytes, quiet) => self.plugin_install(bytes, quiet),
+            Cmd::Pack(bytes) => self.pack_install(&bytes),
             Cmd::RelayShare(key) => {
                 let addr = self.ui.relay_text.clone().unwrap_or_default();
                 self.relay_share(&addr, &key);
@@ -3138,6 +3191,7 @@ pub fn run_desktop(open: Option<PathBuf>) {
     let el = EventLoop::new().expect("event loop");
     el.set_control_flow(ControlFlow::Wait);
     let mut app = App::new(open);
+    app.plugins_load_saved();
     el.run_app(&mut app).expect("event loop");
 }
 
@@ -3250,5 +3304,6 @@ fn android_main(app: winit::platform::android::activity::AndroidApp) {
         .expect("event loop");
     el.set_control_flow(ControlFlow::Wait);
     let mut a = App::new(None);
+    a.plugins_load_saved();
     el.run_app(&mut a).expect("event loop");
 }

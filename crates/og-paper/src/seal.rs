@@ -36,7 +36,7 @@ fn derive(label: &str, secret: &[u8]) -> [u8; 32] {
     h.finalize().into()
 }
 
-fn b64(b: &[u8]) -> String {
+pub(crate) fn b64(b: &[u8]) -> String {
     const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
     let mut s = String::new();
     for c in b.chunks(3) {
@@ -50,7 +50,7 @@ fn b64(b: &[u8]) -> String {
     s
 }
 
-fn unb64(s: &str) -> Option<Vec<u8>> {
+pub(crate) fn unb64(s: &str) -> Option<Vec<u8>> {
     let val = |c: u8| -> Option<u32> {
         Some(match c {
             b'A'..=b'Z' => c - b'A',

@@ -201,6 +201,14 @@ pub struct Overlay {
     pub labels: Vec<(Pos2, String, Color32, Option<Vec2>)>,
 }
 
+/// An installed plugin, as Plugins lists it.
+#[derive(Clone, Debug, Default)]
+pub struct PluginView {
+    pub name: String,
+    pub info: String,
+    pub buttons: Vec<(i32, String)>,
+}
+
 /// A page on this device, as Pages lists it.
 #[derive(Clone, Debug, Default)]
 pub struct LocalPage {
@@ -301,6 +309,7 @@ pub enum AppItem {
     Live,
     Pages,
     LayoutMenu,
+    Plugins,
     New,
     Open,
     Save,
@@ -336,6 +345,7 @@ impl AppItem {
             AppItem::Live => "Share live",
             AppItem::Pages => "Pages",
             AppItem::LayoutMenu => "UI",
+            AppItem::Plugins => "Plugins",
             AppItem::New => "New canvas",
             AppItem::Open => "Open",
             AppItem::Save => "Save copy",
@@ -370,6 +380,7 @@ impl AppItem {
             AppItem::Live => Action::LivePanel,
             AppItem::Pages => Action::PagesPanel,
             AppItem::LayoutMenu => Action::LayoutMenu,
+            AppItem::Plugins => Action::PluginsPanel,
             AppItem::New => Action::New,
             AppItem::Open => Action::Open,
             AppItem::Save => Action::SaveAs,
@@ -447,6 +458,8 @@ pub struct UiState {
     pub relay_text: Option<String>,
     pub pages_open: bool,
     pub layout_open: bool,
+    pub plugins_open: bool,
+    pub plugins: Vec<PluginView>,
     pub local_pages: Vec<LocalPage>,
     pub servers: Vec<ServerView>,
     pub add_server_text: String,
@@ -625,6 +638,7 @@ impl Default for UiState {
                 AppItem::Home,
                 AppItem::Search,
                 AppItem::LayoutMenu,
+                AppItem::Plugins,
                 AppItem::Diagram,
                 AppItem::Hotkeys,
             ],
@@ -641,6 +655,8 @@ impl Default for UiState {
             relay_text: None,
             pages_open: false,
             layout_open: false,
+            plugins_open: false,
+            plugins: Vec::new(),
             local_pages: Vec::new(),
             servers: Vec::new(),
             add_server_text: String::new(),
@@ -919,6 +935,15 @@ pub enum Action {
     LayoutMenu,
     /// The background: 0 plain paper, 1 grid lines, 2 dots.
     SetGrid(u8),
+    /// Open or close Plugins.
+    PluginsPanel,
+    /// Pick a plugin (.wasm) or pack (.ogpack) to install.
+    PluginInstall,
+    /// Plugin, button id.
+    PluginPress(usize, i32),
+    PluginRemove(usize),
+    /// Save the toolbars and inventory as a pack.
+    PackExport,
     OpenLocal(usize),
     NewLocal,
     DeleteLocal(usize),
@@ -1164,6 +1189,9 @@ pub fn draw(ctx: &egui::Context, st: &mut UiState) -> Vec<Action> {
         if st.layout_open && !on(&["layout_menu"]) && !on_fan {
             st.layout_open = false;
         }
+        if st.plugins_open && !on(&["plugins"]) && !on_fan {
+            st.plugins_open = false;
+        }
     }
     if st.layout_edit {
         layout_editor(ctx, st);
@@ -1362,6 +1390,9 @@ pub fn draw(ctx: &egui::Context, st: &mut UiState) -> Vec<Action> {
     }
     if st.layout_open {
         layout_panel(ctx, st, &mut actions);
+    }
+    if st.plugins_open {
+        plugins_panel(ctx, st, &mut actions);
     }
     actions.append(&mut st.queued);
 
@@ -3728,6 +3759,18 @@ fn app_icon(
                 }
             }
         }
+        AppItem::Plugins => {
+            // A puzzle piece.
+            line(&[
+                vec2(-0.8, -0.3),
+                vec2(-0.8, 0.85),
+                vec2(0.8, 0.85),
+                vec2(0.8, -0.3),
+                vec2(0.25, -0.3),
+            ]);
+            line(&[vec2(-0.25, -0.3), vec2(-0.8, -0.3)]);
+            p.circle_stroke(c + vec2(0.0, -0.55) * s, s * 0.3, st);
+        }
         AppItem::LayoutMenu => {
             // Four tiles: a layout.
             p.rect_stroke(
@@ -5424,6 +5467,86 @@ fn brush_section(
 
 /// Settings > Hotkeys: every tool, look and command with its key; tap a key
 /// to change it (then press the new one), × to clear it.
+/// Plugins: their buttons, installing plugins and packs, sharing yours.
+fn plugins_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) {
+    let screen = ctx.content_rect();
+    let w = 380.0f32.min(screen.width() - 24.0);
+    egui::Area::new(Id::new("plugins"))
+        .order(Order::Foreground)
+        .pivot(Align2::CENTER_CENTER)
+        .fixed_pos(screen.center())
+        .show(ctx, |ui| {
+            ui.style_mut().visuals = egui::Visuals::light();
+            egui::Frame::new()
+                .fill(FACE)
+                .stroke(Stroke::new(1.0, EDGE))
+                .corner_radius(12.0)
+                .inner_margin(12.0)
+                .shadow(egui::Shadow { offset: [0, 3], blur: 14, spread: 0, color: Color32::from_black_alpha(45) })
+                .show(ui, |ui| {
+                    ui.set_width(w);
+                    ui.horizontal(|ui| {
+                        ui.strong("Plugins");
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button("×").on_hover_text("Close").clicked() {
+                                st.plugins_open = false;
+                            }
+                        });
+                    });
+                    if st.plugins.is_empty() {
+                        ui.label(
+                            egui::RichText::new("No plugins yet. A plugin adds buttons that draw or arrange things for you; it runs sealed off, with no access to your files or the network.")
+                                .small()
+                                .weak(),
+                        );
+                    }
+                    for (i, p) in st.plugins.iter().enumerate() {
+                        ui.add_space(6.0);
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new(&p.name).strong());
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if ui.small_button("Remove").clicked() {
+                                    actions.push(Action::PluginRemove(i));
+                                }
+                            });
+                        });
+                        if !p.info.is_empty() {
+                            ui.label(egui::RichText::new(&p.info).small().weak());
+                        }
+                        ui.horizontal_wrapped(|ui| {
+                            for (id, label) in &p.buttons {
+                                if ui.button(label).clicked() {
+                                    actions.push(Action::PluginPress(i, *id));
+                                }
+                            }
+                        });
+                    }
+                    ui.add_space(10.0);
+                    ui.horizontal(|ui| {
+                        if ui
+                            .button("Install plugin or pack…")
+                            .on_hover_text("A plugin (.wasm) adds buttons; a pack (.ogpack) adds toolbars, tools, brushes and stickers")
+                            .clicked()
+                        {
+                            actions.push(Action::PluginInstall);
+                        }
+                        if ui
+                            .button("Share my toolbars")
+                            .on_hover_text("Save your toolbars and inventory as a pack others can install")
+                            .clicked()
+                        {
+                            actions.push(Action::PackExport);
+                        }
+                    });
+                    ui.label(
+                        egui::RichText::new("Automations and other programs use the server's API instead (docs/PLUGINS.md).")
+                            .small()
+                            .weak(),
+                    );
+                });
+        });
+}
+
 /// UI: what shows on screen, dark mode, the paper, and Edit layout.
 fn layout_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) {
     let screen = ctx.content_rect();

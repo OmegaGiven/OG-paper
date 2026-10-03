@@ -1,0 +1,18 @@
+[package]
+name = "og-paper-starter-plugin"
+version = "1.0.0"
+edition = "2021"
+license = "MPL-2.0"
+description = "An example OG Paper plugin: a dot grid, a spiral and a text count"
+
+# Built on its own (not part of the app's workspace):
+#   cargo build --release --target wasm32-unknown-unknown
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[profile.release]
+opt-level = "s"
+lto = true
+panic = "abort"
