@@ -1748,6 +1748,7 @@ impl App {
                 | Cmd::SearchGo(_)
                 | Cmd::Export(..)
                 | Cmd::BookmarkGo(_)
+                | Cmd::BookmarkToBar(_)
                 | Cmd::Home
                 | Cmd::Menu(_)
                 | Cmd::Text(None)
@@ -1795,6 +1796,16 @@ impl App {
             }
             Cmd::BookmarkAdd(name) => self.bookmark_add(name),
             Cmd::BookmarkGo(i) => self.bookmark_go(i),
+            Cmd::BookmarkToBar(i) => {
+                if let Some(b) = self.bookmarks.get(i) {
+                    let v = hotbar::View {
+                        name: b.name.clone(),
+                        cam: hotbar::cam_text(&b.cam, b.view_px),
+                    };
+                    let m = self.ui.view_to_bar(v);
+                    self.say(m);
+                }
+            }
             Cmd::BookmarkRemove(i) => {
                 if i < self.bookmarks.len() {
                     self.bookmarks.remove(i);
@@ -2033,6 +2044,10 @@ impl App {
         let pointer_down = self.egui_ctx.input(|i| i.pointer.any_down());
         self.sync_sel_panel(pointer_down);
         self.build_overlay();
+        self.ui.view_now = Some(hotbar::View {
+            name: String::new(),
+            cam: hotbar::cam_text(&self.cam, self.view_px()),
+        });
         let raw = self.egui_io.as_mut().expect("egui").take_input(&window);
         let mut actions = Vec::new();
         let out = self
@@ -2044,6 +2059,15 @@ impl App {
             .output(&window, out.platform_output);
         for a in actions {
             self.action(a);
+        }
+        // A saved view tapped in the quick bar: fly there, framed as saved.
+        if let Some(c) = self.ui.fly_to.take() {
+            if let Some((mut target, view_px)) = hotbar::cam_parse(&c, self.cam.base_px) {
+                target.zoom_at(self.view_px() / view_px.max(1.0), [0.0, 0.0]);
+                self.fly = Some(target);
+                self.fly_last = Instant::now();
+                self.redraw();
+            }
         }
         if std::mem::take(&mut self.ui.presets_dirty) {
             hotbar::save(&self.ui.saved());

@@ -7,7 +7,7 @@
 import init, {
   og_load, og_demo, og_blank, og_status, og_requests, og_set_menu, og_text_request, og_text_done, og_font_add,
   og_copy, og_paste_own, og_paste_image, og_paste_text, og_pdf_page,
-  og_bookmark_add, og_bookmark_go, og_bookmark_remove, og_bookmark_rename,
+  og_bookmark_add, og_bookmark_go, og_bookmark_remove, og_bookmark_rename, og_bookmark_to_bar,
   og_search, og_search_results, og_search_go, og_export, og_export_take, og_has_selection,
   og_sticker_take, og_sticker_svg, og_sticker_place,
   og_timeline, og_timeline_range, og_timeline_restore, og_snapshot_request, og_snapshot_take,
@@ -576,6 +576,7 @@ export async function start({ mode = 'app' } = {}) {
       const name = prompt('Rename bookmark', cur);
       if (name) og_bookmark_rename(i, name);
     } else if (b.dataset.act === 'remove') og_bookmark_remove(i);
+    else if (b.dataset.act === 'bar') og_bookmark_to_bar(i);
   };
   let marksKey = '';
 
@@ -938,7 +939,7 @@ export async function start({ mode = 'app' } = {}) {
         if (before !== null && s.bookmarks.length > before) ownMarksFrom = Math.min(ownMarksFrom, before);
         markList.innerHTML = s.bookmarks.length
           ? s.bookmarks.map((b, i) => `<li data-i="${i}"><button class="go">${fmt(b.name)}<small>zoom ${zoomText(b.zoom)}</small></button>
-              <button class="mini" data-act="rename" title="Rename">Rename</button><button class="mini" data-act="remove" title="Delete" aria-label="Delete">✕</button></li>`).join('')
+              <button class="mini" data-act="bar" title="Put it in the quick toolbar">+ bar</button><button class="mini" data-act="rename" title="Rename">Rename</button><button class="mini" data-act="remove" title="Delete" aria-label="Delete">✕</button></li>`).join('')
           : '<li class="og-empty">No bookmarks yet.</li>';
       }
 

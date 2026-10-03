@@ -349,6 +349,11 @@ pub struct UiState {
     pub grid: GridMode,
     /// Diagram mode: lines and arrows stick to what they touch.
     pub diagram: bool,
+    /// Saved views in toolbar slots, the current view (filled in by the app
+    /// each frame) and a view to fly to (for the app).
+    pub views: std::collections::BTreeMap<u32, hotbar::View>,
+    pub view_now: Option<hotbar::View>,
+    pub fly_to: Option<String>,
     /// Hotkeys: the keymap, its menu, and the binding waiting for a key.
     pub keys: crate::hotkeys::Keymap,
     pub keys_open: bool,
@@ -505,6 +510,9 @@ impl Default for UiState {
                 AppItem::Layout,
                 AppItem::Hotkeys,
             ],
+            views: Default::default(),
+            view_now: None,
+            fly_to: None,
             keys: Default::default(),
             keys_open: false,
             key_capture: None,
@@ -576,8 +584,13 @@ impl UiState {
         p
     }
 
-    /// Switch to a saved tool.
+    /// Switch to a saved tool (or fly to a saved view).
     pub fn apply(&mut self, p: &Preset) {
+        if let Some(v) = p.view {
+            self.fly_to = self.views.get(&v).map(|v| v.cam.clone());
+            self.menu = Menu::None;
+            return;
+        }
         self.tool = p.tool;
         if let Some(ink) = p.ink {
             if let Some(dst) = ink_of(self, p.tool) {
@@ -605,10 +618,54 @@ impl UiState {
         if let Some(b) = bars.get_mut(self.active_bar) {
             b.slots = self.hotbar.clone();
         }
+        // Only the views some slot still points at.
+        let used: std::collections::HashSet<u32> = bars
+            .iter()
+            .flat_map(|b| b.slots.iter())
+            .chain(self.inventory.iter())
+            .flatten()
+            .filter_map(|p| p.view)
+            .collect();
         hotbar::Saved {
             bars,
             active: self.active_bar,
             inv: self.inventory.clone(),
+            views: self
+                .views
+                .iter()
+                .filter(|(k, _)| used.contains(k))
+                .map(|(k, v)| (*k, v.clone()))
+                .collect(),
+        }
+    }
+
+    /// Keep `v` as a saved view; its id, for a slot.
+    pub fn add_view(&mut self, v: hotbar::View) -> u32 {
+        let id = self.views.keys().next_back().map_or(1, |k| k + 1);
+        self.views.insert(id, v);
+        id
+    }
+
+    /// Put a saved view in the first empty slot of the active toolbar (else
+    /// the inventory). Where it went, for a message.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    pub fn view_to_bar(&mut self, v: hotbar::View) -> String {
+        let name = v.name.clone();
+        let p = Preset::view(self.add_view(v));
+        self.presets_dirty = true;
+        if let Some(k) = self.hotbar.iter().position(|x| x.is_none()) {
+            self.hotbar[k] = Some(p);
+            format!(
+                "{name} is on toolbar {}, slot {}",
+                self.active_bar + 1,
+                k + 1
+            )
+        } else {
+            // Full: in hand, with the inventory open, to drop on any slot.
+            self.held = Some(p);
+            self.bag_open = true;
+            self.bar_menu = false;
+            format!("Tap a slot to put {name} there")
         }
     }
 
@@ -620,6 +677,7 @@ impl UiState {
             .map_or_else(|| vec![None; hotbar::BAR], |b| b.slots.clone());
         self.toolbars = s.bars;
         self.inventory = s.inv;
+        self.views = s.views;
     }
 
     /// Show toolbar `k` in the quick bar.
@@ -1676,8 +1734,15 @@ fn slot(ui: &mut egui::Ui, st: &mut UiState, rect: Rect, which: Slots, i: usize,
             Color32::from_gray(150),
         );
     }
-    if let Some(it) = &item {
-        preset_icon(p, rect.center(), rect.width() * 0.5, it, &st.egui_fonts);
+    let view_name = item.and_then(|it| it.view).map(|v| {
+        st.views
+            .get(&v)
+            .map_or("A view".to_string(), |v| v.name.clone())
+    });
+    match (&item, &view_name) {
+        (Some(_), Some(name)) => view_icon(p, rect.center(), rect.width() * 0.5, name),
+        (Some(it), None) => preset_icon(p, rect.center(), rect.width() * 0.5, it, &st.egui_fonts),
+        _ => {}
     }
     if resp.clicked() {
         if st.bag_open {
@@ -1694,6 +1759,9 @@ fn slot(ui: &mut egui::Ui, st: &mut UiState, rect: Rect, which: Slots, i: usize,
         }
     }
     let tip = match &item {
+        Some(_) if view_name.is_some() => {
+            format!("Fly to {}", view_name.clone().unwrap_or_default())
+        }
         Some(it) => describe(it),
         None if st.bag_open => "Empty".into(),
         None => "Empty: tap to save the current tool here".into(),
@@ -1704,6 +1772,22 @@ fn slot(ui: &mut egui::Ui, st: &mut UiState, rect: Rect, which: Slots, i: usize,
             *slot_mut(st, which, i) = Some(current);
             fx.changed = true;
             ui.close();
+        }
+        if let Some(v) = st.view_now.clone() {
+            if ui
+                .button("Save this view here")
+                .on_hover_text("Tap the slot later to fly back")
+                .clicked()
+            {
+                let n = st.views.len() + 1;
+                let id = st.add_view(hotbar::View {
+                    name: format!("View {n}"),
+                    ..v
+                });
+                *slot_mut(st, which, i) = Some(Preset::view(id));
+                fx.changed = true;
+                ui.close();
+            }
         }
         if item.is_some() && ui.button("Empty this slot").clicked() {
             *slot_mut(st, which, i) = None;
@@ -4414,4 +4498,36 @@ fn hotkeys_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action
     if changed {
         actions.push(Action::SaveKeys);
     }
+}
+
+/// A saved view in a slot: a bookmark ribbon with the name's first letter.
+fn view_icon(p: &egui::Painter, c: Pos2, r: f32, name: &str) {
+    let s = r * 0.55;
+    let pts = vec![
+        c + vec2(-0.6, -1.0) * s,
+        c + vec2(0.6, -1.0) * s,
+        c + vec2(0.6, 1.0) * s,
+        c + vec2(0.0, 0.55) * s,
+        c + vec2(-0.6, 1.0) * s,
+    ];
+    p.add(Shape::convex_polygon(
+        pts.clone(),
+        Color32::from_rgb(255, 236, 200),
+        Stroke::NONE,
+    ));
+    let mut closed = pts;
+    closed.push(closed[0]);
+    p.add(Shape::line(closed, Stroke::new(1.3, ACCENT)));
+    let letter: String = name
+        .chars()
+        .find(|c| c.is_alphanumeric())
+        .map(|c| c.to_uppercase().collect())
+        .unwrap_or_default();
+    p.text(
+        c + vec2(0.0, -0.2 * s),
+        Align2::CENTER_CENTER,
+        letter,
+        egui::FontId::proportional(r * 0.55),
+        INKY,
+    );
 }

@@ -46,6 +46,8 @@ pub struct Saved {
     pub bars: Vec<Toolbar>,
     pub active: usize,
     pub inv: Vec<Option<Preset>>,
+    /// Saved views that slots point at.
+    pub views: std::collections::BTreeMap<u32, View>,
 }
 
 /// Keep at least one empty row at the end of the inventory (and never less
@@ -65,6 +67,40 @@ pub struct Preset {
     pub shape: Option<(ShapeStyle, f32)>,
     /// Text settings and cap height (screen px).
     pub text: Option<(TextStyle, f32)>,
+    /// A saved view to fly to (key into `Saved::views`) instead of a tool.
+    pub view: Option<u32>,
+}
+
+/// A saved view in a toolbar slot: its name and camera (see `cam_text`).
+#[derive(Clone, PartialEq, Debug)]
+pub struct View {
+    pub name: String,
+    pub cam: String,
+}
+
+/// A camera as text: `level|x|y|off_x|off_y|scale|view_px`.
+pub fn cam_text(cam: &ogpaper_core::Camera, view_px: f64) -> String {
+    format!(
+        "{}|{}|{}|{}|{}|{}|{}",
+        cam.cell.level, cam.cell.x, cam.cell.y, cam.off[0], cam.off[1], cam.scale, view_px
+    )
+}
+
+/// Read `cam_text` (at `base_px`): the camera and its view size.
+pub fn cam_parse(s: &str, base_px: f64) -> Option<(ogpaper_core::Camera, f64)> {
+    let p: Vec<&str> = s.split('|').collect();
+    if p.len() != 7 {
+        return None;
+    }
+    let cell = ogpaper_core::CellAddr {
+        level: p[0].parse().ok()?,
+        x: p[1].parse().ok()?,
+        y: p[2].parse().ok()?,
+    };
+    let f = |i: usize| p[i].parse::<f64>().ok().filter(|v| v.is_finite());
+    let mut cam = ogpaper_core::Camera::new(cell, [f(3)?, f(4)?], base_px);
+    cam.scale = f(5)?;
+    Some((cam, f(6)?))
 }
 
 impl Preset {
@@ -74,6 +110,15 @@ impl Preset {
             ink: None,
             shape: None,
             text: None,
+            view: None,
+        }
+    }
+
+    /// A slot that flies to saved view `id`.
+    pub fn view(id: u32) -> Self {
+        Self {
+            view: Some(id),
+            ..Self::tool(Tool::Hand)
         }
     }
 
@@ -183,6 +228,7 @@ pub fn defaults() -> Saved {
         ],
         active: 0,
         inv,
+        views: Default::default(),
     }
 }
 
@@ -246,6 +292,9 @@ fn unhex(s: &str) -> Option<Vec<u8>> {
 
 fn put(p: &Preset) -> String {
     let mut out = tool_key(p.tool).to_string();
+    if let Some(v) = p.view {
+        out += &format!(" view {v}");
+    }
     if let Some(i) = p.ink {
         let [r, g, b, a] = i.color.to_array();
         out += &format!(
@@ -299,6 +348,7 @@ fn get(s: &str) -> Option<Preset> {
                     params: Default::default(),
                 });
             }
+            "view" => p.view = Some(w.next()?.parse().ok()?),
             "brush" => {
                 let params = ogpaper_core::BrushParams::decode(&unhex(w.next()?)?)?;
                 if let Some(i) = p.ink.as_mut() {
@@ -346,6 +396,9 @@ pub fn encode(saved: &Saved) -> String {
             out += &format!("i {i} {}\n", put(p));
         }
     }
+    for (id, v) in &saved.views {
+        out += &format!("w {id} {} {}\n", v.cam, v.name.replace(['\n', '\r'], " "));
+    }
     out
 }
 
@@ -360,6 +413,7 @@ pub fn decode(text: &str) -> Option<Saved> {
     };
     let mut bars: Vec<Toolbar> = Vec::new();
     let mut inv: Vec<Option<Preset>> = Vec::new();
+    let mut views = std::collections::BTreeMap::new();
     let mut active = 0;
     let bar = |bars: &mut Vec<Toolbar>, b: usize| -> Option<()> {
         if b > 255 {
@@ -416,6 +470,19 @@ pub fn decode(text: &str) -> Option<Saved> {
                     }
                 }
             }
+            (2, "w") => {
+                let mut w = rest.splitn(3, ' ');
+                if let (Some(Ok(id)), Some(cam)) = (w.next().map(str::parse::<u32>), w.next()) {
+                    let name = w.next().unwrap_or("View").trim().to_string();
+                    views.insert(
+                        id,
+                        View {
+                            name,
+                            cam: cam.to_string(),
+                        },
+                    );
+                }
+            }
             (_, "i") => {
                 let mut w = rest.splitn(2, ' ');
                 let (Some(Ok(i)), Some(tool)) = (w.next().map(str::parse::<usize>), w.next())
@@ -437,7 +504,12 @@ pub fn decode(text: &str) -> Option<Saved> {
     }
     grow_inventory(&mut inv);
     let active = active.min(bars.len() - 1);
-    Some(Saved { bars, active, inv })
+    Some(Saved {
+        bars,
+        active,
+        inv,
+        views,
+    })
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -524,5 +596,30 @@ mod tests {
         grow_inventory(&mut inv);
         assert_eq!(inv.len(), 36);
         assert!(inv[27..].iter().all(|x| x.is_none()));
+    }
+
+    #[test]
+    fn view_slots_round_trip() {
+        let mut saved = defaults();
+        let cam = ogpaper_core::Camera::new(
+            ogpaper_core::CellAddr::new(40, num_bigint::BigInt::from(-3) << 39u32, 7),
+            [0.25, 0.5],
+            800.0,
+        );
+        let text = cam_text(&cam, 640.0);
+        saved.views.insert(
+            5,
+            View {
+                name: "Deep corner".into(),
+                cam: text.clone(),
+            },
+        );
+        saved.bars[0].slots[3] = Some(Preset::view(5));
+        let back = decode(&encode(&saved)).unwrap();
+        assert_eq!(back.views[&5].name, "Deep corner");
+        assert_eq!(back.bars[0].slots[3], Some(Preset::view(5)));
+        let (c2, px) = cam_parse(&back.views[&5].cam, 800.0).unwrap();
+        assert_eq!(c2.cell, cam.cell);
+        assert_eq!((c2.off, c2.scale, px), (cam.off, cam.scale, 640.0));
     }
 }

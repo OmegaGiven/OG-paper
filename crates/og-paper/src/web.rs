@@ -25,6 +25,8 @@ pub enum Cmd {
     Menu(Vec<crate::ui::AppItem>),
     BookmarkAdd(String),
     BookmarkGo(usize),
+    /// Put bookmark i in the quick toolbar.
+    BookmarkToBar(usize),
     BookmarkRemove(usize),
     BookmarkRename(usize, String),
     /// Show the canvas as it was after timeline event `i`; `None` leaves.
@@ -239,6 +241,12 @@ pub fn og_bookmark_add(name: String) {
 #[wasm_bindgen]
 pub fn og_bookmark_go(i: usize) {
     push(Cmd::BookmarkGo(i));
+}
+
+/// Put bookmark `i` in the quick toolbar (first free slot).
+#[wasm_bindgen]
+pub fn og_bookmark_to_bar(i: usize) {
+    push(Cmd::BookmarkToBar(i));
 }
 
 #[wasm_bindgen]
