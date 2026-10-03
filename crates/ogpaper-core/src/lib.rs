@@ -13,6 +13,7 @@ pub mod gen;
 pub mod history;
 pub mod hit;
 pub mod scene;
+pub mod sync;
 pub mod visible;
 
 pub use addr::{CellAddr, Level};
