@@ -220,6 +220,8 @@ impl std::fmt::Debug for InkSettings {
 pub enum Menu {
     None,
     Tools,
+    /// The radial toolbar's fan.
+    Bar,
     /// The settings button's fan (canvas commands).
     App,
 }
@@ -243,6 +245,8 @@ pub enum AppItem {
     Layout,
     /// Set your own keys.
     Hotkeys,
+    /// The quick toolbar as a fan from the bottom-right corner.
+    RadialBar,
     /// Background grid: off, lines, dots.
     Grid,
     New,
@@ -267,6 +271,7 @@ impl AppItem {
             AppItem::Diagram => "Diagram",
             AppItem::Layout => "Edit layout",
             AppItem::Hotkeys => "Hotkeys",
+            AppItem::RadialBar => "Radial toolbar",
             AppItem::Grid => "Grid",
             AppItem::New => "New canvas",
             AppItem::Open => "Open",
@@ -289,6 +294,7 @@ impl AppItem {
             AppItem::Diagram => Action::Diagram,
             AppItem::Layout => Action::EditLayout,
             AppItem::Hotkeys => Action::Hotkeys,
+            AppItem::RadialBar => Action::RadialBar,
             AppItem::Grid => Action::Grid,
             AppItem::New => Action::New,
             AppItem::Open => Action::Open,
@@ -351,6 +357,9 @@ pub struct UiState {
     pub grid: GridMode,
     /// Diagram mode: lines and arrows stick to what they touch.
     pub diagram: bool,
+    /// The quick toolbar as a fan from the bottom-right corner (tools move
+    /// bottom left, their settings top right).
+    pub radial_bar: bool,
     /// Saved views in toolbar slots, the current view (filled in by the app
     /// each frame) and a view to fly to (for the app).
     pub views: std::collections::BTreeMap<u32, hotbar::View>,
@@ -512,8 +521,10 @@ impl Default for UiState {
                 AppItem::Grid,
                 AppItem::Diagram,
                 AppItem::Layout,
+                AppItem::RadialBar,
                 AppItem::Hotkeys,
             ],
+            radial_bar: false,
             queued: Vec::new(),
             views: Default::default(),
             view_now: None,
@@ -756,6 +767,8 @@ pub enum Action {
     EditLayout,
     /// Open the hotkeys menu.
     Hotkeys,
+    /// Switch the quick toolbar between a bar and a fan.
+    RadialBar,
     /// The hotkeys changed in the menu: save them.
     SaveKeys,
     /// Save the selection to the library.
@@ -843,6 +856,9 @@ struct Geo {
     /// The arcs the tool and settings fans open along (start, sweep).
     tool_arc: (f32, f32),
     app_arc: (f32, f32),
+    /// Radial toolbar: its button and arc.
+    bar: Pos2,
+    bar_arc: (f32, f32),
 }
 
 /// A point at screen fractions `f`, kept `pad` inside the screen.
@@ -873,10 +889,14 @@ fn geo(ctx: &egui::Context, st: &UiState) -> Geo {
     let screen = ctx.content_rect();
     let r = if touch { 30.0 } else { 24.0 };
     let m = if touch { 18.0 } else { 16.0 };
+    let corner_br = pos2(screen.right() - m - r, screen.bottom() - m - r);
+    // Radial toolbar: tools bottom left, the toolbar's fan bottom right.
     let tool = match lay.tool {
+        _ if st.radial_bar => pos2(screen.left() + m + r, screen.bottom() - m - r),
         Some(f) => at_frac(screen, f, m + r),
-        None => pos2(screen.right() - m - r, screen.bottom() - m - r),
+        None => corner_br,
     };
+    let bar = corner_br;
     let app = match lay.app {
         Some(f) => at_frac(screen, f, m + r),
         None => pos2(screen.right() - m - r, screen.top() + m + r),
@@ -887,6 +907,8 @@ fn geo(ctx: &egui::Context, st: &UiState) -> Geo {
         tool,
         tool_arc: crate::layout::fan_arc(frac_of(screen, tool)),
         app_arc: crate::layout::fan_arc(frac_of(screen, app)),
+        bar,
+        bar_arc: crate::layout::fan_arc(frac_of(screen, bar)),
     }
 }
 
@@ -1036,6 +1058,9 @@ pub fn draw(ctx: &egui::Context, st: &mut UiState) -> Vec<Action> {
 
     paint_overlay(ctx, &st.overlay, st.touch_ui);
     quick_bar(ctx, st, &g);
+    if st.radial_bar {
+        radial_bar(ctx, st, &g);
+    }
     tool_panel(ctx, st, &mut actions);
     text_editor(ctx, st, &mut actions);
 
@@ -1176,79 +1201,86 @@ fn quick_bar(ctx: &egui::Context, st: &mut UiState, g: &Geo) {
         y - s * 0.5
     };
     let stack = Rect::from_min_size(pos2(x0, top), vec2(row, rows as f32 * (s + gap) - gap));
+    let (up, stack) = if st.radial_bar {
+        (true, Rect::from_center_size(g.bar, Vec2::splat(2.0 * g.r)))
+    } else {
+        (up, stack)
+    };
 
-    egui::Area::new(Id::new("quick_bar"))
-        .order(Order::Middle)
-        .fixed_pos(stack.min)
-        .show(ctx, |ui| {
-            ui.set_clip_rect(screen);
-            ui.allocate_exact_size(stack.size(), Sense::hover());
-            // Row 0 is the active toolbar; the others follow it.
-            for (ri, k) in std::iter::once(st.active_bar)
-                .chain(others.iter().copied())
-                .enumerate()
-            {
-                let ry = y - s * 0.5 + ri as f32 * step;
-                let r = Rect::from_min_size(pos2(x0, ry), Vec2::splat(s));
-                let active = k == st.active_bar;
-                if number_button(ui, st, r, k, active && st.bar_menu, active) {
-                    if active {
-                        st.bar_menu = !st.bar_menu;
-                        if st.bar_menu {
-                            st.bag_open = false;
+    // Radial toolbar: the bar is a fan from its own button (see radial_bar).
+    if !st.radial_bar {
+        egui::Area::new(Id::new("quick_bar"))
+            .order(Order::Middle)
+            .fixed_pos(stack.min)
+            .show(ctx, |ui| {
+                ui.set_clip_rect(screen);
+                ui.allocate_exact_size(stack.size(), Sense::hover());
+                // Row 0 is the active toolbar; the others follow it.
+                for (ri, k) in std::iter::once(st.active_bar)
+                    .chain(others.iter().copied())
+                    .enumerate()
+                {
+                    let ry = y - s * 0.5 + ri as f32 * step;
+                    let r = Rect::from_min_size(pos2(x0, ry), Vec2::splat(s));
+                    let active = k == st.active_bar;
+                    if number_button(ui, st, r, k, active && st.bar_menu, active) {
+                        if active {
+                            st.bar_menu = !st.bar_menu;
+                            if st.bar_menu {
+                                st.bag_open = false;
+                            }
+                        } else {
+                            st.switch_bar(k);
                         }
-                    } else {
-                        st.switch_bar(k);
+                    }
+                    for i in 0..n {
+                        let r = Rect::from_min_size(
+                            pos2(x0 + (i + 1) as f32 * (s + gap), ry),
+                            Vec2::splat(s),
+                        );
+                        slot(ui, st, r, Slots::Row(k), i, &mut fx);
                     }
                 }
-                for i in 0..n {
-                    let r = Rect::from_min_size(
-                        pos2(x0 + (i + 1) as f32 * (s + gap), ry),
-                        Vec2::splat(s),
-                    );
-                    slot(ui, st, r, Slots::Row(k), i, &mut fx);
+                // The bag: opens the inventory.
+                let r = Rect::from_min_size(
+                    pos2(x0 + (n + 1) as f32 * (s + gap), y - s * 0.5),
+                    Vec2::splat(s),
+                );
+                let resp = ui.interact(r, Id::new("bag"), Sense::click());
+                let p = ui.painter();
+                rect_shadow(p, r, 8.0);
+                p.rect_filled(
+                    r,
+                    8.0,
+                    if resp.hovered() || st.bag_open {
+                        Color32::WHITE
+                    } else {
+                        FACE
+                    },
+                );
+                p.rect_stroke(
+                    r,
+                    8.0,
+                    Stroke::new(
+                        if st.bag_open { 2.5 } else { 1.0 },
+                        if st.bag_open { ACCENT } else { EDGE },
+                    ),
+                    egui::StrokeKind::Inside,
+                );
+                bag_icon(p, r.center(), s * 0.5);
+                if resp.clicked() {
+                    st.bag_open = !st.bag_open;
+                    if st.bag_open {
+                        st.bar_menu = false;
+                    }
                 }
-            }
-            // The bag: opens the inventory.
-            let r = Rect::from_min_size(
-                pos2(x0 + (n + 1) as f32 * (s + gap), y - s * 0.5),
-                Vec2::splat(s),
-            );
-            let resp = ui.interact(r, Id::new("bag"), Sense::click());
-            let p = ui.painter();
-            rect_shadow(p, r, 8.0);
-            p.rect_filled(
-                r,
-                8.0,
-                if resp.hovered() || st.bag_open {
-                    Color32::WHITE
+                resp.on_hover_text(if st.bag_open {
+                    "Close the inventory"
                 } else {
-                    FACE
-                },
-            );
-            p.rect_stroke(
-                r,
-                8.0,
-                Stroke::new(
-                    if st.bag_open { 2.5 } else { 1.0 },
-                    if st.bag_open { ACCENT } else { EDGE },
-                ),
-                egui::StrokeKind::Inside,
-            );
-            bag_icon(p, r.center(), s * 0.5);
-            if resp.clicked() {
-                st.bag_open = !st.bag_open;
-                if st.bag_open {
-                    st.bar_menu = false;
-                }
-            }
-            resp.on_hover_text(if st.bag_open {
-                "Close the inventory"
-            } else {
-                "Saved tools: open the inventory"
+                    "Saved tools: open the inventory"
+                });
             });
-        });
-
+    }
     if st.bag_open {
         inventory(ctx, st, stack, up, s, gap, &mut fx);
     } else if let Some(h) = st.held.take() {
@@ -1937,7 +1969,11 @@ fn tool_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) 
     let screen = ctx.content_rect();
     // Bottom left by default (in thumb reach on phones, out of the way on
     // desktops); any corner via Edit layout.
-    let pc = st.layout.panel;
+    let pc = if st.radial_bar {
+        crate::layout::Corner::TopRight
+    } else {
+        st.layout.panel
+    };
     let align = match pc {
         crate::layout::Corner::BottomLeft => Align2::LEFT_BOTTOM,
         crate::layout::Corner::BottomRight => Align2::RIGHT_BOTTOM,
@@ -2909,7 +2945,8 @@ fn app_menu(ctx: &egui::Context, st: &mut UiState, g: &Geo, actions: &mut Vec<Ac
                     );
                     let active = (item == AppItem::Timeline && st.timeline_on)
                         || (item == AppItem::Grid && st.grid != GridMode::Off)
-                        || (item == AppItem::Diagram && st.diagram);
+                        || (item == AppItem::Diagram && st.diagram)
+                        || (item == AppItem::RadialBar && st.radial_bar);
                     disc(
                         &p,
                         pc,
@@ -2982,6 +3019,16 @@ fn app_icon(p: &egui::Painter, c: Pos2, r: f32, item: AppItem, grid: GridMode) {
         p.add(Shape::line(pts.iter().map(|v| c + *v * s).collect(), st));
     };
     match item {
+        AppItem::RadialBar => {
+            // A quarter fan of slots around a corner button.
+            p.circle_stroke(c + vec2(0.7, 0.7) * s, s * 0.32, st);
+            for k in 0..4 {
+                let a = PI + FRAC_PI_2 * k as f32 / 3.0;
+                let q = c + vec2(0.7, 0.7) * s + Vec2::angled(a) * s * 1.25;
+                let rr = Rect::from_center_size(q, Vec2::splat(s * 0.42));
+                p.rect_stroke(rr, 2.0, st, egui::StrokeKind::Middle);
+            }
+        }
         AppItem::Hotkeys => {
             // A keyboard.
             line(&[
@@ -4556,4 +4603,157 @@ fn view_icon(p: &egui::Painter, c: Pos2, r: f32, name: &str) {
         egui::FontId::proportional(r * 0.55),
         INKY,
     );
+}
+
+/// The radial toolbar: a button bottom right whose fan holds the active
+/// toolbar's slots, then the toolbar list and the bag.
+fn radial_bar(ctx: &egui::Context, st: &mut UiState, g: &Geo) {
+    let open = ctx.animate_bool_with_time(Id::new("bar_open"), st.menu == Menu::Bar, 0.12);
+    let n = st.hotbar.len();
+    let slots = ring_slots(n + 2, g.r, g.bar_arc.1);
+    let mut bbox = Rect::from_center_size(g.bar, Vec2::splat(2.0 * g.r));
+    if open > 0.0 {
+        let reach = fan_reach(&slots, g.r) * open + g.r * 1.2;
+        bbox = bbox.union(Rect::from_center_size(
+            g.bar,
+            Vec2::splat(2.0 * (reach + 30.0)),
+        ));
+    }
+    let screen = ctx.content_rect();
+    let current = st.preset();
+    let mut changed = false;
+    egui::Area::new(Id::new("radial_bar"))
+        .order(Order::Foreground)
+        .fixed_pos(bbox.min)
+        .show(ctx, |ui| {
+            ui.set_clip_rect(screen);
+            ui.allocate_exact_size(bbox.size(), Sense::hover());
+            let p = ui.painter().clone();
+            if open > 0.0 {
+                for i in 0..n + 2 {
+                    let (radius, frac) = slots[i];
+                    let a = g.bar_arc.0 + g.bar_arc.1 * frac;
+                    let pc = g.bar + Vec2::angled(a) * radius * open;
+                    let rr = g.r * 0.9 * open.max(0.3);
+                    let resp = ui.interact(
+                        Rect::from_center_size(pc, Vec2::splat(2.0 * rr)),
+                        Id::new(("rbar", i)),
+                        Sense::click(),
+                    );
+                    let hover = resp.hovered();
+                    let label_text: String;
+                    if i < n {
+                        let item = st.hotbar[i];
+                        let on = item.is_some_and(|it| it == current);
+                        disc(&p, pc, rr, if hover { Color32::WHITE } else { FACE }, on);
+                        match item {
+                            Some(it) if it.cmd.is_some() => {
+                                let redo = it.cmd == Some(hotbar::SlotCmd::Redo);
+                                undo_icon(&p, pc, rr * 0.8, redo, INKY);
+                            }
+                            Some(it) if it.view.is_some() => {
+                                let name = it
+                                    .view
+                                    .and_then(|v| st.views.get(&v))
+                                    .map_or("View".into(), |v| v.name.clone());
+                                view_icon(&p, pc, rr, &name);
+                            }
+                            Some(it) => preset_icon(&p, pc, rr, &it, &st.egui_fonts),
+                            None => {
+                                p.text(
+                                    pc,
+                                    Align2::CENTER_CENTER,
+                                    "+",
+                                    egui::FontId::proportional(rr * 0.7),
+                                    Color32::from_gray(170),
+                                );
+                            }
+                        }
+                        p.text(
+                            pc + vec2(-rr * 0.62, -rr * 0.62),
+                            Align2::CENTER_CENTER,
+                            format!("{}", i + 1),
+                            egui::FontId::proportional(9.0),
+                            Color32::from_gray(140),
+                        );
+                        label_text = match item {
+                            Some(it) if it.view.is_some() => "View".into(),
+                            Some(it) => describe(&it),
+                            None => "Empty: save the current tool".into(),
+                        };
+                        if resp.clicked() {
+                            match item {
+                                Some(it) => {
+                                    st.apply(&it);
+                                    if it.cmd.is_none() {
+                                        st.menu = Menu::None;
+                                    }
+                                }
+                                None => {
+                                    st.hotbar[i] = Some(current);
+                                    changed = true;
+                                }
+                            }
+                        }
+                    } else if i == n {
+                        disc(
+                            &p,
+                            pc,
+                            rr,
+                            if hover { Color32::WHITE } else { FACE },
+                            st.bar_menu,
+                        );
+                        toolbars_icon(&p, pc, rr * 0.9, st.active_bar + 1);
+                        label_text = "Toolbars".into();
+                        if resp.clicked() {
+                            st.bar_menu = !st.bar_menu;
+                            st.bag_open = false;
+                        }
+                    } else {
+                        disc(
+                            &p,
+                            pc,
+                            rr,
+                            if hover { Color32::WHITE } else { FACE },
+                            st.bag_open,
+                        );
+                        bag_icon(&p, pc, rr * 0.9);
+                        label_text = "Inventory".into();
+                        if resp.clicked() {
+                            st.bag_open = !st.bag_open;
+                            st.bar_menu = false;
+                        }
+                    }
+                    if open > 0.9 && hover {
+                        label(
+                            &p,
+                            pc + Vec2::angled(a) * (rr + 16.0) + vec2(0.0, 2.0),
+                            &label_text,
+                        );
+                    }
+                }
+            }
+            let resp = ui.interact(
+                Rect::from_center_size(g.bar, Vec2::splat(2.0 * g.r)),
+                Id::new("rbar_btn"),
+                Sense::click(),
+            );
+            disc(&p, g.bar, g.r, FACE, st.menu == Menu::Bar);
+            // The current tool's slot look, with the toolbar number.
+            toolbars_icon(&p, g.bar, g.r * 0.8, st.active_bar + 1);
+            if resp.clicked() {
+                st.menu = if st.menu == Menu::Bar {
+                    Menu::None
+                } else {
+                    Menu::Bar
+                };
+                if st.menu == Menu::None {
+                    st.bar_menu = false;
+                }
+            }
+            resp.on_hover_text(format!("Toolbar {} — tap to open", st.active_bar + 1));
+        });
+    if changed {
+        st.presets_dirty = true;
+    }
 }

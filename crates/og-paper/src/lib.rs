@@ -171,6 +171,7 @@ impl App {
         let prefs = prefs::load();
         ui.grid = ui::GridMode::from_key(prefs.get("grid").map_or("off", |s| s.as_str()));
         ui.diagram = prefs.get("diagram").is_some_and(|v| v == "on");
+        ui.radial_bar = prefs.get("radialbar").is_some_and(|v| v == "on");
         ui.layout = layout::Layout::decode(prefs.get("layout").map_or("", |s| s.as_str()));
         ui.keys = hotkeys::Keymap::load(prefs.get("keys").map_or("", |s| s.as_str()));
         Self {
@@ -896,6 +897,17 @@ impl App {
                     self.ui.search_open = !self.ui.search_open;
                     self.ui.search_focus = true;
                 }
+                self.redraw();
+            }
+            Action::RadialBar => {
+                self.ui.radial_bar = !self.ui.radial_bar;
+                self.ui.menu = ui::Menu::None;
+                let mut p = prefs::load();
+                p.insert(
+                    "radialbar".into(),
+                    if self.ui.radial_bar { "on" } else { "off" }.into(),
+                );
+                prefs::save(&p);
                 self.redraw();
             }
             Action::Hotkeys => {
