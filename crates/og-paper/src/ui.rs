@@ -1930,7 +1930,7 @@ fn preset_icon(
     if let Some(i) = it.ink {
         let col = i.color;
         tool_icon(p, c - vec2(0.0, r * 0.12), r * 0.85, it.tool, col);
-        let w = (i.width * 0.35).clamp(1.5, r * 0.3);
+        let w = (i.width * 0.35).min(r * 0.3).max(1.0);
         let [cr, cg, cb, _] = col.to_array();
         let a = if it.tool == Tool::Highlighter {
             150
