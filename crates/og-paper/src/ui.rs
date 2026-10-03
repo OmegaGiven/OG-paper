@@ -903,6 +903,13 @@ struct Geo {
     bar_arc: (f32, f32),
 }
 
+/// Size of the round buttons and fans by screen: about 60% on a phone
+/// (smaller side ~380 points), full size from ~700 points (tablets, desktops).
+fn ui_scale(screen: Rect) -> f32 {
+    let side = screen.width().min(screen.height());
+    (0.6 + 0.4 * (side - 380.0) / (700.0 - 380.0)).clamp(0.6, 1.0)
+}
+
 /// A point at screen fractions `f`, kept `pad` inside the screen.
 fn at_frac(screen: Rect, f: [f32; 2], pad: f32) -> Pos2 {
     pos2(
@@ -929,8 +936,9 @@ fn geo(ctx: &egui::Context, st: &UiState) -> Geo {
     let touch = st.touch_ui;
     let lay = &st.layout;
     let screen = ctx.content_rect();
-    let r = if touch { 30.0 } else { 24.0 };
-    let m = if touch { 18.0 } else { 16.0 };
+    let k = ui_scale(screen);
+    let r = if touch { 30.0 } else { 24.0 } * k;
+    let m = if touch { 18.0 } else { 16.0 } * k.max(0.75);
     let corner_br = pos2(screen.right() - m - r, screen.bottom() - m - r);
     // Radial toolbar: tools bottom left, the toolbar's fan bottom right.
     let tool = match lay.tool {
@@ -1172,9 +1180,9 @@ enum Slots {
 fn quick_bar(ctx: &egui::Context, st: &mut UiState, g: &Geo) {
     let touch = st.touch_ui;
     let screen = ctx.content_rect();
-    let m = if touch { 18.0 } else { 16.0 };
+    let m = if touch { 18.0 } else { 16.0 } * ui_scale(screen).max(0.75);
     let gap = 4.0;
-    let mut s = if touch { 44.0 } else { 38.0 };
+    let mut s = (if touch { 44.0 } else { 38.0 } * ui_scale(screen)).max(30.0);
     // Bottom row, between the panel button and undo / redo, if it fits;
     // else a row above them.
     let right = g.tool.x - g.r - 12.0;
@@ -2040,7 +2048,7 @@ fn tool_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) 
 
     if !open {
         // Collapsed: a small round button showing the tool and its color.
-        let r = if touch { 24.0 } else { 19.0 };
+        let r = if touch { 24.0 } else { 19.0 } * ui_scale(screen).max(0.7);
         let col = tool_color(st, tool);
         egui::Area::new(Id::new("tool_panel_btn"))
             .order(Order::Foreground)
@@ -2901,7 +2909,8 @@ fn ring_slots(n: usize, r: f32, span: f32) -> Vec<(f32, f32)> {
     let rr = r * 0.9;
     let along = 2.0 * rr + 8.0;
     // Room between rings for the labels.
-    let step = 2.0 * rr + 56.0;
+    // Room for the labels; less on small screens (the buttons are smaller).
+    let step = 2.0 * rr + 56.0 * (r / 24.0).clamp(0.55, 1.0);
     let full = span >= TAU - 1e-3;
     // A full ring starts closer in: it has room all round.
     let mut radius = if full { r * 3.2 } else { r * 4.4 };
@@ -4280,7 +4289,7 @@ fn layout_editor(ctx: &egui::Context, st: &mut UiState) {
                 lay.app = Some(frac_of(screen, c));
             }
             // The quick bar, as a strip of empty slots.
-            let s = if touch { 44.0 } else { 38.0 };
+            let s = (if touch { 44.0 } else { 38.0 } * ui_scale(screen)).max(30.0);
             let w = ((hotbar::BAR + 2) as f32 * (s + 4.0) - 4.0).min(screen.width() - 2.0 * m);
             let bar_c = match lay.bar {
                 Some(f) => at_frac(screen, f, 0.0),
