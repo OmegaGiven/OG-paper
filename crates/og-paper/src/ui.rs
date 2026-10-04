@@ -1347,10 +1347,12 @@ pub fn draw(ctx: &egui::Context, st: &mut UiState) -> Vec<Action> {
     // "pointer over UI" is right and the rest of the screen stays canvas.
     let sq = |c: Pos2, r: f32| Rect::from_center_size(c, Vec2::splat(2.0 * r));
     let mut bbox = sq(g.tool, g.r);
+    let mut tool_halo = 0.0;
     // Undo and redo lead the fan, then the tools.
     let tool_slots = ring_slots(TOOLS.len() + 2, g.r, g.tool_arc.1);
     if t > 0.0 {
         let reach = fan_reach(&tool_slots, g.r) * t + g.r * 1.2;
+        tool_halo = reach + g.r * 0.6;
         bbox = bbox.union(Rect::from_center_size(
             g.tool,
             Vec2::splat(2.0 * (reach + 30.0)),
@@ -1370,6 +1372,7 @@ pub fn draw(ctx: &egui::Context, st: &mut UiState) -> Vec<Action> {
 
                 // ---- tool fan: quarter-circle rings up and left of the tool button
                 if t > 0.0 {
+                    fan_backdrop(&p, screen, g.tool, tool_halo, t);
                     // Undo and redo: the fan stays open, to step back several times.
                     for (i, redo) in [(0usize, false), (1, true)] {
                         let (radius, frac) = tool_slots[i];
@@ -6491,6 +6494,20 @@ fn view_icon(p: &egui::Painter, c: Pos2, r: f32, name: &str) {
 
 /// The radial toolbar: a button bottom right whose fan holds the active
 /// toolbar's slots, then the toolbar list and the bag.
+/// Under an open fan: shade the page and frost the ground behind the
+/// rings (out to `reach` around `center`), so the tools stand out from
+/// busy drawings. `open` fades it in and out.
+fn fan_backdrop(p: &egui::Painter, screen: Rect, center: Pos2, reach: f32, open: f32) {
+    p.rect_filled(screen, 0.0, Color32::from_black_alpha((70.0 * open) as u8));
+    let steps = 32;
+    for k in 0..steps {
+        let t = k as f32 / steps as f32;
+        let r = reach * (1.0 + 0.4 * (1.0 - t));
+        let a = (open * 11.0 * (0.3 + t)).round() as u8;
+        p.circle_filled(center, r, Color32::from_rgba_unmultiplied(250, 248, 242, a));
+    }
+}
+
 fn radial_bar(ctx: &egui::Context, st: &mut UiState, g: &Geo) {
     let open = ctx.animate_bool_with_time(Id::new("bar_open"), st.menu == Menu::Bar, 0.12);
     let n = st.hotbar.len();
@@ -6520,12 +6537,14 @@ fn radial_bar(ctx: &egui::Context, st: &mut UiState, g: &Geo) {
         }
     }
     let mut bbox = Rect::from_center_size(g.bar, Vec2::splat(2.0 * g.r));
+    let mut halo = 0.0;
     if open > 0.0 {
         let far = outer
             .iter()
             .map(|o| o.2)
             .fold(fan_reach(&slots, g.r), |a, b| a.max(b + g.r));
         let reach = far * open + g.r * 1.2;
+        halo = reach + g.r * 0.6;
         bbox = bbox.union(Rect::from_center_size(
             g.bar,
             Vec2::splat(2.0 * (reach + 30.0)),
@@ -6542,6 +6561,7 @@ fn radial_bar(ctx: &egui::Context, st: &mut UiState, g: &Geo) {
             ui.allocate_exact_size(bbox.size(), Sense::hover());
             let p = ui.painter().clone();
             if open > 0.0 {
+                fan_backdrop(&p, screen, g.bar, halo, open);
                 // The slots, then on the inner ring Toolbars (which opens
                 // the inventory too) and the hold tool.
                 for i in 0..n + 2 {
