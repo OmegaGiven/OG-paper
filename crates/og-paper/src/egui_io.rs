@@ -71,6 +71,33 @@ impl EguiIo {
         #[cfg(target_arch = "wasm32")]
         {
             let _ = window;
+            // UI tests read the widgets (name, kind, place) from the
+            // accessibility tree, in CSS px (see `og_ui_nodes`).
+            if let Some(tree) = &out.accesskit_update {
+                let k = self.web.zoom() as f64;
+                let mut all = Vec::new();
+                for (_, node) in &tree.nodes {
+                    let Some(b) = node.bounds() else { continue };
+                    let (label, value, hint) = (
+                        node.label().unwrap_or_default(),
+                        node.value().unwrap_or_default(),
+                        node.placeholder().unwrap_or_default(),
+                    );
+                    if label.is_empty() && value.is_empty() && hint.is_empty() {
+                        continue;
+                    }
+                    all.push(serde_json::json!({
+                        "role": format!("{:?}", node.role()),
+                        "label": label,
+                        "value": value,
+                        "hint": hint,
+                        "x": b.x0 * k, "y": b.y0 * k, "w": (b.x1 - b.x0) * k, "h": (b.y1 - b.y0) * k,
+                        "disabled": node.is_disabled(),
+                        "on": node.toggled().map(|t| t == egui::accesskit::Toggled::True),
+                    }));
+                }
+                crate::web::set_ui_nodes(serde_json::Value::Array(all).to_string());
+            }
             // The page puts copied text on the clipboard.
             for c in out.commands {
                 if let egui::OutputCommand::CopyText(t) = c {
@@ -113,6 +140,11 @@ mod web {
                 max_texture_side,
                 start: web_time::Instant::now(),
             }
+        }
+
+        /// The UI size (egui points to CSS px).
+        pub fn zoom(&self) -> f32 {
+            self.ctx.zoom_factor()
         }
 
         /// Physical pixels per egui point: the device's, times the UI size.

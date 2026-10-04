@@ -2667,6 +2667,9 @@ impl App {
     fn web_publish(&mut self) {
         web::set_has_selection(self.ui.tool.selects() && !self.edit.selection.is_empty());
         web::set_wants_text(self.egui_ctx.egui_wants_keyboard_input());
+        if web::test_mode() {
+            self.egui_ctx.enable_accesskit();
+        }
         if web::snapshot_wanted() {
             // Saved as it is now, not as the timeline is showing it.
             let mut scene_flags = None;

@@ -125,7 +125,32 @@ thread_local! {
     static SEARCH_OUT: RefCell<String> = RefCell::new("[]".into());
     static HAS_SELECTION: Cell<bool> = const { Cell::new(false) };
     static WANTS_TEXT: Cell<bool> = const { Cell::new(false) };
+    static TEST_MODE: Cell<bool> = const { Cell::new(false) };
+    static UI_NODES: RefCell<String> = RefCell::new("[]".into());
     static COPIED: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+/// Turn on the UI tests' view of the widgets (`og_ui_nodes`).
+#[wasm_bindgen]
+pub fn og_test_mode(on: bool) {
+    TEST_MODE.with(|t| t.set(on));
+    push(Cmd::Poke);
+}
+
+pub fn test_mode() -> bool {
+    TEST_MODE.with(|t| t.get())
+}
+
+pub fn set_ui_nodes(json: String) {
+    UI_NODES.with(|n| *n.borrow_mut() = json);
+}
+
+/// The app's widgets as last drawn, for UI tests: JSON
+/// `[{"role", "label", "x", "y", "w", "h", "disabled", "on"}]` in CSS px
+/// (needs `og_test_mode(true)`).
+#[wasm_bindgen]
+pub fn og_ui_nodes() -> String {
+    UI_NODES.with(|n| n.borrow().clone())
 }
 
 /// Whether a text box has the keyboard (so pastes go to it).

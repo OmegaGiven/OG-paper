@@ -274,19 +274,21 @@ export async function start({ mode = 'app' } = {}) {
   // Cards move by their title bar (mouse, pen or finger) and remember
   // where they were left, kept on screen.
   const posKey = c => 'og-card-pos:' + c.dataset.name;
+  // Positions are in screen px; a zoomed panel layer (demos) scales its own.
+  const uiZoom = () => parseFloat(getComputedStyle(root).zoom) || 1;
+  const setPos = (c, x, y) => { const z = uiZoom(); c.style.left = x / z + 'px'; c.style.top = y / z + 'px'; };
   const keepOnScreen = c => {
     if (!c.style.left) return;
     const r = c.getBoundingClientRect();
     const x = Math.min(Math.max(8, r.left), Math.max(8, innerWidth - r.width - 8));
     const y = Math.min(Math.max(8, r.top), Math.max(8, innerHeight - r.height - 8));
-    c.style.left = x + 'px';
-    c.style.top = y + 'px';
+    setPos(c, x, y);
   };
   const placeCard = c => {
     let p = null;
     try { p = JSON.parse(localStorage.getItem(posKey(c)) || 'null'); } catch (e) {}
     if (p && Number.isFinite(p.x) && Number.isFinite(p.y)) {
-      c.style.left = p.x + 'px'; c.style.top = p.y + 'px'; c.style.right = 'auto';
+      setPos(c, p.x, p.y); c.style.right = 'auto';
       requestAnimationFrame(() => keepOnScreen(c));
     }
   };
@@ -304,15 +306,15 @@ export async function start({ mode = 'app' } = {}) {
     h.addEventListener('pointermove', e => {
       if (!drag || e.pointerId !== drag.id) return;
       c.style.right = 'auto';
-      c.style.left = (e.clientX - drag.dx) + 'px';
-      c.style.top = (e.clientY - drag.dy) + 'px';
+      setPos(c, e.clientX - drag.dx, e.clientY - drag.dy);
       keepOnScreen(c);
     });
     const end = e => {
       if (!drag || e.pointerId !== drag.id) return;
       drag = null;
       c.classList.remove('dragging');
-      try { localStorage.setItem(posKey(c), JSON.stringify({ x: parseFloat(c.style.left), y: parseFloat(c.style.top) })); } catch (e) {}
+      const r = c.getBoundingClientRect();
+      try { localStorage.setItem(posKey(c), JSON.stringify({ x: r.left, y: r.top })); } catch (e) {}
     };
     h.addEventListener('pointerup', end);
     h.addEventListener('pointercancel', end);
@@ -601,7 +603,7 @@ export async function start({ mode = 'app' } = {}) {
   const standalone = matchMedia('(display-mode: fullscreen), (display-mode: standalone)').matches;
   const canFs = document.documentElement.requestFullscreen && !standalone;
   const syncMenu = () => {
-    const items = ['pages', 'new', 'open', 'import', 'merge', 'changes', 'folder', 'live', 'export', 'paste', 'library', 'picture', 'search', 'bookmarks', 'timeline', 'layout', 'plugins', 'diagram', 'hotkeys'];
+    const items = ['pages', 'new', 'open', 'import', 'merge', 'changes', 'folder', 'live', 'export', 'paste', 'library', 'picture', 'search', 'bookmarks', 'timeline', 'home', 'layout', 'plugins', 'diagram', 'hotkeys'];
     if (canFs && !document.fullscreenElement) items.push('fullscreen');
     if (isTry) items.push('tour');
     og_set_menu(items.join(','));
@@ -1179,6 +1181,11 @@ export async function start({ mode = 'app' } = {}) {
     if (v.length < KBD_REST.length) og_text_field('Backspace', '');
     else if (v.startsWith(KBD_REST) && v.length > KBD_REST.length) og_text_field('text', v.slice(KBD_REST.length));
     else if (v !== KBD_REST) og_text_field('text', v);
+    kbdReset();
+  });
+  kbd.addEventListener('paste', e => {
+    e.preventDefault();
+    og_text_field('paste', e.clipboardData?.getData('text/plain') || '');
     kbdReset();
   });
   kbd.addEventListener('keydown', e => {

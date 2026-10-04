@@ -1441,6 +1441,7 @@ pub fn draw(ctx: &egui::Context, st: &mut UiState) -> Vec<Action> {
                             Id::new(("ur", redo)),
                             Sense::click(),
                         );
+                        named(&resp, if redo { "Redo" } else { "Undo" });
                         let enabled = if redo { st.can_redo } else { st.can_undo };
                         disc(
                             &p,
@@ -1486,6 +1487,7 @@ pub fn draw(ctx: &egui::Context, st: &mut UiState) -> Vec<Action> {
                             Id::new(("tool", i)),
                             Sense::click(),
                         );
+                        named(&resp, tool.name());
                         let selected = st.tool == tool;
                         disc(
                             &p,
@@ -1523,6 +1525,7 @@ pub fn draw(ctx: &egui::Context, st: &mut UiState) -> Vec<Action> {
                     Id::new("tool_btn"),
                     Sense::click(),
                 );
+                named(&tool_resp, "Tools");
                 disc(&p, g.tool, g.r, FACE, st.menu == Menu::Tools);
                 let cur_color = tool_color(st, st.tool);
                 tool_icon(&p, g.tool, g.r, st.tool, cur_color);
@@ -2491,6 +2494,7 @@ fn slot(ui: &mut egui::Ui, st: &mut UiState, rect: Rect, which: Slots, i: usize,
         Sense::click()
     };
     let resp = ui.interact(rect, Id::new(("slot", which, i)), sense);
+    named(&resp, format!("Slot {}", i + 1));
     if st.bag_open && resp.drag_started() && st.held.is_none() {
         if let Some(it) = slot_mut(st, which, i).take() {
             st.held = Some(it);
@@ -2798,7 +2802,10 @@ fn tool_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) 
         },
     );
     // Open by default where there is room; tucked away on phones.
-    let open = *st.panel_open.get_or_insert(screen.width() >= 700.0);
+    // Open at first on wide screens, measured at the UI size it will have
+    // (the first frame is drawn before the UI size takes effect).
+    let wide = screen.width() * ctx.zoom_factor() / st.ui_scale >= 700.0;
+    let open = *st.panel_open.get_or_insert(wide);
 
     if !open {
         // Collapsed: a small round button showing the tool and its color.
@@ -3009,7 +3016,7 @@ fn tool_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) 
 
 /// UI > Size: the smallest and largest UI scale.
 pub const UI_SCALE_MIN: f32 = 0.7;
-pub const UI_SCALE_MAX: f32 = 1.6;
+pub const UI_SCALE_MAX: f32 = 3.0;
 
 /// Whether helper text shows (UI > Helper text), set each frame.
 static HINTS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
@@ -3884,6 +3891,7 @@ fn app_menu(ctx: &egui::Context, st: &mut UiState, g: &Geo, actions: &mut Vec<Ac
                 Id::new("app_btn"),
                 Sense::click(),
             );
+            named(&resp, "Menu");
             disc(&p, g.app, g.r, FACE, st.menu == Menu::App);
             gear_icon(&p, g.app, g.r);
             if resp.clicked() {
@@ -3989,6 +3997,7 @@ fn app_menu(ctx: &egui::Context, st: &mut UiState, g: &Geo, actions: &mut Vec<Ac
                                     ui.allocate_exact_size(vec2(w, row_h), Sense::hover());
                                 let resp =
                                     ui.interact(rect, Id::new(("app_item", i)), Sense::click());
+                                named(&resp, item.name());
                                 let p = ui.painter();
                                 if resp.hovered() {
                                     p.rect_filled(rect, 8.0, Color32::from_rgb(240, 238, 232));
@@ -6274,7 +6283,7 @@ fn pages_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>)
                                 let mut done = None;
                                 ui.horizontal(|ui| {
                                     ui.add_space(12.0);
-                                    let r = add_field(ui, egui::TextEdit::singleline(&mut pr.text).desired_width((w - 150.0).max(100.0)));
+                                    let r = add_field(ui, egui::TextEdit::singleline(&mut pr.text).hint_text("Name").desired_width((w - 150.0).max(100.0)));
                                     let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                                     if (ui.button("OK").clicked() || enter) && !pr.text.trim().is_empty() {
                                         done = Some(true);
@@ -6613,6 +6622,13 @@ fn view_icon(p: &egui::Painter, c: Pos2, r: f32, name: &str) {
     );
 }
 
+/// Give a hand-drawn widget a name (what a screen reader says, and what
+/// the UI tests look for: see `og_ui_nodes`).
+fn named(r: &egui::Response, label: impl Into<String>) {
+    let label = label.into();
+    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, r.enabled(), &label));
+}
+
 thread_local! {
     /// Where this frame's text boxes are (CSS px): a tap on one on a phone
     /// brings up the keyboard (see `og_field_at`).
@@ -6891,6 +6907,11 @@ fn radial_bar(ctx: &egui::Context, st: &mut UiState, g: &Geo) {
                         Id::new(("rbar", i)),
                         Sense::click(),
                     );
+                    named(&resp, match i.checked_sub(n) {
+                        None => format!("Ring slot {}", i + 1),
+                        Some(0) => "Toolbars".to_string(),
+                        Some(_) => "Hold".to_string(),
+                    });
                     let hover = resp.hovered();
                     let label_text: String;
                     if i < n {
@@ -7074,6 +7095,7 @@ fn radial_bar(ctx: &egui::Context, st: &mut UiState, g: &Geo) {
                 Id::new("rbar_btn"),
                 Sense::click(),
             );
+            named(&resp, "Toolbar ring");
             disc(&p, g.bar, g.r, FACE, st.menu == Menu::Bar);
             // The current tool's slot look, with the toolbar number.
             toolbars_icon(&p, g.bar, g.r * 0.8, st.active_bar + 1);
