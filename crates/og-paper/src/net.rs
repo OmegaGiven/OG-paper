@@ -1356,14 +1356,9 @@ pub(crate) mod native {
             })
         }
 
-        /// Answer plain web requests (a browser opening the server's address)
-        /// with `page(path_and_query, base)`, where base is the address the
-        /// visitor used as `ws://host:port` (`wss://` behind a TLS proxy):
-        /// status, content type, body.
-        pub fn set_web(
-            &self,
-            page: impl Fn(&str, &str) -> (u16, &'static str, Vec<u8>) + Send + Sync + 'static,
-        ) {
+        /// Answer plain web requests (a browser opening the server's
+        /// address) with `page`.
+        pub fn set_web(&self, page: impl Fn(&WebReq) -> WebResp + Send + Sync + 'static) {
             *self.web.lock().expect("web") = Some(Arc::new(page));
         }
 
@@ -1410,22 +1405,56 @@ pub(crate) mod native {
     }
 
     /// What answers plain web requests, if anything (see `Server::set_web`).
-    type WebFn = dyn Fn(&str, &str) -> (u16, &'static str, Vec<u8>) + Send + Sync;
+    /// A plain web request to the server (a browser, not a WebSocket).
+    pub struct WebReq {
+        pub method: String,
+        /// Path and query.
+        pub target: String,
+        /// The address the visitor used, as a WebSocket base: `ws://host:port`,
+        /// or `wss://` behind a TLS proxy (X-Forwarded-Proto: https).
+        pub base: String,
+        /// Header names in lower case.
+        pub headers: Vec<(String, String)>,
+        pub body: Vec<u8>,
+    }
+
+    impl WebReq {
+        pub fn header(&self, name: &str) -> Option<&str> {
+            self.headers
+                .iter()
+                .find(|(k, _)| k == name)
+                .map(|(_, v)| v.as_str())
+        }
+    }
+
+    /// The answer to a `WebReq`.
+    pub struct WebResp {
+        pub status: u16,
+        pub ctype: &'static str,
+        /// Extra headers (Set-Cookie, Location, …).
+        pub headers: Vec<(String, String)>,
+        pub body: Vec<u8>,
+    }
+
+    type WebFn = dyn Fn(&WebReq) -> WebResp + Send + Sync;
     type Web = Arc<Mutex<Option<Arc<WebFn>>>>;
+
+    /// Largest request body a web page may send (forms).
+    const WEB_BODY_MAX: usize = 1 << 20;
 
     /// A plain web request (not a WebSocket upgrade): answered by `web` and
     /// closed. True when it was one.
     fn web_request(stream: &mut TcpStream, web: &Web) -> bool {
-        use std::io::Write;
+        use std::io::{Read, Write};
         let Some(page) = web.lock().expect("web").clone() else {
             return false;
         };
         // Look at the request without taking it, until its headers are in.
-        let mut buf = [0u8; 4096];
+        let mut peek = [0u8; 8192];
         let start = std::time::Instant::now();
         let n = loop {
-            let n = stream.peek(&mut buf).unwrap_or(0);
-            if n == buf.len() || buf[..n].windows(4).any(|w| w == b"\r\n\r\n") {
+            let n = stream.peek(&mut peek).unwrap_or(0);
+            if n == peek.len() || peek[..n].windows(4).any(|w| w == b"\r\n\r\n") {
                 break n;
             }
             if start.elapsed() > Duration::from_secs(3) {
@@ -1433,35 +1462,94 @@ pub(crate) mod native {
             }
             std::thread::sleep(Duration::from_millis(10));
         };
-        let head = String::from_utf8_lossy(&buf[..n]).to_string();
-        let lower = head.to_ascii_lowercase();
-        if !lower.starts_with("get ") || lower.contains("upgrade: websocket") {
+        let lower = String::from_utf8_lossy(&peek[..n]).to_ascii_lowercase();
+        let method_ok = ["get ", "post ", "head "]
+            .iter()
+            .any(|m| lower.starts_with(m));
+        if !method_ok || lower.contains("upgrade: websocket") {
             return false;
         }
-        let target = head.split_whitespace().nth(1).unwrap_or("/").to_string();
-        let header = |name: &str| {
-            head.lines()
-                .find(|l| l.to_ascii_lowercase().starts_with(name))
-                .map(|l| l[name.len()..].trim().to_string())
+        // It is ours: take the head, then the body (Content-Length).
+        let mut raw = Vec::new();
+        let mut chunk = [0u8; 8192];
+        let head_end = loop {
+            match stream.read(&mut chunk) {
+                Ok(0) | Err(_) => return true,
+                Ok(k) => raw.extend_from_slice(&chunk[..k]),
+            }
+            if let Some(i) = raw.windows(4).position(|w| w == b"\r\n\r\n") {
+                break i + 4;
+            }
+            if raw.len() > 64 * 1024 {
+                return true;
+            }
         };
-        // The address the visitor used, as a WebSocket base: wss:// behind a
-        // TLS proxy (it says so in X-Forwarded-Proto), else ws://.
-        let host = header("x-forwarded-host:")
-            .or_else(|| header("host:"))
+        let head = String::from_utf8_lossy(&raw[..head_end]).to_string();
+        let mut lines = head.lines();
+        let first = lines.next().unwrap_or("");
+        let mut words = first.split_whitespace();
+        let method = words.next().unwrap_or("GET").to_ascii_uppercase();
+        let target = words.next().unwrap_or("/").to_string();
+        let headers: Vec<(String, String)> = lines
+            .filter_map(|l| l.split_once(':'))
+            .map(|(k, v)| (k.trim().to_ascii_lowercase(), v.trim().to_string()))
+            .collect();
+        let header = |name: &str| {
+            headers
+                .iter()
+                .find(|(k, _)| k == name)
+                .map(|(_, v)| v.clone())
+        };
+        let len: usize = header("content-length")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
+        if len > WEB_BODY_MAX {
+            return true;
+        }
+        let mut body = raw[head_end..].to_vec();
+        while body.len() < len {
+            match stream.read(&mut chunk) {
+                Ok(0) | Err(_) => break,
+                Ok(k) => body.extend_from_slice(&chunk[..k]),
+            }
+        }
+        body.truncate(len);
+        let host = header("x-forwarded-host")
+            .or_else(|| header("host"))
             .unwrap_or_default();
-        let tls = header("x-forwarded-proto:").is_some_and(|p| p.eq_ignore_ascii_case("https"));
+        let tls = header("x-forwarded-proto").is_some_and(|p| p.eq_ignore_ascii_case("https"));
         let base = format!("{}://{host}", if tls { "wss" } else { "ws" });
-        let (status, ctype, body) = page(&target, &base);
-        let reason = if status == 200 { "OK" } else { "Not Found" };
+        let req = WebReq {
+            method: method.clone(),
+            target,
+            base,
+            headers,
+            body,
+        };
+        let resp = page(&req);
+        let reason = match resp.status {
+            200 => "OK",
+            303 => "See Other",
+            400 => "Bad Request",
+            403 => "Forbidden",
+            _ => "Not Found",
+        };
         let mut out = format!(
-            "HTTP/1.1 {status} {reason}\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\n\
+            "HTTP/1.1 {} {reason}\r\nContent-Type: {}\r\nContent-Length: {}\r\n\
              Cache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\n\
-             Referrer-Policy: no-referrer\r\nConnection: close\r\n\r\n",
-            body.len()
-        )
-        .into_bytes();
-        out.extend_from_slice(&body);
-        let _ = std::io::Read::read(stream, &mut buf);
+             X-Frame-Options: DENY\r\nReferrer-Policy: no-referrer\r\nConnection: close\r\n",
+            resp.status,
+            resp.ctype,
+            resp.body.len()
+        );
+        for (k, v) in &resp.headers {
+            out += &format!("{k}: {}\r\n", v.replace(['\r', '\n'], ""));
+        }
+        out += "\r\n";
+        let mut out = out.into_bytes();
+        if method != "HEAD" {
+            out.extend_from_slice(&resp.body);
+        }
         let _ = stream.write_all(&out);
         let _ = stream.flush();
         true

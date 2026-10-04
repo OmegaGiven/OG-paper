@@ -30,7 +30,10 @@ use std::path::{Path, PathBuf};
 
 use web_time::{Duration, Instant};
 
-use crate::net::native::Server;
+use std::sync::{Arc, Mutex};
+
+use crate::hubconsole::{Console, HubOp};
+use crate::net::native::{Server, WebResp};
 use crate::net::{page_keys_for, Ev};
 use crate::seal::Keys;
 use crate::wire::{Msg, PageInfo};
@@ -62,12 +65,16 @@ fn index_path(dir: &Path) -> PathBuf {
     dir.join("pages.txt")
 }
 
-fn page_path(dir: &Path, canvas: u128) -> PathBuf {
+/// Held while the index is read and rewritten (the console runs on the web
+/// thread).
+pub(crate) static INDEX: Mutex<()> = Mutex::new(());
+
+pub(crate) fn page_path(dir: &Path, canvas: u128) -> PathBuf {
     dir.join(format!("{canvas:032x}.ogp"))
 }
 
 /// The pages and their names, in the order they were made.
-fn read_index(dir: &Path) -> Vec<(u128, String)> {
+pub(crate) fn read_index(dir: &Path) -> Vec<(u128, String)> {
     std::fs::read_to_string(index_path(dir))
         .unwrap_or_default()
         .lines()
@@ -81,7 +88,7 @@ fn read_index(dir: &Path) -> Vec<(u128, String)> {
         .collect()
 }
 
-fn write_index(dir: &Path, pages: &[(u128, String)]) {
+pub(crate) fn write_index(dir: &Path, pages: &[(u128, String)]) {
     let text: String = pages
         .iter()
         .map(|(c, n)| format!("{c:032x}\t{}\n", n.replace(['\t', '\n'], " ")))
@@ -93,7 +100,7 @@ fn write_index(dir: &Path, pages: &[(u128, String)]) {
 }
 
 /// Make a page: an empty canvas file carrying its id.
-fn make_page(dir: &Path, name: &str) -> Option<u128> {
+pub(crate) fn make_page(dir: &Path, name: &str) -> Option<u128> {
     let canvas = crate::uid::new();
     let f = ogpaper_file::OgpFile::create(&page_path(dir, canvas)).ok()?;
     f.set_canvas_id(canvas).ok()?;
@@ -103,7 +110,7 @@ fn make_page(dir: &Path, name: &str) -> Option<u128> {
     Some(canvas)
 }
 
-fn clean_name(n: &str) -> String {
+pub(crate) fn clean_name(n: &str) -> String {
     let n: String = n.trim().chars().take(80).collect();
     if n.is_empty() {
         "Untitled page".into()
@@ -112,7 +119,7 @@ fn clean_name(n: &str) -> String {
     }
 }
 
-fn changed_ms(path: &Path) -> u64 {
+pub(crate) fn changed_ms(path: &Path) -> u64 {
     std::fs::metadata(path)
         .and_then(|m| m.modified())
         .ok()
@@ -175,7 +182,9 @@ pub fn run(dir: PathBuf, port: u16, public: Option<String>) {
         keys.view_token()
     );
     println!("Add it in OG Paper: Pages > Add server. Keep it private: it opens every page.");
-    // The page a browser sees at the server's address (see `hubpage`).
+    // The page a browser sees at the server's address (see `hubpage`), and
+    // the sign-in console under /console (see `hubconsole`).
+    let console = Arc::new(Mutex::new(Console::load(&dir)));
     if std::env::var("OGP_WEB").map_or(true, |v| v != "off") {
         let (d, edit, view, public) = (
             dir.clone(),
@@ -184,7 +193,21 @@ pub fn run(dir: PathBuf, port: u16, public: Option<String>) {
             public.clone(),
         );
         let name = std::env::var("OGP_SERVER_NAME").unwrap_or_else(|_| "OG Paper server".into());
-        server.set_web(move |target, base| {
+        let console = console.clone();
+        server.set_web(move |req| {
+            let path = req.target.split('?').next().unwrap_or("/");
+            if path == "/login"
+                || path == "/logout"
+                || path == "/console"
+                || path.starts_with("/console/")
+            {
+                let _g = INDEX.lock().unwrap_or_else(|e| e.into_inner());
+                return console
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .handle(req, &name);
+            }
+            let (target, base) = (req.target.as_str(), req.base.as_str());
             let pages = read_index(&d)
                 .into_iter()
                 .map(|(c, n)| (n, changed_ms(&page_path(&d, c))))
@@ -196,7 +219,13 @@ pub fn run(dir: PathBuf, port: u16, public: Option<String>) {
                 public: public.clone(),
                 pages,
             };
-            crate::hubpage::page(target, base, &info)
+            let (status, ctype, body) = crate::hubpage::page(target, base, &info);
+            WebResp {
+                status,
+                ctype,
+                headers: vec![],
+                body,
+            }
         });
         println!(
             "In a browser: http://<this address>:{}/ shows how to connect.",
@@ -207,6 +236,21 @@ pub fn run(dir: PathBuf, port: u16, public: Option<String>) {
     let view_token = keys.view_token();
     let mut conns: HashMap<u64, Conn> = HashMap::new();
     loop {
+        // What the console changed: rename or stop serving open pages.
+        if let Ok(mut c) = console.try_lock() {
+            for op in c.ops.drain(..) {
+                match op {
+                    HubOp::Renamed(canvas, name) => {
+                        if let Some(p) = pages.get_mut(&canvas) {
+                            p.app.ui.file_name = name;
+                        }
+                    }
+                    HubOp::Unload(canvas) => {
+                        pages.remove(&canvas);
+                    }
+                }
+            }
+        }
         for ev in server.poll() {
             match ev {
                 Ev::Open(id) => {
@@ -350,6 +394,7 @@ fn directory(
         return;
     };
     let Ok(m) = Msg::decode(&plain) else { return };
+    let _g = INDEX.lock().unwrap_or_else(|e| e.into_inner());
     // Only the edit form of the server link signs: it alone may change
     // the list, and sees the pages' edit keys.
     match m {

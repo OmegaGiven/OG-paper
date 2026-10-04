@@ -21,6 +21,8 @@ mod hotkeys;
 #[cfg(desktop)]
 mod hub;
 #[cfg(desktop)]
+mod hubconsole;
+#[cfg(desktop)]
 mod hubpage;
 mod images;
 mod import;

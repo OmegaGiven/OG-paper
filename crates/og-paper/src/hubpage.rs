@@ -22,7 +22,7 @@ pub struct Info {
 }
 
 /// Where the web app lives (it adds a server from `#server=<link>`).
-const WEB_APP: &str = "https://omegagiven.github.io/OG-paper/app/";
+pub(crate) const WEB_APP: &str = "https://omegagiven.github.io/OG-paper/app/";
 /// The App Store listing (iPhone, iPad and Mac).
 const APP_STORE: &str = "https://apps.apple.com/app/id6818948230";
 /// The TestFlight beta, while the App Store version is in review.
@@ -45,9 +45,9 @@ const CLIENTS: &[(&str, &str, &[(&str, &str)])] = &[
     ("Android", "Download og-paper-android-arm64.apk on the phone and open it to install.",
      &[("Download", RELEASES)]),
 ];
-const ICON: &str = include_str!("../../../packaging/icon.svg");
+pub(crate) const ICON: &str = include_str!("../../../packaging/icon.svg");
 
-fn esc(s: &str) -> String {
+pub(crate) fn esc(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
@@ -94,7 +94,7 @@ fn link_row(label: &str, note: &str, link: &str, open: bool) -> String {
     )
 }
 
-fn url_encode(s: &str) -> String {
+pub(crate) fn url_encode(s: &str) -> String {
     s.bytes()
         .map(|b| match b {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
@@ -184,6 +184,7 @@ header {{ display:flex; align-items:center; gap:16px; margin-bottom:26px; }}
 header svg {{ width:64px; height:64px; flex:none; }}
 h1 {{ margin:0; font-size:1.7rem; line-height:1.2; }}
 header p {{ margin:2px 0 0; color:var(--muted); }}
+header .signin {{ margin-left:auto; flex:none; }}
 h2 {{ font-size:1.05rem; margin:0 0 12px; letter-spacing:.2px; }}
 .card {{ background:var(--card); border:1px solid var(--edge); border-radius:16px; padding:18px 20px; margin:16px 0; }}
 .link {{ padding:10px 0; border-top:1px solid var(--edge); }}
@@ -202,7 +203,7 @@ ul.pages li:first-child {{ border-top:0; }} time {{ color:var(--muted); font-siz
 .note {{ color:var(--muted); font-size:.9rem; margin:12px 0 0; }} .note.ok {{ color:#9fd8a8; }}
 a {{ color:var(--ink); }} footer {{ color:var(--muted); font-size:.85rem; margin-top:26px; }}
 </style></head><body><main>
-<header>{icon}<div><h1>{name}</h1><p>An OG Paper server: shared pages anyone with the link can draw on together.</p></div></header>
+<header>{icon}<div><h1>{name}</h1><p>An OG Paper server: shared pages anyone with the link can draw on together.</p></div><a class="btn signin" href="/console">Sign in</a></header>
 <section class="card"><h2>Connect</h2>{links}{access}</section>
 <section class="card"><h2>Get OG Paper</h2><div class="clients">{clients}</div></section>
 <section class="card"><h2>How to join</h2><ol>
