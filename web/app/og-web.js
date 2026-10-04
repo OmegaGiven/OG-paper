@@ -17,6 +17,10 @@ const ICONS = {
   play: '<path d="M8 5v14l11-7z"/>',
   pause: '<path d="M8 5v14M16 5v14"/>',
   close: '<path d="M6 6l12 12M18 6L6 18"/>',
+  fold: '<path d="M6 15l6-6 6 6"/>',
+  unfold: '<path d="M6 9l6 6 6-6"/>',
+  home: '<path d="M4 11l8-7 8 7M6 10v10h12V10"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
 };
 const svg = name => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name]}</svg>`;
 
@@ -28,10 +32,26 @@ const CSS = `
   box-shadow: 0 1px 3px rgba(0,0,0,.15); padding: 0; display: grid; place-items: center; color: #2d2d37; }
 .og-icon svg { width: 22px; height: 22px; }
 .og-icon[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
-.og-card { position: fixed; z-index: 21; top: calc(96px + env(safe-area-inset-top)); right: calc(12px + env(safe-area-inset-right));
+.og-card { box-sizing: border-box; position: fixed; z-index: 21; top: calc(96px + env(safe-area-inset-top)); right: calc(12px + env(safe-area-inset-right));
   width: min(330px, calc(100vw - 24px)); max-height: calc(100dvh - 200px); overflow: auto; background: var(--face);
   border: 1px solid var(--edge); border-radius: 14px; box-shadow: 0 6px 24px rgba(0,0,0,.18); padding: 14px; }
 .og-card[hidden], .og-tl[hidden], .og-loading[hidden] { display: none; }
+.og-card *, .og-card *::before, .og-card *::after { box-sizing: border-box; }
+.og-card h2 { cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none; }
+.og-card.dragging { transition: none; opacity: .96; } .og-card.dragging h2 { cursor: grabbing; }
+.og-card h2 .og-hbtns { display: flex; gap: 2px; align-items: center; }
+.og-chips { display: none; }
+.og-card.og-collapsed { width: auto; max-width: calc(100vw - 24px); padding: 6px 6px 6px 10px; max-height: none; overflow: visible; }
+.og-card.og-collapsed > :not(h2) { display: none; }
+.og-card.og-collapsed h2 { margin: 0; gap: 6px; }
+.og-card.og-collapsed h2 > span:first-child { font-size: 0; width: 10px; height: 22px; flex: none;
+  background: radial-gradient(circle, var(--muted) 1.2px, transparent 1.6px) 0 0 / 5px 5px; opacity: .7; }
+.og-card.og-collapsed .og-chips { display: flex; gap: 6px; overflow-x: auto; flex: 1; min-width: 0; scrollbar-width: none; touch-action: pan-x; padding: 2px 0; }
+.og-chips::-webkit-scrollbar { display: none; }
+.og-card h2 .og-chips button { width: auto; height: auto; flex: none; border: 1px solid var(--edge); background: #fff; color: var(--ink); border-radius: 999px;
+  padding: 5px 10px; font: 600 13px/1 inherit; white-space: nowrap; display: flex; align-items: center; gap: 4px; }
+.og-card h2 .og-chips button svg { width: 15px; height: 15px; }
+.og-card h2 .og-chips button.add { color: var(--muted); }
 .og-card h2 { font-size: 15px; margin: 0 0 8px; display: flex; justify-content: space-between; align-items: center; }
 .og-card h2 button { border: 0; background: none; padding: 2px; width: 26px; height: 26px; color: var(--muted); }
 .og-card h2 button svg { width: 18px; height: 18px; }
@@ -251,10 +271,66 @@ export async function start({ mode = 'app' } = {}) {
     toastTimer = setTimeout(() => toast.classList.remove('on'), 2600);
   };
 
+  // Cards move by their title bar (mouse, pen or finger) and remember
+  // where they were left, kept on screen.
+  const posKey = c => 'og-card-pos:' + c.dataset.name;
+  const keepOnScreen = c => {
+    if (!c.style.left) return;
+    const r = c.getBoundingClientRect();
+    const x = Math.min(Math.max(8, r.left), Math.max(8, innerWidth - r.width - 8));
+    const y = Math.min(Math.max(8, r.top), Math.max(8, innerHeight - r.height - 8));
+    c.style.left = x + 'px';
+    c.style.top = y + 'px';
+  };
+  const placeCard = c => {
+    let p = null;
+    try { p = JSON.parse(localStorage.getItem(posKey(c)) || 'null'); } catch (e) {}
+    if (p && Number.isFinite(p.x) && Number.isFinite(p.y)) {
+      c.style.left = p.x + 'px'; c.style.top = p.y + 'px'; c.style.right = 'auto';
+      requestAnimationFrame(() => keepOnScreen(c));
+    }
+  };
+  const draggable = c => {
+    const h = c.querySelector('h2');
+    let drag = null;
+    h.addEventListener('pointerdown', e => {
+      if (e.button || e.target.closest('button, input, .og-chips')) return;
+      const r = c.getBoundingClientRect();
+      drag = { id: e.pointerId, dx: e.clientX - r.left, dy: e.clientY - r.top };
+      h.setPointerCapture(e.pointerId);
+      c.classList.add('dragging');
+      e.preventDefault();
+    });
+    h.addEventListener('pointermove', e => {
+      if (!drag || e.pointerId !== drag.id) return;
+      c.style.right = 'auto';
+      c.style.left = (e.clientX - drag.dx) + 'px';
+      c.style.top = (e.clientY - drag.dy) + 'px';
+      keepOnScreen(c);
+    });
+    const end = e => {
+      if (!drag || e.pointerId !== drag.id) return;
+      drag = null;
+      c.classList.remove('dragging');
+      try { localStorage.setItem(posKey(c), JSON.stringify({ x: parseFloat(c.style.left), y: parseFloat(c.style.top) })); } catch (e) {}
+    };
+    h.addEventListener('pointerup', end);
+    h.addEventListener('pointercancel', end);
+    // Double-tap the title bar: back to where it starts.
+    h.addEventListener('dblclick', e => {
+      if (e.target.closest('button, .og-chips')) return;
+      c.style.left = c.style.top = c.style.right = '';
+      try { localStorage.removeItem(posKey(c)); } catch (e) {}
+    });
+  };
+  addEventListener('resize', () => document.querySelectorAll('.og-card').forEach(keepOnScreen));
+
   const card = title => {
-    const c = el('section', { class: 'og-card', hidden: '' });
-    c.append(el('h2', {}, `<span>${title}</span><button aria-label="Close">${svg('close')}</button>`));
-    c.querySelector('h2 button').onclick = () => show(null);
+    const c = el('section', { class: 'og-card', hidden: '', 'data-name': title });
+    c.append(el('h2', {}, `<span>${title}</span><span class="og-hbtns"><button class="close" aria-label="Close" title="Close">${svg('close')}</button></span>`));
+    c.querySelector('h2 .close').onclick = () => { if (c === cards.bookmarks) bmBar = false; show(null); if (c === cards.bookmarks) syncCards(); };
+    draggable(c);
+    placeCard(c);
     root.append(c);
     return c;
   };
@@ -262,9 +338,18 @@ export async function start({ mode = 'app' } = {}) {
   // ---- cards ----
   const cards = {};
   let open = null;
+  // Bookmarks folded into a bar stays up while other cards come and go.
+  let bmCollapsed = false, bmBar = false;
+  try { bmCollapsed = localStorage.getItem('og-bm-collapsed') === '1'; } catch (e) {}
+  function syncCards() {
+    for (const [n, c] of Object.entries(cards)) {
+      c.hidden = !(n === open || (n === 'bookmarks' && bmCollapsed && bmBar));
+    }
+  }
   function show(name) {
     open = open === name ? null : name;
-    for (const [n, c] of Object.entries(cards)) c.hidden = n !== open;
+    if (open === 'bookmarks') bmBar = true;
+    syncCards();
   }
   // Esc closes an open card (the app closes its own menus).
   document.addEventListener('keydown', e => {
@@ -289,6 +374,50 @@ export async function start({ mode = 'app' } = {}) {
     el('form', { class: 'og-row' }, '<input name="name" placeholder="Name this view" maxlength="60" autocomplete="off"><button class="og-btn primary">Save view</button>'),
     el('ul', { class: 'og-list og-home' }, '<li><button class="go" data-home>Home<small>where the canvas starts</small></button></li>'),
     el('ul', { class: 'og-list og-marks' }));
+  // Folded: a bar of chips that scrolls sideways (Home first, then each
+  // bookmark by its initials), with + to save the view here.
+  {
+    const h = cards.bookmarks.querySelector('h2');
+    const chips = el('div', { class: 'og-chips' });
+    h.insertBefore(chips, h.querySelector('.og-hbtns'));
+    const fold = el('button', { class: 'fold', 'aria-label': 'Fold into a bar', title: 'Fold into a bar' }, svg('fold'));
+    h.querySelector('.og-hbtns').prepend(fold);
+    const setFold = on => {
+      bmCollapsed = on;
+      cards.bookmarks.classList.toggle('og-collapsed', on);
+      fold.innerHTML = svg(on ? 'unfold' : 'fold');
+      fold.title = fold.ariaLabel = on ? 'Open the full bookmarks' : 'Fold into a bar';
+      try { localStorage.setItem('og-bm-collapsed', on ? '1' : '0'); } catch (e) {}
+      if (on) { bmBar = true; if (open === 'bookmarks') open = null; }
+      else if (bmBar) open = 'bookmarks';
+      syncCards();
+      requestAnimationFrame(() => keepOnScreen(cards.bookmarks));
+    };
+    fold.onclick = () => setFold(!bmCollapsed);
+    cards.bookmarks.classList.toggle('og-collapsed', bmCollapsed);
+    fold.innerHTML = svg(bmCollapsed ? 'unfold' : 'fold');
+    chips.onclick = e => {
+      const b = e.target.closest('button');
+      if (!b) return;
+      if (b.dataset.home != null) og_home();
+      else if (b.classList.contains('add')) {
+        const name = prompt('Name this view', '');
+        if (name != null) og_bookmark_add(name);
+      } else og_bookmark_go(+b.dataset.i);
+    };
+    cards.bookmarks.renderChips = marks => {
+      const abbr = n => {
+        const w = n.trim().split(/\s+/).filter(Boolean);
+        if (!w.length) return '?';
+        if (w.length === 1) return w[0].slice(0, 4);
+        return w.slice(0, 3).map(x => [...x][0]).join('').toUpperCase();
+      };
+      chips.innerHTML = `<button data-home title="Home: where the canvas starts">${svg('home')}Home</button>`
+        + marks.map((b, i) => `<button data-i="${i}" title="${esc(b.name)}">${esc(abbr(b.name))}</button>`).join('')
+        + `<button class="add" title="Save this view">${svg('plus')}</button>`;
+    };
+    cards.bookmarks.renderChips([]);
+  }
   // Home is always there, above your own bookmarks.
   cards.bookmarks.querySelector('[data-home]').onclick = () => {
     og_home();
@@ -1459,6 +1588,7 @@ export async function start({ mode = 'app' } = {}) {
           ? s.bookmarks.map((b, i) => `<li data-i="${i}"><button class="go">${fmt(b.name)}<small>zoom ${zoomText(b.zoom)}</small></button>
               <button class="mini" data-act="bar" title="Put it in the quick toolbar">+ bar</button><button class="mini" data-act="rename" title="Rename">Rename</button><button class="mini" data-act="remove" title="Delete" aria-label="Delete">✕</button></li>`).join('')
           : '<li class="og-empty">No bookmarks yet.</li>';
+        cards.bookmarks.renderChips(s.bookmarks);
       }
 
       // Timeline.
