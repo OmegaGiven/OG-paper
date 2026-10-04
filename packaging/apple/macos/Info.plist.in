@@ -10,6 +10,9 @@
   <key>CFBundleIconName</key><string>AppIcon</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+  <!-- Export compliance: standard algorithms (ChaCha20-Poly1305, Ed25519, TLS)
+       in publicly available open-source code; no documentation needed. -->
+  <key>ITSAppUsesNonExemptEncryption</key><false/>
   <key>CFBundleShortVersionString</key><string>__VERSION__</string>
   <key>CFBundleVersion</key><string>__BUILD__</string>
   <key>LSApplicationCategoryType</key><string>public.app-category.graphics-design</string>
