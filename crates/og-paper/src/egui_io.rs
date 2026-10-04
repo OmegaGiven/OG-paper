@@ -69,7 +69,21 @@ impl EguiIo {
         #[cfg(not(target_arch = "wasm32"))]
         self.state.handle_platform_output(window, out);
         #[cfg(target_arch = "wasm32")]
-        let _ = (window, out);
+        {
+            let _ = window;
+            // The page puts copied text on the clipboard.
+            for c in out.commands {
+                if let egui::OutputCommand::CopyText(t) = c {
+                    crate::web::set_copied(t);
+                }
+            }
+        }
+    }
+
+    /// An event from the page (paste, copy, cut in a text box).
+    #[cfg(target_arch = "wasm32")]
+    pub fn push_event(&mut self, ev: egui::Event) {
+        self.web.events.push(ev);
     }
 }
 
@@ -82,7 +96,7 @@ mod web {
 
     pub struct WebInput {
         ctx: egui::Context,
-        events: Vec<Event>,
+        pub(super) events: Vec<Event>,
         pos: Option<Pos2>,
         mods: Modifiers,
         max_texture_side: usize,

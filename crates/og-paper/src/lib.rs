@@ -2530,6 +2530,16 @@ impl App {
                 let k = web_dpr() as f64;
                 self.insert_image(a, at.map(|p| [p[0] * k, p[1] * k]));
             }
+            Cmd::Field(kind, text) => {
+                let ev = match kind.as_str() {
+                    "paste" => egui::Event::Paste(text),
+                    "cut" => egui::Event::Cut,
+                    _ => egui::Event::Copy,
+                };
+                if let Some(io) = self.egui_io.as_mut() {
+                    io.push_event(ev);
+                }
+            }
             Cmd::PasteText(t, at) => {
                 let k = web_dpr() as f64;
                 self.paste_text(&t, at.map(|p| [p[0] * k, p[1] * k]));
@@ -2627,6 +2637,7 @@ impl App {
     #[cfg(target_arch = "wasm32")]
     fn web_publish(&mut self) {
         web::set_has_selection(self.ui.tool.selects() && !self.edit.selection.is_empty());
+        web::set_wants_text(self.egui_ctx.egui_wants_keyboard_input());
         if web::snapshot_wanted() {
             // Saved as it is now, not as the timeline is showing it.
             let mut scene_flags = None;

@@ -6,7 +6,7 @@
 
 import init, {
   og_load, og_demo, og_blank, og_status, og_requests, og_set_menu, og_text_request, og_text_done, og_font_add,
-  og_copy, og_paste_own, og_paste_image, og_paste_text, og_pdf_page,
+  og_copy, og_paste_own, og_wants_text, og_text_field, og_copied_take, og_paste_image, og_paste_text, og_pdf_page,
   og_home, og_bookmark_add, og_bookmark_go, og_bookmark_remove, og_bookmark_rename, og_bookmark_to_bar,
   og_search, og_search_results, og_search_go, og_export, og_export_take, og_has_selection,
   og_sticker_take, og_sticker_svg, og_sticker_place, og_import, og_merge, og_changes_take, og_merge_quiet, og_set_folder, og_net_url, og_net_take, og_net_open, og_net_recv, og_net_closed, og_join, og_poke, og_rtc_host, og_rtc_closing, og_view_token, og_relay_share, og_dir_requests, og_page_arg, og_set_pages, og_plugin_install, og_pack_install, og_pack_sticker_take, og_run, og_set_name, og_add_server,
@@ -1007,8 +1007,27 @@ export async function start({ mode = 'app' } = {}) {
   window.addEventListener('keydown', e => {
     if ((e.ctrlKey || e.metaKey) && !e.altKey && ['c', 'x', 'v'].includes(e.key.toLowerCase()) && onCanvas(e)) e.stopPropagation();
   }, true);
+  // A text box in the app (Share live, a name, ...) has the keyboard: copy,
+  // cut and paste are its, not the canvas's.
+  const intoField = (kind, e) => {
+    if (!onCanvas(e) || !og_wants_text()) return false;
+    e.preventDefault();
+    og_text_field(kind, kind === 'paste' ? (e.clipboardData?.getData('text/plain') || '') : '');
+    if (kind !== 'paste') {
+      // The app hands the copied text over on its next frame.
+      let tries = 0;
+      const take = () => {
+        const t = og_copied_take();
+        if (t != null) navigator.clipboard?.writeText(t).catch(() => {});
+        else if (++tries < 20) setTimeout(take, 25);
+      };
+      setTimeout(take, 25);
+    }
+    return true;
+  };
   for (const kind of ['copy', 'cut']) {
     document.addEventListener(kind, e => {
+      if (intoField(kind, e)) return;
       if (!onCanvas(e) || !og_copy(kind === 'cut')) return;
       e.clipboardData.setData('text/plain', CLIP_MARK);
       e.preventDefault();
@@ -1167,6 +1186,7 @@ export async function start({ mode = 'app' } = {}) {
   let pointer = null;
   document.addEventListener('pointermove', e => { pointer = [e.clientX, e.clientY]; });
   document.addEventListener('paste', e => {
+    if (intoField('paste', e)) return;
     if (!onCanvas(e)) return;
     e.preventDefault();
     pasteFrom(e.clipboardData, pointer);

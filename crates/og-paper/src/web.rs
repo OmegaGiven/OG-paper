@@ -88,6 +88,8 @@ pub enum Cmd {
     PdfPage(crate::images::Asset, usize, usize, Option<[f64; 2]>, String),
     /// Text pasted or dropped (a table if it looks like one).
     PasteText(String, Option<[f64; 2]>),
+    /// Paste, copy or cut in the focused text box (not the canvas).
+    Field(String, String),
 }
 
 /// Counters the try-mode tour checks off.
@@ -122,6 +124,39 @@ thread_local! {
     static NET_OUT: RefCell<std::collections::VecDeque<(u64, Vec<u8>)>> = RefCell::default();
     static SEARCH_OUT: RefCell<String> = RefCell::new("[]".into());
     static HAS_SELECTION: Cell<bool> = const { Cell::new(false) };
+    static WANTS_TEXT: Cell<bool> = const { Cell::new(false) };
+    static COPIED: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+/// Whether a text box has the keyboard (so pastes go to it).
+pub fn set_wants_text(on: bool) {
+    WANTS_TEXT.with(|h| h.set(on));
+}
+
+/// Text a text box copied, for the page to put on the clipboard.
+pub fn set_copied(text: String) {
+    COPIED.with(|c| *c.borrow_mut() = Some(text));
+}
+
+/// Whether a text box in the app has the keyboard: paste, copy and cut
+/// then belong to it, not the canvas.
+#[wasm_bindgen]
+pub fn og_wants_text() -> bool {
+    WANTS_TEXT.with(|h| h.get())
+}
+
+/// Paste `text` into, or copy or cut from, the focused text box
+/// (`kind` is "paste", "copy" or "cut"); a copy's text comes back from
+/// `og_copied_take`.
+#[wasm_bindgen]
+pub fn og_text_field(kind: String, text: String) {
+    push(Cmd::Field(kind, text));
+}
+
+/// What a text box copied, once.
+#[wasm_bindgen]
+pub fn og_copied_take() -> Option<String> {
+    COPIED.with(|c| c.borrow_mut().take())
 }
 
 /// Whether something is selected (so the page knows a copy has something).
