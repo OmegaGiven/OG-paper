@@ -64,7 +64,7 @@ fn query_key(target: &str) -> Option<&str> {
 
 /// Answer `target` (path and query) for a visitor who reached the server at
 /// `base` (`ws://host:port`, or `wss://` behind a TLS proxy).
-pub fn page(target: &str, base: &str, info: &Info) -> (u16, &'static str, Vec<u8>) {
+pub fn page(target: &str, base: &str, info: &Info, nav: &str) -> (u16, &'static str, Vec<u8>) {
     let path = target.split('?').next().unwrap_or("/");
     match path {
         "/icon.svg" | "/favicon.ico" => (200, "image/svg+xml", ICON.as_bytes().to_vec()),
@@ -72,7 +72,7 @@ pub fn page(target: &str, base: &str, info: &Info) -> (u16, &'static str, Vec<u8
         "/" | "/index.html" => (
             200,
             "text/html; charset=utf-8",
-            html(target, base, info).into_bytes(),
+            html(target, base, info, nav).into_bytes(),
         ),
         _ => (404, "text/plain; charset=utf-8", b"not found\n".to_vec()),
     }
@@ -105,7 +105,7 @@ pub(crate) fn url_encode(s: &str) -> String {
         .collect()
 }
 
-fn html(target: &str, base: &str, info: &Info) -> String {
+fn html(target: &str, base: &str, info: &Info, nav: &str) -> String {
     let admin = query_key(target).is_some_and(|k| k == info.edit_key);
     let base = base.trim_end_matches('/');
     let mut links = String::new();
@@ -184,7 +184,6 @@ header {{ display:flex; align-items:center; gap:16px; margin-bottom:26px; }}
 header svg {{ width:64px; height:64px; flex:none; }}
 h1 {{ margin:0; font-size:1.7rem; line-height:1.2; }}
 header p {{ margin:2px 0 0; color:var(--muted); }}
-header .signin {{ margin-left:auto; flex:none; }}
 h2 {{ font-size:1.05rem; margin:0 0 12px; letter-spacing:.2px; }}
 .card {{ background:var(--card); border:1px solid var(--edge); border-radius:16px; padding:18px 20px; margin:16px 0; }}
 .link {{ padding:10px 0; border-top:1px solid var(--edge); }}
@@ -202,8 +201,9 @@ ul.pages li:first-child {{ border-top:0; }} time {{ color:var(--muted); font-siz
 .client small {{ display:block; color:var(--muted); font-size:.85rem; margin:2px 0 4px; }}
 .note {{ color:var(--muted); font-size:.9rem; margin:12px 0 0; }} .note.ok {{ color:#9fd8a8; }}
 a {{ color:var(--ink); }} footer {{ color:var(--muted); font-size:.85rem; margin-top:26px; }}
-</style></head><body><main>
-<header>{icon}<div><h1>{name}</h1><p>An OG Paper server: shared pages anyone with the link can draw on together.</p></div><a class="btn signin" href="/console">Sign in</a></header>
+{nav_css}</style></head><body><main>
+<header>{icon}<div><h1>{name}</h1><p>An OG Paper server: shared pages anyone with the link can draw on together.</p></div></header>
+{nav}
 <section class="card"><h2>Connect</h2>{links}{access}</section>
 <section class="card"><h2>Get OG Paper</h2><div class="clients">{clients}</div></section>
 <section class="card"><h2>How to join</h2><ol>
@@ -226,6 +226,7 @@ document.querySelectorAll('time[data-t]').forEach(e => e.textContent = ago(+e.da
 </script></body></html>"##,
         name = esc(&info.name),
         icon = ICON.trim(),
+        nav_css = crate::hubconsole::NAV_CSS,
     )
 }
 
@@ -245,7 +246,7 @@ mod tests {
 
     #[test]
     fn the_page_shows_the_view_link_but_never_the_full_one_without_the_key() {
-        let (status, _, body) = page("/", "ws://10.0.0.5:8991", &info());
+        let (status, _, body) = page("/", "ws://10.0.0.5:8991", &info(), "");
         let html = String::from_utf8(body).unwrap();
         assert_eq!(status, 200);
         assert!(html.contains("ws://10.0.0.5:8991/?k=vVIEW"));
@@ -254,16 +255,16 @@ mod tests {
         assert!(!html.contains("eSECRET"));
         assert!(html.contains("Test &lt;server&gt;"));
         // With the key, the full link shows too.
-        let (_, _, body) = page("/?k=eSECRET", "ws://10.0.0.5:8991", &info());
+        let (_, _, body) = page("/?k=eSECRET", "ws://10.0.0.5:8991", &info(), "");
         assert!(String::from_utf8(body)
             .unwrap()
             .contains("ws://10.0.0.5:8991/?k=eSECRET"));
         // A wrong key is no key.
-        let (_, _, body) = page("/?k=eWRONG", "ws://10.0.0.5:8991", &info());
+        let (_, _, body) = page("/?k=eWRONG", "ws://10.0.0.5:8991", &info(), "");
         assert!(!String::from_utf8(body).unwrap().contains("eSECRET"));
-        assert_eq!(page("/nope", "ws://x", &info()).0, 404);
+        assert_eq!(page("/nope", "ws://x", &info(), "").0, 404);
         // Every client has a way in.
-        let (_, _, body) = page("/", "ws://10.0.0.5:8991", &info());
+        let (_, _, body) = page("/", "ws://10.0.0.5:8991", &info(), "");
         let html = String::from_utf8(body).unwrap();
         for want in [
             WEB_APP,

@@ -315,12 +315,24 @@ impl Console {
         Some((user, csrf))
     }
 
+    /// The tab bar for the home page: live when signed in, greyed (each tab
+    /// leading to sign-in) when not.
+    pub fn home_nav(&mut self, req: &WebReq) -> String {
+        let s = self.session(req);
+        nav(s.as_ref().map(|(u, c)| (u, c.as_str())), "/")
+    }
+
     /// Answer a request under `/console` (or `/login`, `/logout`).
     pub fn handle(&mut self, req: &WebReq, server_name: &str) -> WebResp {
         let path = req.target.split('?').next().unwrap_or("/");
         let secure = req.base.starts_with("wss://");
         match (req.method.as_str(), path) {
-            ("GET", "/login") => html(self.login_page(server_name, None)),
+            ("GET", "/login") => {
+                if self.session(req).is_some() {
+                    return redirect(&safe_next(query(&req.target, "next")));
+                }
+                html(self.login_page(server_name, None, &safe_next(query(&req.target, "next"))))
+            }
             ("POST", "/login") => self.login(req, server_name, secure),
             ("POST", "/logout") => {
                 if let Some((_, csrf)) = self.session(req) {
@@ -347,7 +359,7 @@ impl Console {
             }
             (_, p) if p == "/console" || p.starts_with("/console/") => {
                 let Some((user, csrf)) = self.session(req) else {
-                    return redirect("/login");
+                    return redirect(&format!("/login?next={}", url_encode(p)));
                 };
                 if req.method == "POST" {
                     let f = form(&req.body);
@@ -382,6 +394,7 @@ impl Console {
 
     fn login(&mut self, req: &WebReq, server_name: &str, secure: bool) -> WebResp {
         let f = form(&req.body);
+        let next = safe_next(f.get("next").cloned());
         let name = f
             .get("user")
             .map(|s| s.trim().to_string())
@@ -393,6 +406,7 @@ impl Console {
                 return html(self.login_page(
                     server_name,
                     Some("Too many tries: wait a minute and try again."),
+                    &next,
                 ));
             }
         }
@@ -411,6 +425,7 @@ impl Console {
             return html(self.login_page(
                 server_name,
                 Some("That user name and password don't match."),
+                &next,
             ));
         }
         self.fails.remove(&name);
@@ -424,7 +439,7 @@ impl Console {
                 last: Instant::now(),
             },
         );
-        let mut r = redirect("/console");
+        let mut r = redirect(&next);
         r.headers.push((
             "Set-Cookie".into(),
             format!(
@@ -754,26 +769,13 @@ impl Console {
     fn shell(
         &self,
         title: &str,
+        active: &str,
         server: &str,
         user: Option<(&User, &str)>,
         msg: Option<String>,
         body: &str,
     ) -> String {
-        let nav = match user {
-            Some((u, csrf)) => format!(
-                r#"<nav><a href="/console">Pages</a>{users}<a href="/console/password">Password</a>
-<span class="who">{name} · {role}</span>
-<form method="post" action="/logout"><input type="hidden" name="csrf" value="{csrf}"><button class="btn">Sign out</button></form></nav>"#,
-                users = if u.role == Role::Admin {
-                    r#"<a href="/console/users">Users</a>"#
-                } else {
-                    ""
-                },
-                name = esc(&u.name),
-                role = u.role.label(),
-            ),
-            None => String::new(),
-        };
+        let nav = nav(user, active);
         let warn = match user {
             Some((u, _)) if u.must_change => r#"<p class="flash warn">You're using a temporary password. <a href="/console/password">Change it now</a>.</p>"#.to_string(),
             _ => String::new(),
@@ -785,7 +787,7 @@ impl Console {
         format!(
             r##"<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex">
-<title>{title} · {server}</title><link rel="icon" href="/icon.svg"><style>{CSS}</style></head>
+<title>{title} · {server}</title><link rel="icon" href="/icon.svg"><style>{CSS}{NAV_CSS}</style></head>
 <body><main><header><a href="/" class="logo">{icon}</a><div><h1>{title}</h1><p>{server}</p></div></header>
 {nav}{warn}{flash}{body}</main>
 <script>
@@ -804,20 +806,21 @@ document.querySelectorAll('time[data-t]').forEach(e => e.textContent = ago(+e.da
         )
     }
 
-    fn login_page(&self, server: &str, err: Option<&str>) -> String {
+    fn login_page(&self, server: &str, err: Option<&str>, next: &str) -> String {
         let body = format!(
             r#"<section class="card narrow"><h2>Sign in</h2>{err}
-<form method="post" action="/login" class="stack">
+<form method="post" action="/login" class="stack"><input type="hidden" name="next" value="{next}">
 <label>User name<input name="user" autocomplete="username" required autofocus></label>
 <label>Password<input name="password" type="password" autocomplete="current-password" required></label>
 <button class="btn primary">Sign in</button></form>
 <p class="note">The server's first account is <b>admin</b> with the password <b>password</b>; change it after signing in.</p>
-<p class="note"><a href="/">← How to connect</a></p></section>"#,
+</section>"#,
+            next = esc(next),
             err = err
                 .map(|e| format!(r#"<p class="flash warn">{}</p>"#, esc(e)))
                 .unwrap_or_default()
         );
-        self.shell("Console", server, None, None, &body)
+        self.shell("Sign in", "", server, None, None, &body)
     }
 
     fn password_page(&self, server: &str, user: &User, csrf: &str, msg: Option<String>) -> String {
@@ -829,7 +832,14 @@ document.querySelectorAll('time[data-t]').forEach(e => e.textContent = ago(+e.da
 <label>New password again<input name="again" type="password" autocomplete="new-password" minlength="8" required></label>
 <button class="btn primary">Change password</button></form></section>"#
         );
-        self.shell("Password", server, Some((user, csrf)), msg, &body)
+        self.shell(
+            "Password",
+            "/console/password",
+            server,
+            Some((user, csrf)),
+            msg,
+            &body,
+        )
     }
 
     fn users_page(&self, server: &str, user: &User, csrf: &str, msg: Option<String>) -> String {
@@ -880,7 +890,14 @@ document.querySelectorAll('time[data-t]').forEach(e => e.textContent = ago(+e.da
 <p class="note">They're asked to change the temporary password after signing in.</p></section>"#,
             r = roles(Role::User),
         );
-        self.shell("Users", server, Some((user, csrf)), msg, &body)
+        self.shell(
+            "Users",
+            "/console/users",
+            server,
+            Some((user, csrf)),
+            msg,
+            &body,
+        )
     }
 
     fn pages_page(
@@ -1054,9 +1071,66 @@ document.querySelectorAll('time[data-t]').forEach(e => e.textContent = ago(+e.da
             r#"<section class="card"><h2>Pages</h2>{make}<ul class="tree">{list}</ul>
 <p class="note"><b>Open</b> opens the page in the web app; <b>Copy link</b> copies the page's link for the desktop and mobile apps (Share live › Join). Anyone with a page's link can draw on it.</p></section>{deleted}"#
         );
-        self.shell("Console", server, Some((user, csrf)), msg, &body)
+        self.shell("Pages", "/console", server, Some((user, csrf)), msg, &body)
     }
 }
+
+/// Where to go after signing in: a path on this server, else the pages.
+fn safe_next(next: Option<String>) -> String {
+    match next {
+        Some(n)
+            if n.starts_with('/') && !n.starts_with("//") && !n.contains('\\') && n != "/login" =>
+        {
+            n
+        }
+        _ => "/console".into(),
+    }
+}
+
+/// The tab bar: Home, Pages, Users (admins), Password. Signed out, the
+/// console tabs are greyed and lead to sign-in, then back to the tab.
+fn nav(user: Option<(&User, &str)>, active: &str) -> String {
+    let tab = |href: &str, label: &str, live: bool| -> String {
+        let on = if href == active { " on" } else { "" };
+        if live {
+            format!(r#"<a class="tab{on}" href="{href}">{label}</a>"#)
+        } else {
+            format!(
+                r#"<a class="tab off{on}" href="/login?next={}" title="Sign in to use {label}">{label}</a>"#,
+                url_encode(href)
+            )
+        }
+    };
+    let signed = user.is_some();
+    let admin = user.is_some_and(|(u, _)| u.role == Role::Admin);
+    let mut tabs = tab("/", "Home", true);
+    tabs += &tab("/console", "Pages", signed);
+    if admin || !signed {
+        tabs += &tab("/console/users", "Users", admin);
+    }
+    tabs += &tab("/console/password", "Password", signed);
+    let right = match user {
+        Some((u, csrf)) => format!(
+            r#"<span class="who">{name} · {role}</span>
+<form method="post" action="/logout"><input type="hidden" name="csrf" value="{csrf}"><button class="btn">Sign out</button></form>"#,
+            name = esc(&u.name),
+            role = u.role.label(),
+        ),
+        None if active.is_empty() => String::new(),
+        None => r#"<a class="btn primary who-btn" href="/login">Sign in</a>"#.into(),
+    };
+    format!(r#"<nav class="tabs">{tabs}{right}</nav>"#)
+}
+
+/// Styles for the tab bar (shared with the home page).
+pub const NAV_CSS: &str = r#"
+nav.tabs { display:flex; flex-wrap:wrap; align-items:center; gap:6px; margin:6px 0 16px; border-bottom:1px solid #2b2f37; padding-bottom:10px; }
+nav.tabs .tab { color:#eef0e8; text-decoration:none; font-weight:600; padding:6px 12px; border-radius:10px; }
+nav.tabs .tab:hover { background:#22262e; } nav.tabs .tab.on { background:#22262e; color:#e2457a; }
+nav.tabs .tab.off { color:#5c6069; } nav.tabs .tab.off:hover { color:#a0a3ab; background:none; }
+nav.tabs .who { margin-left:auto; color:#a0a3ab; font-size:.9rem; } nav.tabs .who-btn { margin-left:auto; }
+nav.tabs form { margin:0; }
+"#;
 
 const CSS: &str = r#"
 :root { --bg:#101216; --card:#191c22; --ink:#eef0e8; --muted:#a0a3ab; --edge:#2b2f37; --pink:#e2457a; --warn:#f2c46d; }
@@ -1067,9 +1141,6 @@ header { display:flex; align-items:center; gap:14px; margin-bottom:16px; }
 header svg { width:52px; height:52px; } header .logo { display:flex; }
 h1 { margin:0; font-size:1.5rem; } header p { margin:0; color:var(--muted); }
 h2 { font-size:1.05rem; margin:0 0 12px; }
-nav { display:flex; flex-wrap:wrap; align-items:center; gap:14px; margin:6px 0 14px; }
-nav a { color:var(--ink); text-decoration:none; font-weight:600; } nav a:hover { color:var(--pink); }
-nav .who { margin-left:auto; color:var(--muted); font-size:.9rem; } nav form { margin:0; }
 .card { background:var(--card); border:1px solid var(--edge); border-radius:16px; padding:16px 18px; margin:14px 0; }
 .card.narrow { max-width:440px; }
 .flash { background:#1f2a22; border:1px solid #2f4a36; color:#bfe8c6; border-radius:12px; padding:10px 14px; }

@@ -219,7 +219,11 @@ pub fn run(dir: PathBuf, port: u16, public: Option<String>) {
                 public: public.clone(),
                 pages,
             };
-            let (status, ctype, body) = crate::hubpage::page(target, base, &info);
+            let nav = console
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .home_nav(req);
+            let (status, ctype, body) = crate::hubpage::page(target, base, &info, &nav);
             WebResp {
                 status,
                 ctype,
