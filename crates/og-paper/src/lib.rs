@@ -2719,8 +2719,17 @@ impl App {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(g) = self.gpu.as_mut() {
             let s = render::surface_size(&window);
-            if s.width > 0 && s.height > 0 && (s.width, s.height) != (g.config.width, g.config.height) {
-                log::info!("surface {}x{} -> {}x{}", g.config.width, g.config.height, s.width, s.height);
+            if s.width > 0
+                && s.height > 0
+                && (s.width, s.height) != (g.config.width, g.config.height)
+            {
+                log::info!(
+                    "surface {}x{} -> {}x{}",
+                    g.config.width,
+                    g.config.height,
+                    s.width,
+                    s.height
+                );
                 g.resize(s.width, s.height);
             }
         }
@@ -2973,7 +2982,11 @@ impl App {
         );
         if self.frames_logged < 12 {
             self.frames_logged += 1;
-            log::info!("frame {}: {} UI meshes, shown {shown}", self.frames_logged, n_prims);
+            log::info!(
+                "frame {}: {} UI meshes, shown {shown}",
+                self.frames_logged,
+                n_prims
+            );
         }
         if !shown {
             log::debug!("frame not presented; retrying");

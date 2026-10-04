@@ -23,6 +23,28 @@ pub struct Info {
 
 /// Where the web app lives (it adds a server from `#server=<link>`).
 const WEB_APP: &str = "https://omegagiven.github.io/OG-paper/app/";
+/// The App Store listing (iPhone, iPad and Mac).
+const APP_STORE: &str = "https://apps.apple.com/app/id6818948230";
+/// The TestFlight beta, while the App Store version is in review.
+const TESTFLIGHT: &str = "https://testflight.apple.com/join/8XNBfTZ9";
+/// Builds for Windows, Linux, Android and the Mac (outside the App Store).
+const RELEASES: &str = "https://github.com/OmegaGiven/OG-paper/releases";
+
+/// The ways to get OG Paper: platform, how, and links (label, url).
+const CLIENTS: &[(&str, &str, &[(&str, &str)])] = &[
+    ("Any browser", "Nothing to install: works on phones, tablets and computers, and can be added to the home screen.",
+     &[("Open the web app", WEB_APP)]),
+    ("iPhone and iPad", "The App Store app (or the TestFlight beta).",
+     &[("App Store", APP_STORE), ("TestFlight beta", TESTFLIGHT)]),
+    ("Mac", "The Mac App Store, or the download (og-paper-macos-universal.zip).",
+     &[("Mac App Store", APP_STORE), ("Download", RELEASES)]),
+    ("Windows", "Download og-paper-windows-x86_64.zip, unzip it and run og-paper.exe.",
+     &[("Download", RELEASES)]),
+    ("Linux", "Download og-paper-linux-x86_64.tar.gz, unpack it and run og-paper.",
+     &[("Download", RELEASES)]),
+    ("Android", "Download og-paper-android-arm64.apk on the phone and open it to install.",
+     &[("Download", RELEASES)]),
+];
 const ICON: &str = include_str!("../../../packaging/icon.svg");
 
 fn esc(s: &str) -> String {
@@ -125,6 +147,22 @@ fn html(target: &str, base: &str, info: &Info) -> String {
     if pages.is_empty() {
         pages = "<li><span>No pages yet</span></li>".into();
     }
+    let mut clients = String::new();
+    for (name, how, links) in CLIENTS {
+        let buttons: String = links
+            .iter()
+            .enumerate()
+            .map(|(i, (label, url))| {
+                format!(
+                    r#"<a class="btn{}" href="{url}" target="_blank" rel="noopener">{label}</a>"#,
+                    if i == 0 { " primary" } else { "" }
+                )
+            })
+            .collect();
+        clients += &format!(
+            r#"<div class="client"><b>{name}</b><small>{how}</small><div class="row">{buttons}</div></div>"#
+        );
+    }
     let access = if admin {
         r#"<p class="note ok">You opened this page with the server key, so the full links show. Don't share this page's address.</p>"#
     } else {
@@ -158,13 +196,17 @@ code {{ flex:1 1 320px; min-width:0; overflow-wrap:anywhere; background:#0c0e11;
 ol {{ margin:0; padding-left:22px; }} ol li {{ margin:6px 0; }}
 ul.pages {{ list-style:none; margin:0; padding:0; }} ul.pages li {{ display:flex; justify-content:space-between; gap:12px; padding:7px 0; border-top:1px solid var(--edge); }}
 ul.pages li:first-child {{ border-top:0; }} time {{ color:var(--muted); font-size:.88rem; }}
+.clients {{ display:grid; grid-template-columns:repeat(auto-fill,minmax(240px,1fr)); gap:12px; }}
+.client {{ border:1px solid var(--edge); border-radius:12px; padding:12px 14px; background:#15181d; }}
+.client small {{ display:block; color:var(--muted); font-size:.85rem; margin:2px 0 4px; }}
 .note {{ color:var(--muted); font-size:.9rem; margin:12px 0 0; }} .note.ok {{ color:#9fd8a8; }}
 a {{ color:var(--ink); }} footer {{ color:var(--muted); font-size:.85rem; margin-top:26px; }}
 </style></head><body><main>
 <header>{icon}<div><h1>{name}</h1><p>An OG Paper server: shared pages anyone with the link can draw on together.</p></div></header>
 <section class="card"><h2>Connect</h2>{links}{access}</section>
+<section class="card"><h2>Get OG Paper</h2><div class="clients">{clients}</div></section>
 <section class="card"><h2>How to join</h2><ol>
-<li>Get OG Paper: the Mac or iPhone app, the <a href="{WEB_APP}" target="_blank" rel="noopener">web app</a>, or the desktop and Android builds.</li>
+<li>Get OG Paper for your device (above). The web app needs nothing installed.</li>
 <li>Copy a link above. In OG Paper open <b>Settings ⚙ › Pages</b>, paste it under <b>Servers</b> and press <b>Add</b>.</li>
 <li>Open a page. You keep a copy on your device: draw offline, and it syncs when you're back.</li>
 </ol></section>
@@ -219,5 +261,19 @@ mod tests {
         let (_, _, body) = page("/?k=eWRONG", "ws://10.0.0.5:8991", &info());
         assert!(!String::from_utf8(body).unwrap().contains("eSECRET"));
         assert_eq!(page("/nope", "ws://x", &info()).0, 404);
+        // Every client has a way in.
+        let (_, _, body) = page("/", "ws://10.0.0.5:8991", &info());
+        let html = String::from_utf8(body).unwrap();
+        for want in [
+            WEB_APP,
+            APP_STORE,
+            RELEASES,
+            "Windows",
+            "Linux",
+            "Android",
+            "iPhone and iPad",
+        ] {
+            assert!(html.contains(want), "{want}");
+        }
     }
 }
