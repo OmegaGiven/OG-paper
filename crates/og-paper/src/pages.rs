@@ -151,6 +151,70 @@ impl App {
             .collect();
     }
 
+    /// Rename page `i` on this device: its file (desktop; the open one is
+    /// closed, renamed and reopened, keeping the canvas and its undo).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn rename_local(&mut self, i: usize, name: String) {
+        let Some(from) = self.local_paths.get(i).cloned() else {
+            return;
+        };
+        let Some(dir) = from.parent() else { return };
+        let safe: String = name
+            .chars()
+            .map(|c| {
+                if "/\\:*?\"<>|".contains(c) || c.is_control() {
+                    '_'
+                } else {
+                    c
+                }
+            })
+            .collect();
+        let to = dir.join(format!("{}.ogp", safe.trim_end_matches('.')));
+        if to == from {
+            return;
+        }
+        if to.exists() {
+            return self.say(format!("There is already a page called {name} here"));
+        }
+        let current = self.file.as_ref().is_some_and(|f| f.path() == from);
+        if current {
+            // Closed first: some systems will not rename an open file.
+            self.file = None;
+        }
+        let r = std::fs::rename(&from, &to);
+        if current {
+            let at = if r.is_ok() { &to } else { &from };
+            match ogpaper_file::OgpFile::open(at) {
+                Ok((f, ..)) => {
+                    self.file = Some(f);
+                    self.remember_file();
+                    if r.is_ok() {
+                        self.ui.file_name = crate::file_label(&to);
+                    }
+                }
+                Err(e) => self.say(format!("Could not reopen the page: {e}")),
+            }
+        }
+        match r {
+            Ok(()) => self.say(format!("Renamed to {name}")),
+            Err(e) => self.say(format!("Could not rename it: {e}")),
+        }
+        self.refresh_local();
+    }
+
+    /// Rename page `i` kept in this browser (its name in the page's list).
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn rename_local(&mut self, i: usize, name: String) {
+        let Some(p) = self.ui.local_pages.get(i) else {
+            return;
+        };
+        if p.current {
+            self.ui.file_name = name.clone();
+        }
+        let key = p.key.clone();
+        crate::web::page_request("rename-page", &format!("{key}\t{name}"));
+    }
+
     /// What the panel shows of the servers.
     pub(crate) fn server_views(&self) -> Vec<ServerView> {
         self.servers

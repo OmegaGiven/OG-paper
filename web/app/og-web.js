@@ -9,7 +9,7 @@ import init, {
   og_copy, og_paste_own, og_paste_image, og_paste_text, og_pdf_page,
   og_home, og_bookmark_add, og_bookmark_go, og_bookmark_remove, og_bookmark_rename, og_bookmark_to_bar,
   og_search, og_search_results, og_search_go, og_export, og_export_take, og_has_selection,
-  og_sticker_take, og_sticker_svg, og_sticker_place, og_import, og_merge, og_changes_take, og_merge_quiet, og_set_folder, og_net_url, og_net_take, og_net_open, og_net_recv, og_net_closed, og_join, og_poke, og_rtc_host, og_rtc_closing, og_view_token, og_relay_share, og_dir_requests, og_page_arg, og_set_pages, og_plugin_install, og_pack_install, og_pack_sticker_take, og_run,
+  og_sticker_take, og_sticker_svg, og_sticker_place, og_import, og_merge, og_changes_take, og_merge_quiet, og_set_folder, og_net_url, og_net_take, og_net_open, og_net_recv, og_net_closed, og_join, og_poke, og_rtc_host, og_rtc_closing, og_view_token, og_relay_share, og_dir_requests, og_page_arg, og_set_pages, og_plugin_install, og_pack_install, og_pack_sticker_take, og_run, og_set_name,
   og_timeline, og_timeline_range, og_timeline_restore, og_snapshot_request, og_snapshot_take,
 } from './pkg/og_paper.js';
 
@@ -651,6 +651,9 @@ export async function start({ mode = 'app' } = {}) {
     const bytes = await idbGet('page:' + c);
     if (!bytes) return false;
     og_load(bytes, false);
+    // Its name lives in the list.
+    const name = pages.find(p => p.c === c)?.name;
+    if (name) og_set_name(name);
     lsSet('og-page', c);
     return true;
   }
@@ -1220,6 +1223,10 @@ export async function start({ mode = 'app' } = {}) {
     if (!saved) saved = await idbGet('app'); // the single slot of before
   }
   og_load(saved, isTry);
+  if (!isTry && saved) {
+    const name = pages.find(p => p.c === lsGet('og-page'))?.name;
+    if (name) og_set_name(name);
+  }
   pushPages();
   loadPlugins();
   // Automation from the page (devtools, extensions): the same commands as
@@ -1330,7 +1337,17 @@ export async function start({ mode = 'app' } = {}) {
         }
         libLoad();
       })();
-      else if (r === 'new-page') (async () => { await autosave(); og_blank(); })();
+      else if (r === 'new-page') (async () => {
+        const name = og_page_arg();
+        await autosave();
+        og_blank();
+        if (name) og_set_name(name);
+      })();
+      else if (r === 'rename-page') {
+        const [c, name] = og_page_arg().split('\t');
+        const p = pages.find(p => p.c === c);
+        if (p && name) { p.name = name; lsSet('og-pages', pages); pushPages(); }
+      }
       else if (r === 'delete-page') {
         const c = og_page_arg();
         pages = pages.filter(p => p.c !== c);

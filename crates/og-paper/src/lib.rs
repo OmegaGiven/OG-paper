@@ -1501,16 +1501,25 @@ impl App {
                     web::page_request("open-page", &key);
                 }
             }
-            #[cfg(not(target_arch = "wasm32"))]
-            Action::NewLocal => {
+            Action::NewLocalNamed => {
+                let name = page_name(&self.ui.page_new.take().unwrap_or_default());
                 self.net_stop();
-                self.new_canvas();
-                self.refresh_local();
+                #[cfg(target_arch = "wasm32")]
+                web::page_request("new-page", &name);
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    self.new_canvas();
+                    self.ui.file_name = name;
+                    self.ensure_file();
+                    self.refresh_local();
+                }
             }
-            #[cfg(target_arch = "wasm32")]
-            Action::NewLocal => {
-                self.net_stop();
-                web::page_request("new-page", "");
+            Action::RenameLocal(i) => {
+                let Some((_, text)) = self.ui.page_rename.take() else {
+                    return;
+                };
+                let name = page_name(&text);
+                self.rename_local(i, name);
             }
             #[cfg(not(target_arch = "wasm32"))]
             Action::DeleteLocal(i) => {
@@ -2532,6 +2541,11 @@ impl App {
             Cmd::Pages(json) => self.web_pages(&json),
             Cmd::Plugin(bytes, quiet) => self.plugin_install(bytes, quiet),
             Cmd::Pack(bytes) => self.pack_install(&bytes),
+            Cmd::Name(name) => {
+                if !name.trim().is_empty() {
+                    self.ui.file_name = name;
+                }
+            }
             Cmd::Run(json) => {
                 if let Ok(v) = serde_json::from_str::<serde_json::Value>(&json) {
                     self.run_commands(&v);
@@ -3184,6 +3198,22 @@ fn file_label(p: &std::path::Path) -> String {
     p.file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| "canvas".into())
+}
+
+/// A page name as typed: one line, at most 60 characters, never empty.
+fn page_name(s: &str) -> String {
+    let n: String = s
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(60)
+        .collect();
+    if n.is_empty() {
+        "Untitled".into()
+    } else {
+        n
+    }
 }
 
 /// App-private storage on platforms without a home directory (Android).

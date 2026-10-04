@@ -554,6 +554,10 @@ pub struct UiState {
     pub plugins_open: bool,
     pub plugins: Vec<PluginView>,
     pub local_pages: Vec<LocalPage>,
+    /// Pages: renaming page k here (the name being typed).
+    pub page_rename: Option<(usize, String)>,
+    /// Pages: naming a new page here (the name being typed).
+    pub page_new: Option<String>,
     pub servers: Vec<ServerView>,
     pub add_server_text: String,
     pub name_text: Option<String>,
@@ -760,6 +764,8 @@ impl Default for UiState {
             plugins_open: false,
             plugins: Vec::new(),
             local_pages: Vec::new(),
+            page_rename: None,
+            page_new: None,
             servers: Vec::new(),
             add_server_text: String::new(),
             name_text: None,
@@ -1061,8 +1067,11 @@ pub enum Action {
     /// Save the toolbars and inventory as a pack.
     PackExport,
     OpenLocal(usize),
-    NewLocal,
+    /// Make a page here named `page_new`.
+    NewLocalNamed,
     DeleteLocal(usize),
+    /// Rename page k here to the name in `page_rename`.
+    RenameLocal(usize),
     /// Add the server whose link is typed in Pages.
     AddServer,
     RemoveServer(usize),
@@ -6038,15 +6047,62 @@ fn pages_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>)
                         ui.horizontal(|ui| {
                             ui.label(egui::RichText::new("On this device").strong());
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                if ui.small_button("+ New page").clicked() {
-                                    actions.push(Action::NewLocal);
+                                if st.page_new.is_none() && ui.small_button("+ New page").clicked() {
+                                    st.page_new = Some(String::new());
+                                    st.page_rename = None;
                                 }
                             });
                         });
+                        // Naming a new page.
+                        let mut create = false;
+                        let mut cancel_new = false;
+                        if let Some(name) = st.page_new.as_mut() {
+                            ui.horizontal(|ui| {
+                                let r = ui.add(
+                                    egui::TextEdit::singleline(name)
+                                        .hint_text("Name the new page")
+                                        .desired_width(170.0),
+                                );
+                                r.request_focus();
+                                if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                                    create = true;
+                                }
+                                if ui.small_button("Create").clicked() {
+                                    create = true;
+                                }
+                                if ui.small_button("Cancel").clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                                    cancel_new = true;
+                                }
+                            });
+                        }
+                        if create {
+                            actions.push(Action::NewLocalNamed);
+                        } else if cancel_new {
+                            st.page_new = None;
+                        }
                         if st.local_pages.is_empty() {
                             ui.label(egui::RichText::new("Nothing saved here yet").small().weak());
                         }
+                        let mut rename_done = None;
+                        let mut rename_cancel = false;
+                        let mut rename_start: Option<(usize, String)> = None;
                         for (i, p) in st.local_pages.iter().enumerate() {
+                            if let Some((k, text)) = st.page_rename.as_mut().filter(|(k, _)| *k == i) {
+                                ui.horizontal(|ui| {
+                                    let r = ui.add(egui::TextEdit::singleline(text).desired_width(170.0));
+                                    r.request_focus();
+                                    if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                                        rename_done = Some(*k);
+                                    }
+                                    if ui.small_button("OK").clicked() {
+                                        rename_done = Some(*k);
+                                    }
+                                    if ui.small_button("Cancel").clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                                        rename_cancel = true;
+                                    }
+                                });
+                                continue;
+                            }
                             ui.horizontal(|ui| {
                                 let name = if p.current {
                                     egui::RichText::new(format!("{} (open)", p.name)).strong()
@@ -6064,8 +6120,20 @@ fn pages_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>)
                                             actions.push(Action::OpenLocal(i));
                                         }
                                     }
+                                    if ui.small_button("Rename").clicked() {
+                                        rename_start = Some((i, p.name.clone()));
+                                    }
                                 });
                             });
+                        }
+                        if let Some(k) = rename_done {
+                            actions.push(Action::RenameLocal(k));
+                        } else if rename_cancel {
+                            st.page_rename = None;
+                        }
+                        if let Some(r) = rename_start.take() {
+                            st.page_rename = Some(r);
+                            st.page_new = None;
                         }
                         ui.add_space(10.0);
                         ui.label(egui::RichText::new("Servers").strong());

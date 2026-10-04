@@ -63,6 +63,8 @@ pub enum Cmd {
     Pack(Vec<u8>),
     /// Commands from the page (JSON, see `script`).
     Run(String),
+    /// The open page's name (from the page's list).
+    Name(String),
     /// Just wake up (a timer of the page's: the connection may retry).
     Poke,
     /// Export: format, only the selection, paper background.
@@ -453,6 +455,12 @@ pub fn og_pack_sticker_take() -> Option<Vec<u8>> {
 #[wasm_bindgen]
 pub fn og_run(json: String) {
     push(Cmd::Run(json));
+}
+
+/// The open page's name, as the page's list keeps it.
+#[wasm_bindgen]
+pub fn og_set_name(name: String) {
+    push(Cmd::Name(name));
 }
 
 /// Install a pack (`.ogpack`).
