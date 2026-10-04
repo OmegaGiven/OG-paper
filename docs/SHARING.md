@@ -96,6 +96,14 @@ later reconnects by itself, so work done offline goes up. "+ Page" makes a
 new page on the server (with the editing link). Each page keeps its own
 keys; set `OGP_SERVER_KEY` to choose the server key yourself.
 
+Opening the server's address in a browser (`http://host:8991/`, or its
+`https://` address behind a TLS proxy) shows a page with the view-only
+server link for that address, copy buttons, an "Open in the web app"
+button (for `wss://` links), how to join, and the server's pages. The full
+link shows only when the page is opened with it (`/?k=<server key>`).
+`OGP_SERVER_NAME` names the server on that page; `OGP_WEB=off` turns it
+off. The web app adds a server from `…/app/#server=<link>`.
+
 ### Relay
 
 ```

@@ -110,6 +110,9 @@ docker load < og-paper.tar.gz
 Open port 8991 on the NAS firewall for your LAN. For access from outside, a
 VPN or Tailscale is safer than opening the port to the internet.
 
+Open the server's address in a browser (`http://<server>:8991/`) for a page
+that shows people how to connect, with the link to copy.
+
 ## Connect to a page
 
 Every way works from the ⚙ settings menu:
