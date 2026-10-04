@@ -6,13 +6,18 @@
 #[cfg(any(target_arch = "wasm32", target_os = "android"))]
 fn main() {}
 
+#[cfg(target_os = "ios")]
+fn main() {
+    og_paper::run_ios();
+}
+
 /// `og-paper [canvas.ogp]` — opens (or creates) the given canvas.
 /// `og-paper --serve canvas.ogp [--port N] [--public wss://host]` — hosts
 /// it with no window (`--public`: the address guests reach it by, for links).
 /// `og-paper --relay [--port N] [--data DIR]` — a relay for shared canvases.
 /// `og-paper --serve-dir DIR [--port N] [--public wss://host]` — a server
 /// for many pages (a NAS, a container).
-#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+#[cfg(desktop)]
 fn main() {
     let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
     let opt = |name: &str| {

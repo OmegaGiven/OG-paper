@@ -1,0 +1,132 @@
+name: iOS App Store
+
+# Run by hand (Actions > iOS App Store > Run workflow). First runs the app in
+# the iOS Simulator and keeps a screenshot (artifact "ios-simulator"); then
+# builds for iPhone and iPad, signs it with the Apple Distribution
+# certificate and the iOS App Store profile, packages an .ipa, validates it
+# with Apple and (unless "upload" is off) uploads it to App Store Connect.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Marketing version (must match the version in App Store Connect)
+        default: "1.0"
+      upload:
+        description: Upload to App Store Connect (off = simulator test, build, sign and validate only)
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  simulator:
+    name: Runs in the Simulator
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios-sim
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ios-sim
+      - name: Build for the Simulator
+        env:
+          IPHONEOS_DEPLOYMENT_TARGET: "15.0"
+        run: cargo build --release -p og-paper --bin og-paper --target aarch64-apple-ios-sim
+      - name: Assemble
+        run: |
+          packaging/apple/ios/assemble.sh target/aarch64-apple-ios-sim/release/og-paper \
+            "build/sim/OG Paper.app" iphonesimulator "${{ inputs.version }}" "${{ github.run_number }}"
+          codesign --force --sign - "build/sim/OG Paper.app"
+      - name: Launch and screenshot
+        run: |
+          set -euo pipefail
+          DEV=$(xcrun simctl list devices available | grep -m1 -E "iPhone 1[5-9] Pro|iPhone 1[5-9]|iPhone" | sed -E 's/.*\(([0-9A-F-]{36})\).*/\1/')
+          echo "device $DEV"
+          xcrun simctl boot "$DEV"
+          xcrun simctl bootstatus "$DEV" -b
+          xcrun simctl install "$DEV" "build/sim/OG Paper.app"
+          xcrun simctl launch "$DEV" com.omegagiven.ogpaper
+          sleep 20
+          mkdir -p shots
+          xcrun simctl io "$DEV" screenshot shots/launched.png
+          # Still running (not crashed)?
+          xcrun simctl spawn "$DEV" launchctl list | grep -i ogpaper || { echo "::error::the app is not running"; xcrun simctl spawn "$DEV" log show --last 2m --predicate 'process == "og-paper"' | tail -80; exit 1; }
+          xcrun simctl spawn "$DEV" log show --last 2m --predicate 'process == "og-paper"' | tail -40 || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ios-simulator
+          path: shots/
+
+  appstore:
+    name: Build, sign and upload
+    needs: simulator
+    runs-on: macos-latest
+    env:
+      APP: build/ios/Payload/OG Paper.app
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ios
+      - name: Build for iPhone and iPad
+        env:
+          IPHONEOS_DEPLOYMENT_TARGET: "15.0"
+        run: cargo build --release -p og-paper --bin og-paper --target aarch64-apple-ios
+
+      - name: Signing keychain
+        env:
+          DIST_P12: ${{ secrets.APPLE_DIST_CERTIFICATE }}
+          DIST_PW: ${{ secrets.APPLE_DIST_CERTIFICATE_PASSWORD }}
+          KC_PW: ${{ github.run_id }}${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          security create-keychain -p "$KC_PW" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "$KC_PW" build.keychain
+          security set-keychain-settings -t 3600 -u build.keychain
+          echo "$DIST_P12" | base64 --decode > dist.p12
+          security import dist.p12 -k build.keychain -P "$DIST_PW" -T /usr/bin/codesign
+          rm dist.p12
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KC_PW" build.keychain
+
+      - name: Assemble and sign
+        env:
+          PROFILE: ${{ secrets.APPLE_IOS_PROVISIONING_PROFILE }}
+          IDENTITY: ${{ secrets.APPLE_DIST_SIGNING_IDENTITY }}
+        run: |
+          set -euo pipefail
+          packaging/apple/ios/assemble.sh target/aarch64-apple-ios/release/og-paper "$APP" iphoneos \
+            "${{ inputs.version }}" "${{ github.run_number }}"
+          echo "$PROFILE" | base64 --decode > "$APP/embedded.mobileprovision"
+          codesign --force --timestamp --entitlements packaging/apple/ios/OGPaper.entitlements \
+            --sign "$IDENTITY" "$APP"
+          codesign --verify --strict --verbose=2 "$APP"
+          (cd build/ios && zip -qry ../../OGPaper.ipa Payload)
+          ls -la OGPaper.ipa
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OGPaper-ipa
+          path: OGPaper.ipa
+          retention-days: 14
+
+      - name: Validate and upload
+        env:
+          API_KEY: ${{ secrets.APPLE_API_KEY }}
+          KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.appstoreconnect/private_keys"
+          echo "$API_KEY" > "$HOME/.appstoreconnect/private_keys/AuthKey_${KEY_ID}.p8"
+          xcrun altool --validate-app -f OGPaper.ipa -t ios --apiKey "$KEY_ID" --apiIssuer "$ISSUER"
+          if [ "${{ inputs.upload }}" = "true" ]; then
+            xcrun altool --upload-app -f OGPaper.ipa -t ios --apiKey "$KEY_ID" --apiIssuer "$ISSUER"
+          fi

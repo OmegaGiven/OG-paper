@@ -18,7 +18,7 @@ mod folder;
 mod font;
 mod hotbar;
 mod hotkeys;
-#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+#[cfg(desktop)]
 mod hub;
 mod images;
 mod import;
@@ -34,7 +34,7 @@ mod plugin;
 mod portal;
 mod prefs;
 mod presence;
-#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+#[cfg(desktop)]
 mod relay;
 mod render;
 mod script;
@@ -95,7 +95,7 @@ const NO_CHANGES_BASE: &str =
 
 /// What this app puts on the system clipboard when it copies (the copy
 /// itself stays in the app).
-#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+#[cfg(desktop)]
 const CLIP_MARK: &str = "OG Paper selection (paste it into OG Paper)";
 
 pub(crate) fn home_camera() -> Camera {
@@ -1079,7 +1079,7 @@ impl App {
     }
 
     /// Pick a font file, keep a copy in the fonts folder and use it.
-    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+    #[cfg(desktop)]
     fn add_font_dialog(&mut self) {
         let Some(p) = rfd::FileDialog::new()
             .add_filter("Font (TrueType / OpenType)", &["ttf", "otf", "TTF", "OTF"])
@@ -1326,8 +1326,8 @@ impl App {
                 }
                 None => self.say(NO_CHANGES_BASE),
             },
-            #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
-            #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+            #[cfg(desktop)]
+            #[cfg(desktop)]
             Action::SyncFolder => {
                 if self.folder.is_some() {
                     self.folder_stop();
@@ -1340,7 +1340,7 @@ impl App {
             }
             #[cfg(target_arch = "wasm32")]
             Action::SyncFolder => web::emit("folder"),
-            #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+            #[cfg(desktop)]
             Action::SaveChanges => match self.changes_copy() {
                 Some((b, n)) => {
                     if let Some(mut p) = rfd::FileDialog::new()
@@ -1362,7 +1362,7 @@ impl App {
                 }
                 None => self.say(NO_CHANGES_BASE),
             },
-            #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+            #[cfg(desktop)]
             Action::MergeCopy => {
                 if let Some(p) = rfd::FileDialog::new()
                     .add_filter("OG Paper canvas", &["ogp", "ogpt"])
@@ -1371,7 +1371,7 @@ impl App {
                     self.merge_file(p);
                 }
             }
-            #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+            #[cfg(desktop)]
             Action::Picture => {
                 if let Some(p) = rfd::FileDialog::new()
                     .add_filter(
@@ -1383,9 +1383,9 @@ impl App {
                     self.open_dropped(p, None);
                 }
             }
-            #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+            #[cfg(desktop)]
             Action::AddFont => self.add_font_dialog(),
-            #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+            #[cfg(desktop)]
             Action::Import => {
                 if let Some(p) = rfd::FileDialog::new()
                     .add_filter("OG Paper canvas", &["ogp", "ogpt"])
@@ -1421,7 +1421,7 @@ impl App {
             Action::PluginRemove(i) => self.plugin_remove(i),
             #[cfg(target_arch = "wasm32")]
             Action::PluginInstall => web::emit("plugin-pick"),
-            #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+            #[cfg(desktop)]
             Action::PluginInstall => {
                 if let Some(p) = rfd::FileDialog::new()
                     .add_filter("OG Paper plugin or pack", &["wasm", "ogpack"])
@@ -1441,7 +1441,7 @@ impl App {
                 web::set_changes(self.pack_export().into_bytes());
                 web::emit("pack-export");
             }
-            #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+            #[cfg(desktop)]
             Action::PackExport => {
                 if let Some(mut p) = rfd::FileDialog::new()
                     .add_filter("OG Paper pack", &["ogpack"])
@@ -1573,7 +1573,7 @@ impl App {
             }
             Action::ImportPlace => self.import_finish(true),
             Action::ImportCancel => self.import_finish(false),
-            #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+            #[cfg(desktop)]
             Action::Open => {
                 if let Some(p) = rfd::FileDialog::new()
                     .add_filter("OG Paper canvas", &["ogp"])
@@ -1582,7 +1582,7 @@ impl App {
                     self.open_file(p);
                 }
             }
-            #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+            #[cfg(desktop)]
             Action::SaveAs => {
                 if let Some(mut p) = rfd::FileDialog::new()
                     .add_filter("OG Paper canvas", &["ogp"])
@@ -1608,7 +1608,7 @@ impl App {
                     self.paste();
                 }
             }
-            #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+            #[cfg(desktop)]
             Action::Export => self.export_dialog(),
             #[allow(unreachable_patterns)]
             _ => self.say("Not available on this platform yet"),
@@ -1674,7 +1674,7 @@ impl App {
     }
 
     /// Save the canvas as a new file at `p` and keep working in it.
-    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+    #[cfg(desktop)]
     fn save_as(&mut self, p: PathBuf) {
         match OgpFile::create(&p).and_then(|f| f.put_all(&self.scene).map(|_| f)) {
             Ok(f) => {
@@ -1695,7 +1695,7 @@ impl App {
 
     /// Save the selection (if any) or the view as PNG, JPEG, SVG or PDF, or
     /// the whole canvas as a new .ogp; the format follows the file name.
-    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+    #[cfg(desktop)]
     fn export_dialog(&mut self) {
         let sel = self.ui.tool.selects() && !self.edit.selection.is_empty();
         let name = if sel { "Selection.png" } else { "View.png" };
@@ -1738,18 +1738,18 @@ impl App {
 
     /// After copying: put a marker on the system clipboard, so pasting
     /// pastes the copy until something else is copied elsewhere.
-    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+    #[cfg(desktop)]
     fn clip_mark(&mut self) {
         if let Ok(mut cb) = arboard::Clipboard::new() {
             let _ = cb.set_text(CLIP_MARK);
         }
     }
-    #[cfg(any(target_arch = "wasm32", target_os = "android"))]
+    #[cfg(not(desktop))]
     fn clip_mark(&mut self) {}
 
     /// Paste from the system clipboard: a picture, files, a table or text.
     /// False when it holds nothing to paste, or this app's own copy.
-    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+    #[cfg(desktop)]
     fn system_paste(&mut self) -> bool {
         let Ok(mut cb) = arboard::Clipboard::new() else {
             return false;
@@ -1803,7 +1803,7 @@ impl App {
             _ => false,
         }
     }
-    #[cfg(any(target_arch = "wasm32", target_os = "android"))]
+    #[cfg(not(desktop))]
     fn system_paste(&mut self) -> bool {
         false
     }
@@ -3025,7 +3025,7 @@ impl ApplicationHandler for App {
                 });
             }
         }
-        self.ui.touch_ui = cfg!(target_os = "android") || is_touch_web();
+        self.ui.touch_ui = cfg!(any(target_os = "android", target_os = "ios")) || is_touch_web();
         window.request_redraw();
     }
 
@@ -3216,7 +3216,9 @@ fn page_name(s: &str) -> String {
     }
 }
 
-/// App-private storage on platforms without a home directory (Android).
+/// App-private storage on platforms without a usable home directory
+/// (Android: the app's storage; iOS: its Documents folder, so canvases show
+/// in the Files app).
 #[cfg(not(target_arch = "wasm32"))]
 static DATA_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
@@ -3300,7 +3302,7 @@ fn default_path_for(name: &str) -> Result<PathBuf, String> {
     unreachable!()
 }
 
-#[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
+#[cfg(desktop)]
 pub fn run_desktop(open: Option<PathBuf>) {
     env_logger::Builder::from_env(
         env_logger::Env::default().default_filter_or("info,wgpu_core=warn,wgpu_hal=warn,naga=warn"),
@@ -3315,7 +3317,7 @@ pub fn run_desktop(open: Option<PathBuf>) {
 
 /// `og-paper --serve canvas.ogp [--port N]`: host a canvas with no window
 /// (a homelab, a container). Prints the links, then serves until stopped.
-#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+#[cfg(desktop)]
 pub fn serve(path: PathBuf, port: u16, public: Option<String>) {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     let mut app = App::new(None);
@@ -3341,14 +3343,14 @@ pub fn serve(path: PathBuf, port: u16, public: Option<String>) {
 
 /// `og-paper --serve-dir DIR [--port N] [--public wss://host]`: host many
 /// pages (see `hub`).
-#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+#[cfg(desktop)]
 pub fn serve_dir(dir: PathBuf, port: u16, public: Option<String>) {
     hub::run(dir, port, public);
 }
 
 /// `og-paper --relay [--port N] [--data DIR]`: keep and pass on sealed
 /// changes for shared canvases (see `relay`).
-#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+#[cfg(desktop)]
 pub fn relay(port: u16, dir: PathBuf) {
     relay::run(port, dir);
 }
@@ -3402,6 +3404,21 @@ pub(crate) fn web_dpr() -> f32 {
     web_sys::window()
         .map(|w| w.device_pixel_ratio() as f32)
         .unwrap_or(1.0)
+}
+
+/// iPhone and iPad entry point (from `main`).
+#[cfg(target_os = "ios")]
+pub fn run_ios() {
+    if let Some(home) = std::env::var_os("HOME") {
+        let docs = PathBuf::from(home).join("Documents");
+        let _ = std::fs::create_dir_all(&docs);
+        let _ = DATA_DIR.set(docs);
+    }
+    let el = EventLoop::new().expect("event loop");
+    el.set_control_flow(ControlFlow::Wait);
+    let mut app = App::new(None);
+    app.plugins_load_saved();
+    el.run_app(&mut app).expect("event loop");
 }
 
 #[cfg(target_os = "android")]

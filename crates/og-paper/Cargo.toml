@@ -42,7 +42,7 @@ egui-winit = { version = "0.36", default-features = false, features = ["links"] 
 ogpaper-file = { path = "../ogpaper-file" }
 resvg = { version = "0.45", default-features = false, features = ["raster-images"] }
 
-[target.'cfg(not(any(target_os = "android", target_arch = "wasm32")))'.dependencies]
+[target.'cfg(not(any(target_os = "android", target_os = "ios", target_arch = "wasm32")))'.dependencies]
 tungstenite = { version = "0.26", default-features = false, features = ["handshake", "rustls-tls-webpki-roots"] }
 env_logger = "0.11"
 rfd = "0.15"
@@ -56,6 +56,9 @@ wasm-bindgen-futures = "0.4"
 console_error_panic_hook = "0.1"
 console_log = "1"
 web-sys = { version = "0.3", features = ["Window", "MediaQueryList", "HtmlCanvasElement", "Storage"] }
+
+[target.'cfg(target_os = "ios")'.dependencies]
+tungstenite = { version = "0.26", default-features = false, features = ["handshake", "rustls-tls-webpki-roots"] }
 
 [target.'cfg(target_os = "android")'.dependencies]
 android_logger = "0.15"

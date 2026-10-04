@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Must match the iOS App Store provisioning profile. -->
+  <key>application-identifier</key>
+  <string>FGFW7ZAJUC.com.omegagiven.ogpaper</string>
+  <key>com.apple.developer.team-identifier</key>
+  <string>FGFW7ZAJUC</string>
+  <key>get-task-allow</key>
+  <false/>
+</dict>
+</plist>
