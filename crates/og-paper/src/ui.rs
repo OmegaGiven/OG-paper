@@ -332,6 +332,85 @@ pub enum AppItem {
     Tour,
 }
 
+/// The settings list's sections, in order, and their items in order.
+const APP_SECTIONS: [(&str, &[AppItem]); 5] = [
+    (
+        "Canvas",
+        &[
+            AppItem::New,
+            AppItem::Open,
+            AppItem::Save,
+            AppItem::Pages,
+            AppItem::Export,
+        ],
+    ),
+    (
+        "Add",
+        &[
+            AppItem::Paste,
+            AppItem::Picture,
+            AppItem::Library,
+            AppItem::Import,
+            AppItem::Diagram,
+        ],
+    ),
+    (
+        "Find",
+        &[
+            AppItem::Search,
+            AppItem::Bookmarks,
+            AppItem::Timeline,
+            AppItem::Home,
+        ],
+    ),
+    (
+        "Share & sync",
+        &[
+            AppItem::Live,
+            AppItem::Folder,
+            AppItem::Merge,
+            AppItem::Changes,
+        ],
+    ),
+    (
+        "App",
+        &[
+            AppItem::LayoutMenu,
+            AppItem::Plugins,
+            AppItem::Hotkeys,
+            AppItem::FullScreen,
+            AppItem::Tour,
+        ],
+    ),
+];
+
+/// The items there are, grouped: (section heading, its items). Items no
+/// section names go under the last one.
+fn app_sections(items: &[AppItem]) -> Vec<(&'static str, Vec<AppItem>)> {
+    let mut out: Vec<(&'static str, Vec<AppItem>)> = APP_SECTIONS
+        .iter()
+        .map(|(name, these)| {
+            (
+                *name,
+                these
+                    .iter()
+                    .copied()
+                    .filter(|i| items.contains(i))
+                    .collect(),
+            )
+        })
+        .collect();
+    for &i in items {
+        if !APP_SECTIONS.iter().any(|(_, these)| these.contains(&i)) {
+            if let Some(last) = out.last_mut() {
+                last.1.push(i);
+            }
+        }
+    }
+    out.retain(|s| !s.1.is_empty());
+    out
+}
+
 impl AppItem {
     fn name(self) -> &'static str {
         match self {
@@ -3753,7 +3832,10 @@ fn app_menu(ctx: &egui::Context, st: &mut UiState, g: &Geo, actions: &mut Vec<Ac
         y - screen.top()
     } - 12.0
         - 16.0;
-    let h = (items.len() as f32 * row_h).min(room.max(row_h * 3.0));
+    let sections = app_sections(&items);
+    let head_h = if st.touch_ui { 28.0 } else { 24.0 };
+    let h =
+        (items.len() as f32 * row_h + sections.len() as f32 * head_h).min(room.max(row_h * 3.0));
     let pivot = match (right, below) {
         (true, true) => Align2::RIGHT_TOP,
         (true, false) => Align2::RIGHT_BOTTOM,
@@ -3789,7 +3871,34 @@ fn app_menu(ctx: &egui::Context, st: &mut UiState, g: &Geo, actions: &mut Vec<Ac
                         .auto_shrink([false, true])
                         .show(ui, |ui| {
                             ui.spacing_mut().item_spacing.y = 0.0;
-                            for (i, &item) in items.iter().enumerate() {
+                            let rows = sections.iter().flat_map(|(name, these)| {
+                                std::iter::once(Err(*name)).chain(these.iter().map(|&i| Ok(i)))
+                            });
+                            for (i, row) in rows.enumerate() {
+                                let item = match row {
+                                    Ok(item) => item,
+                                    Err(name) => {
+                                        // A section heading.
+                                        let (rect, _) =
+                                            ui.allocate_exact_size(vec2(w, head_h), Sense::hover());
+                                        let p = ui.painter();
+                                        if i > 0 {
+                                            p.hline(
+                                                rect.x_range().shrink(8.0),
+                                                rect.top() + 2.0,
+                                                Stroke::new(1.0, Color32::from_gray(228)),
+                                            );
+                                        }
+                                        p.text(
+                                            pos2(rect.left() + 10.0, rect.bottom() - 4.0),
+                                            Align2::LEFT_BOTTOM,
+                                            name.to_uppercase(),
+                                            egui::FontId::proportional(11.0),
+                                            Color32::from_gray(140),
+                                        );
+                                        continue;
+                                    }
+                                };
                                 let (rect, _) =
                                     ui.allocate_exact_size(vec2(w, row_h), Sense::hover());
                                 let resp =
