@@ -19,8 +19,9 @@ export default {
     await t.shot('made');
 
     await t.caption('Rename it');
-    if (!(await t.has('Rename'))) { await t.tap('Menu'); await t.tap('Pages'); }
-    await t.tap('Rename');
+    // Some layouts close Pages after making a page: open it again.
+    if (!(await t.maybe('Sketches (open)', 700))) { await t.tap('Menu'); await t.tap('Pages'); }
+    await t.tap('Rename', { row: 'Sketches (open)' });
     for (let i = 0; i < 12; i++) await t.key('Backspace');
     await t.type('Ideas');
     await t.key('Enter');

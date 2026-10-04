@@ -217,10 +217,54 @@ export class T {
     this.fail(`timed out waiting: ${what}`);
   }
 
-  /** A widget by its name (exact, or a RegExp), optionally its role. */
-  async find(label, { role, ms = 4000 } = {}) {
-    const ok = n => names(n).some(x => (label instanceof RegExp ? label.test(x) : x === label)) && (!role || n.role === role) && n.w > 0;
-    return this.wait(async () => (await this.nodes()).find(ok), `a widget named ${label}`, ms);
+  /** A widget by its name (exact, or a RegExp), optionally its role, or
+   *  the one on the same row as the widget named `row`. */
+  async find(label, { role, row, ms = 4000 } = {}) {
+    const named = (n, l) => names(n).some(x => (l instanceof RegExp ? l.test(x) : x === l));
+    const ok = n => named(n, label) && (!role || n.role === role) && n.w > 0;
+    return this.wait(async () => {
+      const all = await this.nodes();
+      if (!row) return all.find(ok);
+      const r = all.find(n => named(n, row) && n.w > 0);
+      if (!r) return null;
+      const mid = r.y + r.h / 2;
+      return all.filter(n => ok(n) && Math.abs(n.y + n.h / 2 - mid) < Math.max(r.h, n.h) * 0.6)[0];
+    }, `a widget named ${label}${row ? ` on the row of ${row}` : ''}`, ms);
+  }
+  /** The widget if it is (still) there after `ms`, else null (no failure). */
+  async maybe(label, ms = 600, opts = {}) {
+    await sleep(ms);
+    try { return await this.find(label, { ...opts, ms: 300 }); } catch (e) { return null; }
+  }
+  /** Scroll until widget `label` is on screen (menus and panels scroll). */
+  async reveal(label, opts = {}) {
+    for (let i = 0; i < 12; i++) {
+      const n = await this.find(label, opts);
+      const cy = n.y + n.h / 2;
+      // Whole on screen (positions aren't clipped by scrolling panels),
+      // and settled: panels move as their contents change.
+      if (n.y >= 0 && n.y + n.h <= this.h - 8) {
+        await sleep(120);
+        const again = await this.find(label, opts);
+        if (Math.abs(again.x - n.x) < 1 && Math.abs(again.y - n.y) < 1) return again;
+        continue;
+      }
+      const x = Math.min(Math.max(n.x + n.w / 2, 10), this.w - 10);
+      const up = n.y + n.h > this.h - 8; // below the screen: bring it up
+      if (this.phone) {
+        const [a, b] = up ? [this.h * 0.75, this.h * 0.35] : [this.h * 0.35, this.h * 0.75];
+        // A steady finger drag (a quick flick of a few big jumps doesn't scroll).
+        await this.touch('touchStart', [{ x, y: a }]);
+        for (let k = 1; k <= 24; k++) { await this.touch('touchMove', [{ x, y: a + ((b - a) * k) / 24 }]); await sleep(16); }
+        await sleep(60);
+        await this.touch('touchEnd', []);
+      } else {
+        for (let k = 0; k < 4; k++) await this.b.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x, y: this.h / 2, deltaX: 0, deltaY: up ? 120 : -120 });
+      }
+      this.log(`scroll to ${label}`);
+      await sleep(350);
+    }
+    this.fail(`could not scroll ${label} into view`);
   }
   async has(label, opts = {}) {
     const ok = n => names(n).some(x => (label instanceof RegExp ? label.test(x) : x === label)) && (!opts.role || n.role === opts.role);
@@ -283,7 +327,7 @@ export class T {
   }
   /** Tap a widget (by name or node) or a point {x, y}. */
   async tap(target, opts = {}) {
-    const n = typeof target === 'string' || target instanceof RegExp ? await this.find(target, opts) : target;
+    const n = typeof target === 'string' || target instanceof RegExp ? await this.reveal(target, opts) : target;
     const x = n.x + (n.w ?? 0) / 2, y = n.y + (n.h ?? 0) / 2;
     await this.glide(x, y);
     if (this.demo) { await sleep(100); await this.b.eval(`window.ogDemo?.ripple(${x},${y})`); }
