@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Mac App Store: sandboxed. Canvases, fonts, plugins and settings
+       live in the app's container (the app keeps them under $HOME, which
+       the sandbox points there). -->
+  <key>com.apple.security.app-sandbox</key>
+  <true/>
+  <!-- Open, Save As, Import, Export, Insert picture, Sync folder: what the
+       user picks in an open or save panel. -->
+  <key>com.apple.security.files.user-selected.read-write</key>
+  <true/>
+  <!-- Share live (joining a host, a relay or a page server). -->
+  <key>com.apple.security.network.client</key>
+  <true/>
+  <!-- Share live > Host this canvas (serves guests on a port). -->
+  <key>com.apple.security.network.server</key>
+  <true/>
+  <!-- Must match the provisioning profile (TestFlight on the Mac needs them). -->
+  <key>com.apple.application-identifier</key>
+  <string>FGFW7ZAJUC.com.omegagiven.ogpaper</string>
+  <key>com.apple.developer.team-identifier</key>
+  <string>FGFW7ZAJUC</string>
+</dict>
+</plist>
