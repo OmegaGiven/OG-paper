@@ -32,7 +32,7 @@ use web_time::{Duration, Instant};
 
 use std::sync::{Arc, Mutex};
 
-use crate::hubconsole::{Console, HubOp};
+use crate::hubconsole::{Console, HubOp, Role};
 use crate::net::native::{Server, WebResp};
 use crate::net::{page_keys_for, Ev};
 use crate::seal::Keys;
@@ -54,8 +54,9 @@ struct Page {
 enum Conn {
     /// On page `canvas`.
     Page(u128),
-    /// In the directory (apps' Pages list).
-    Dir,
+    /// In the directory (apps' Pages list), signed in to an account or
+    /// not.
+    Dir(Option<Role>),
     /// The automation API: whether it may change things (once signed in),
     /// and the pages it watches.
     Api(Option<bool>, HashSet<u128>),
@@ -277,7 +278,7 @@ pub fn run(dir: PathBuf, port: u16, public: Option<String>) {
                             conns.insert(id, Conn::Api(None, HashSet::new()));
                         }
                         None => {
-                            conns.insert(id, Conn::Dir);
+                            conns.insert(id, Conn::Dir(None));
                         }
                     }
                 }
@@ -290,7 +291,9 @@ pub fn run(dir: PathBuf, port: u16, public: Option<String>) {
                             p.app.net_event(Ev::Data(id, b));
                         }
                     }
-                    Some(Conn::Dir) => directory(&dir, &keys, &server, &mut pages, id, &b),
+                    Some(Conn::Dir(account)) => {
+                        directory(&dir, &keys, &server, &console, account, &mut pages, id, &b)
+                    }
                     Some(Conn::Api(edit, watch)) => {
                         let reply = api(
                             &dir,
@@ -426,10 +429,13 @@ fn open_page(dir: &Path, canvas: u128, server: &Server) -> Page {
 }
 
 /// A directory request: list, make, rename or delete pages.
+#[allow(clippy::too_many_arguments)]
 fn directory(
     dir: &Path,
     keys: &Keys,
     server: &Server,
+    console: &Mutex<Console>,
+    account: &mut Option<Role>,
     pages: &mut HashMap<u128, Page>,
     id: u64,
     b: &[u8],
@@ -440,14 +446,52 @@ fn directory(
         return;
     };
     let Ok(m) = Msg::decode(&plain) else { return };
+    if let Msg::AccountIn {
+        user,
+        password,
+        token,
+    } = m
+    {
+        let r = console
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .account(&user, &password, &token);
+        let reply = match r {
+            Ok((role, token)) => {
+                *account = Some(role);
+                Msg::Account {
+                    note: format!("Signed in as {user}"),
+                    user,
+                    role: role.key().into(),
+                    token,
+                }
+            }
+            Err(e) => {
+                *account = None;
+                Msg::Account {
+                    user,
+                    role: String::new(),
+                    token: String::new(),
+                    note: e.into(),
+                }
+            }
+        };
+        server.send(id, keys.seal(&reply.encode(), false));
+        return;
+    }
     let _g = INDEX.lock().unwrap_or_else(|e| e.into_inner());
-    // Only the edit form of the server link signs: it alone may change
-    // the list, and sees the pages' edit keys.
+    // The edit form of the server link (it signs) may do anything; an
+    // account, what its role allows. Viewers and the plain view link see
+    // only the pages' view keys.
+    let role = *account;
+    let admin = signed || role == Some(Role::Admin);
+    let organizes = signed || role.is_some_and(Role::organizes);
+    let draws = signed || role.is_some_and(Role::can_draw);
     match m {
-        Msg::NewPage(name) if signed => {
+        Msg::NewPage(name) if admin => {
             make_page(dir, &name);
         }
-        Msg::RenamePage(c, name) if signed => {
+        Msg::RenamePage(c, name) if organizes => {
             let mut all = read_index(dir);
             if let Some(p) = all.iter_mut().find(|p| p.0 == c) {
                 p.1 = clean_name(&name);
@@ -457,7 +501,7 @@ fn directory(
                 p.app.ui.file_name = clean_name(&name);
             }
         }
-        Msg::DeletePage(c) if signed => {
+        Msg::DeletePage(c) if admin => {
             let mut all = read_index(dir);
             all.retain(|p| p.0 != c);
             write_index(dir, &all);
@@ -467,7 +511,8 @@ fn directory(
             let from = page_path(dir, c);
             let _ = std::fs::rename(&from, from.with_extension("ogp.deleted"));
         }
-        Msg::ListPages => {}
+        // Not allowed: the list as it is.
+        Msg::ListPages | Msg::NewPage(_) | Msg::RenamePage(..) | Msg::DeletePage(_) => {}
         _ => return,
     }
     let list: Vec<PageInfo> = read_index(dir)
@@ -477,7 +522,7 @@ fn directory(
             PageInfo {
                 canvas,
                 name,
-                edit: if signed { edit } else { String::new() },
+                edit: if draws { edit } else { String::new() },
                 view: k.view_token(),
                 changed: changed_ms(&page_path(dir, canvas)),
             }
@@ -631,7 +676,6 @@ fn api(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hubconsole::Role;
     use crate::net::native::Client;
 
     /// Send `m` on page `canvas` with `key` and return the server's answer.
@@ -699,6 +743,125 @@ mod tests {
         // A viewer and a wrong password get none.
         assert!(matches!(sign("val", "viewpass1"), Msg::SignedIn { edit: e, .. } if e.is_empty()));
         assert!(matches!(sign("admin", "nope"), Msg::SignedIn { edit: e, .. } if e.is_empty()));
+        server.stop();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Send `msgs` to the directory with `key`; the answers, in order.
+    fn dir_talk(
+        server: &Server,
+        console: &Mutex<Console>,
+        dir: &Path,
+        key: &Keys,
+        msgs: &[Msg],
+    ) -> Vec<Msg> {
+        let client = Client::connect(format!("ws://127.0.0.1:{}/", server.port));
+        let mut pages = HashMap::new();
+        let mut account = None;
+        let mut out = Vec::new();
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(10) && out.len() < msgs.len() {
+            for ev in client.poll() {
+                if let Ev::Data(_, b) = ev {
+                    let (plain, _) = key.open(&b).expect("sealed answer");
+                    out.push(Msg::decode(&plain).expect("answer"));
+                }
+            }
+            for ev in server.poll() {
+                match ev {
+                    Ev::Open(_) => {
+                        for m in msgs {
+                            client.send(key.seal(&m.encode(), true));
+                        }
+                    }
+                    Ev::Data(id, b) => {
+                        directory(dir, key, server, console, &mut account, &mut pages, id, &b)
+                    }
+                    _ => {}
+                }
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        out
+    }
+
+    #[test]
+    fn directory_accounts_decide_what_the_page_list_gives() {
+        let dir = std::env::temp_dir().join(format!("ogp-dir-{}", crate::uid::new()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let console = Mutex::new(Console::load(&dir));
+        console
+            .lock()
+            .unwrap()
+            .add_user("val", Role::Viewer, "viewpass1");
+        make_page(&dir, "Wall").unwrap();
+        let server_keys = Keys::parse(&Keys::edit_token(&crate::seal::random_secret())).unwrap();
+        let view = Keys::parse(&server_keys.view_token()).unwrap();
+        let server = Server::start(0).unwrap();
+        let login = |user: &str, password: &str, token: &str| Msg::AccountIn {
+            user: user.into(),
+            password: password.into(),
+            token: token.into(),
+        };
+        let edit_keys = |m: &Msg| match m {
+            Msg::Pages(l) => l.iter().all(|p| !p.edit.is_empty()),
+            _ => panic!("not pages: {m:?}"),
+        };
+        // The view link alone: view keys only.
+        let r = dir_talk(&server, &console, &dir, &view, &[Msg::ListPages]);
+        assert!(!edit_keys(&r[0]));
+        // Admin by password: a token, and the edit keys.
+        let r = dir_talk(
+            &server,
+            &console,
+            &dir,
+            &view,
+            &[login("admin", "password", ""), Msg::ListPages],
+        );
+        let Msg::Account { role, token, .. } = &r[0] else {
+            panic!()
+        };
+        assert_eq!(role, "admin");
+        assert!(!token.is_empty() && edit_keys(&r[1]));
+        // The token signs in again; admins may make pages.
+        let r = dir_talk(
+            &server,
+            &console,
+            &dir,
+            &view,
+            &[login("admin", "", token), Msg::NewPage("Two".into())],
+        );
+        assert!(matches!(&r[0], Msg::Account { role, .. } if role == "admin"));
+        assert!(matches!(&r[1], Msg::Pages(l) if l.len() == 2));
+        // A viewer: view keys, and can't make pages.
+        let r = dir_talk(
+            &server,
+            &console,
+            &dir,
+            &view,
+            &[login("val", "viewpass1", ""), Msg::NewPage("Nope".into())],
+        );
+        assert!(matches!(&r[0], Msg::Account { role, .. } if role == "viewer"));
+        assert!(matches!(&r[1], Msg::Pages(l) if l.len() == 2) && !edit_keys(&r[1]));
+        // A wrong password or a made-up token: refused.
+        let r = dir_talk(
+            &server,
+            &console,
+            &dir,
+            &view,
+            &[login("admin", "nope", ""), Msg::ListPages],
+        );
+        assert!(
+            matches!(&r[0], Msg::Account { token, .. } if token.is_empty()) && !edit_keys(&r[1])
+        );
+        let r = dir_talk(
+            &server,
+            &console,
+            &dir,
+            &view,
+            &[login("admin", "", "abc"), Msg::ListPages],
+        );
+        assert!(matches!(&r[0], Msg::Account { token, .. } if token.is_empty()));
         server.stop();
         let _ = std::fs::remove_dir_all(&dir);
     }

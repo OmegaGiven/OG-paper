@@ -97,6 +97,23 @@ pub enum Msg {
         edit: String,
         note: String,
     },
+    /// To a page server's directory: sign in with an account there, by
+    /// password or by the token an earlier sign-in gave. Sent before the
+    /// request it applies to.
+    AccountIn {
+        user: String,
+        password: String,
+        token: String,
+    },
+    /// The answer: the account's role ("admin", "subadmin", "user",
+    /// "viewer") and a token to sign in with next time; an empty token and
+    /// why not when refused.
+    Account {
+        user: String,
+        role: String,
+        token: String,
+        note: String,
+    },
 }
 
 /// One page a server hosts.
@@ -334,6 +351,28 @@ impl Msg {
                 w.str(edit);
                 w.str(note);
             }
+            Msg::AccountIn {
+                user,
+                password,
+                token,
+            } => {
+                w.u8(17);
+                w.str(user);
+                w.str(password);
+                w.str(token);
+            }
+            Msg::Account {
+                user,
+                role,
+                token,
+                note,
+            } => {
+                w.u8(18);
+                w.str(user);
+                w.str(role);
+                w.str(token);
+                w.str(note);
+            }
         }
         w.0
     }
@@ -441,6 +480,17 @@ impl Msg {
                 edit: r.str()?,
                 note: r.str()?,
             },
+            17 => Msg::AccountIn {
+                user: r.str()?,
+                password: r.str()?,
+                token: r.str()?,
+            },
+            18 => Msg::Account {
+                user: r.str()?,
+                role: r.str()?,
+                token: r.str()?,
+                note: r.str()?,
+            },
             t => return Err(format!("unknown message {t}")),
         })
     }
@@ -519,6 +569,17 @@ mod tests {
             Msg::SignedIn {
                 edit: "eK".into(),
                 note: String::new(),
+            },
+            Msg::AccountIn {
+                user: "u".into(),
+                password: String::new(),
+                token: "t".into(),
+            },
+            Msg::Account {
+                user: "u".into(),
+                role: "admin".into(),
+                token: "t".into(),
+                note: "ok".into(),
             },
         ];
         for m in all {

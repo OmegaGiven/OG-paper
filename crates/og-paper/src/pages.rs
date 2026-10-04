@@ -33,8 +33,10 @@ pub struct ServerConn {
     keys: Keys,
     pub pages: Vec<PageInfo>,
     pub state: String,
-    /// The request to send once connected.
-    pending: Option<Msg>,
+    /// The requests to send once connected.
+    pending: Vec<Msg>,
+    /// Signed in to an account there: name, role, token.
+    account: Option<(String, String, String)>,
     #[cfg(not(target_arch = "wasm32"))]
     client: Option<crate::net::native::Client>,
 }
@@ -48,12 +50,14 @@ pub fn load_servers() -> Vec<ServerConn> {
                 .filter_map(|l| {
                     let link = parse_link(l)?;
                     let keys = Keys::parse(&link.key)?;
+                    let account = load_account(&link.url);
                     Some(ServerConn {
                         link,
                         keys,
                         pages: Vec::new(),
                         state: "Not checked yet".into(),
-                        pending: None,
+                        pending: Vec::new(),
+                        account,
                         #[cfg(not(target_arch = "wasm32"))]
                         client: None,
                     })
@@ -61,6 +65,33 @@ pub fn load_servers() -> Vec<ServerConn> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// The account remembered for a server (name, role, token).
+fn load_account(url: &str) -> Option<(String, String, String)> {
+    let v = crate::prefs::load().get(&format!("account.{url}"))?.clone();
+    let mut f = v.split('\t');
+    Some((f.next()?.into(), f.next()?.into(), f.next()?.into()))
+}
+
+fn save_account(url: &str, a: Option<&(String, String, String)>) {
+    let mut p = crate::prefs::load();
+    let k = format!("account.{url}");
+    match a {
+        Some((u, r, t)) => p.insert(k, format!("{u}\t{r}\t{t}")),
+        None => p.remove(&k),
+    };
+    crate::prefs::save(&p);
+}
+
+/// A role's name to show.
+fn role_label(r: &str) -> &'static str {
+    match r {
+        "admin" => "Admin",
+        "subadmin" => "Subadmin",
+        "viewer" => "Viewer",
+        _ => "User",
+    }
 }
 
 fn save_servers(all: &[ServerConn]) {
@@ -222,7 +253,11 @@ impl App {
             .map(|s| ServerView {
                 name: host_of(&s.link.url),
                 state: s.state.clone(),
-                can_edit: s.keys.can_edit(),
+                can_edit: s.keys.can_edit() || s.account.as_ref().is_some_and(|a| a.1 == "admin"),
+                account: s
+                    .account
+                    .as_ref()
+                    .map(|a| (a.0.clone(), role_label(&a.1).to_string())),
                 pages: s
                     .pages
                     .iter()
@@ -246,12 +281,14 @@ impl App {
             self.say("That server is already in the list");
             return;
         }
+        let account = load_account(&l.url);
         self.servers.push(ServerConn {
             link: l,
             keys,
             pages: Vec::new(),
             state: "Checking…".into(),
-            pending: None,
+            pending: Vec::new(),
+            account,
             #[cfg(not(target_arch = "wasm32"))]
             client: None,
         });
@@ -272,8 +309,42 @@ impl App {
         let Some(s) = self.servers.get_mut(i) else {
             return;
         };
-        s.pending = Some(m);
+        s.pending = vec![m];
         s.state = "Checking…".into();
+        self.dir_connect(i);
+    }
+
+    /// Sign in to an account on server `i` (from the Pages panel).
+    pub(crate) fn server_account_in(&mut self, i: usize, user: &str, password: &str) {
+        let Some(s) = self.servers.get_mut(i) else {
+            return;
+        };
+        s.account = None;
+        s.pending = vec![
+            Msg::AccountIn {
+                user: user.into(),
+                password: password.into(),
+                token: String::new(),
+            },
+            Msg::ListPages,
+        ];
+        s.state = "Signing in…".into();
+        self.dir_connect(i);
+    }
+
+    /// Forget the account on server `i`: back to what its link allows.
+    pub(crate) fn server_account_out(&mut self, i: usize) {
+        if let Some(s) = self.servers.get_mut(i) {
+            s.account = None;
+            save_account(&s.link.url, None);
+            self.server_request(i, Msg::ListPages);
+        }
+    }
+
+    fn dir_connect(&mut self, i: usize) {
+        let Some(s) = self.servers.get_mut(i) else {
+            return;
+        };
         #[cfg(not(target_arch = "wasm32"))]
         {
             s.client = Some(crate::net::native::Client::connect(s.link.url.clone()));
@@ -314,8 +385,23 @@ impl App {
         };
         match e {
             Ev::Open(_) => {
-                if let Some(m) = s.pending.take() {
-                    let b = s.keys.seal(&m.encode(), true);
+                let mut out = std::mem::take(&mut s.pending);
+                // A remembered account signs in ahead of the request.
+                if let Some((user, _, token)) = &s.account {
+                    if !matches!(out.first(), Some(Msg::AccountIn { .. })) {
+                        out.insert(
+                            0,
+                            Msg::AccountIn {
+                                user: user.clone(),
+                                password: String::new(),
+                                token: token.clone(),
+                            },
+                        );
+                    }
+                }
+                let sealed: Vec<Vec<u8>> =
+                    out.iter().map(|m| s.keys.seal(&m.encode(), true)).collect();
+                for b in sealed {
                     self.dir_send(i, b);
                 }
             }
@@ -324,7 +410,33 @@ impl App {
                     s.state = "The server did not accept this link".into();
                     return;
                 }
-                if let Some(Ok(Msg::Pages(list))) = s.keys.open(&b).map(|(p, _)| Msg::decode(&p)) {
+                let msg = s.keys.open(&b).map(|(p, _)| Msg::decode(&p));
+                if let Some(Ok(Msg::Account {
+                    user,
+                    role,
+                    token,
+                    note,
+                })) = msg
+                {
+                    let say = if token.is_empty() {
+                        s.account = None;
+                        save_account(&s.link.url, None);
+                        Some(note)
+                    } else {
+                        let a = (user, role, token);
+                        save_account(&s.link.url, Some(&a));
+                        let first = s.account.is_none();
+                        let msg = format!("{note} ({})", role_label(&a.1));
+                        s.account = Some(a);
+                        first.then_some(msg)
+                    };
+                    if let Some(m) = say {
+                        self.say(m);
+                    }
+                    self.redraw();
+                    return;
+                }
+                if let Some(Ok(Msg::Pages(list))) = msg {
                     s.state = format!(
                         "{} page{}",
                         list.len(),
@@ -335,7 +447,7 @@ impl App {
                 }
             }
             Ev::Closed(_, why) => {
-                if s.state == "Checking…" {
+                if s.state == "Checking…" || s.state == "Signing in…" {
                     s.state = format!("Could not reach it ({why})");
                 }
                 #[cfg(not(target_arch = "wasm32"))]

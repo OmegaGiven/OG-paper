@@ -36,7 +36,7 @@ pub enum Role {
 }
 
 impl Role {
-    fn key(self) -> &'static str {
+    pub fn key(self) -> &'static str {
         match self {
             Role::Admin => "admin",
             Role::Subadmin => "subadmin",
@@ -61,7 +61,7 @@ impl Role {
             Role::Viewer => "Viewer",
         }
     }
-    fn organizes(self) -> bool {
+    pub fn organizes(self) -> bool {
         matches!(self, Role::Admin | Role::Subadmin)
     }
     /// May draw on pages (everyone but viewers).
@@ -78,6 +78,9 @@ struct User {
     hash: String,
     /// Still the default password: ask to change it.
     must_change: bool,
+    /// The apps' remembered sign-ins (SHA-256 of each token), newest last.
+    /// A new password clears them.
+    tokens: Vec<String>,
 }
 
 struct Session {
@@ -144,6 +147,7 @@ fn new_user(name: &str, role: Role, pw: &str, must_change: bool) -> User {
         hash: hash_password(pw, &salt),
         salt,
         must_change,
+        tokens: vec![],
     }
 }
 
@@ -237,6 +241,12 @@ impl Console {
                         salt: salt.into(),
                         hash: hash.into(),
                         must_change: u["must_change"].as_bool().unwrap_or(false),
+                        tokens: u["tokens"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|t| t.as_str().map(str::to_string))
+                            .collect(),
                     });
                 }
             }
@@ -281,7 +291,7 @@ impl Console {
         let users: Vec<Value> = self
             .users
             .iter()
-            .map(|u| json!({"name": u.name, "role": u.role.key(), "salt": u.salt, "hash": u.hash, "must_change": u.must_change}))
+            .map(|u| json!({"name": u.name, "role": u.role.key(), "salt": u.salt, "hash": u.hash, "must_change": u.must_change, "tokens": u.tokens}))
             .collect();
         let path = self.dir.join("users.json");
         let _ = std::fs::write(
@@ -403,6 +413,36 @@ impl Console {
     #[cfg(test)]
     pub(crate) fn add_user(&mut self, name: &str, role: Role, pw: &str) {
         self.users.push(new_user(name, role, pw, false));
+    }
+
+    /// An app signing in to the server's page list: by password (then a
+    /// new token to remember) or by a token from before. The role and the
+    /// token to keep.
+    pub fn account(
+        &mut self,
+        name: &str,
+        password: &str,
+        token: &str,
+    ) -> Result<(Role, String), &'static str> {
+        use sha2::Digest;
+        let digest = |t: &str| hex(&sha2::Sha256::digest(t.as_bytes()));
+        if !token.is_empty() {
+            let d = digest(token);
+            return match self.users.iter().find(|u| u.name == name) {
+                Some(u) if u.tokens.iter().any(|t| same(t, &d)) => Ok((u.role, token.to_string())),
+                _ => Err("Signed out: sign in again"),
+            };
+        }
+        let role = self.check(name, password)?;
+        let token = hex(&crate::seal::random_secret());
+        if let Some(u) = self.users.iter_mut().find(|u| u.name == name) {
+            u.tokens.push(digest(&token));
+            // Remember the last few devices.
+            let extra = u.tokens.len().saturating_sub(20);
+            u.tokens.drain(..extra);
+        }
+        self.save_users();
+        Ok((role, token))
     }
 
     /// Check a user name and password (slowing down guessing): the role.

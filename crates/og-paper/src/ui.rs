@@ -238,6 +238,8 @@ pub struct ServerView {
     pub name: String,
     pub state: String,
     pub can_edit: bool,
+    /// Signed in there: name, role.
+    pub account: Option<(String, String)>,
     pub pages: Vec<(String, u64, bool)>,
 }
 
@@ -552,6 +554,8 @@ pub struct UiState {
     pub join_text: String,
     /// Signing in to a page server: user name, password.
     pub sign_in: (String, String),
+    /// The server whose sign-in form is open in Pages.
+    pub server_login: Option<usize>,
     pub relay_text: Option<String>,
     pub pages_open: bool,
     pub layout_open: bool,
@@ -763,6 +767,7 @@ impl Default for UiState {
             live_open: false,
             join_text: String::new(),
             sign_in: (String::new(), String::new()),
+            server_login: None,
             relay_text: None,
             pages_open: false,
             layout_open: false,
@@ -1090,6 +1095,10 @@ pub enum Action {
     Join,
     /// Sign in to the page server with `UiState::sign_in`.
     ServerSignIn,
+    /// Sign in to server `i`'s account (Pages) with `UiState::sign_in`.
+    ServerLogin(usize),
+    /// Sign out of server `i`'s account.
+    ServerLogout(usize),
     /// The host's rule for rival edits.
     SetPolicy(u8),
     /// Fly to someone's view (true: and follow it).
@@ -6167,6 +6176,42 @@ fn pages_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>)
                                     }
                                 });
                             });
+                            // An account on the server: what you may do there.
+                            ui.horizontal(|ui| {
+                                ui.add_space(12.0);
+                                match &s.account {
+                                    Some((user, role)) => {
+                                        ui.label(egui::RichText::new(format!("Signed in as {user} · {role}")).small());
+                                        if ui.small_button("Sign out").clicked() {
+                                            actions.push(Action::ServerLogout(i));
+                                        }
+                                    }
+                                    None => {
+                                        ui.label(egui::RichText::new("Not signed in").small().weak());
+                                        let open = st.server_login == Some(i);
+                                        if ui.small_button(if open { "Cancel" } else { "Sign in" }).on_hover_text("Sign in with your account on this server").clicked() {
+                                            st.server_login = if open { None } else { Some(i) };
+                                        }
+                                    }
+                                }
+                            });
+                            if s.account.is_none() && st.server_login == Some(i) {
+                                let fw = (w - 24.0).max(120.0);
+                                ui.horizontal(|ui| {
+                                    ui.add_space(12.0);
+                                    ui.add(egui::TextEdit::singleline(&mut st.sign_in.0).hint_text("User name").desired_width(fw));
+                                });
+                                let mut go = false;
+                                ui.horizontal(|ui| {
+                                    ui.add_space(12.0);
+                                    let pw = ui.add(egui::TextEdit::singleline(&mut st.sign_in.1).hint_text("Password").password(true).desired_width(fw - 70.0));
+                                    go = pw.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                                    go |= ui.button("Sign in").clicked();
+                                });
+                                if go && !st.sign_in.0.trim().is_empty() {
+                                    actions.push(Action::ServerLogin(i));
+                                }
+                            }
                             for (j, (name, changed, open)) in s.pages.iter().enumerate() {
                                 ui.horizontal(|ui| {
                                     ui.add_space(12.0);
