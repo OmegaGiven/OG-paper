@@ -166,6 +166,8 @@ pub struct App {
     plugins: Vec<plugin::Plugin>,
     /// Servers added in Pages, with their page lists.
     servers: Vec<pages::ServerConn>,
+    /// The open page on its way into a workspace.
+    upload: Option<pages::Upload>,
     /// The files behind Pages' list of this device's pages (desktop).
     #[cfg(not(target_arch = "wasm32"))]
     local_paths: Vec<PathBuf>,
@@ -285,6 +287,7 @@ impl App {
             hold_restore: None,
             plugins: Vec::new(),
             servers: Vec::new(),
+            upload: None,
             #[cfg(not(target_arch = "wasm32"))]
             local_paths: Vec::new(),
             headless: false,
@@ -1491,13 +1494,6 @@ impl App {
             }
             Action::RemoveServer(i) => self.remove_server(i),
             Action::RefreshServer(i) => self.server_request(i, wire::Msg::ListPages),
-            Action::NewServerPage(i) => {
-                let name = format!(
-                    "Page {}",
-                    self.servers.get(i).map_or(1, |s| s.pages.len() + 1)
-                );
-                self.server_request(i, wire::Msg::NewPage(name));
-            }
             Action::OpenServerPage(i, p) => self.open_server_page(i, p),
             #[cfg(not(target_arch = "wasm32"))]
             Action::OpenLocal(i) => {
@@ -1578,6 +1574,15 @@ impl App {
                 self.server_account_in(i, user.trim(), &pw);
             }
             Action::ServerLogout(i) => self.server_account_out(i),
+            Action::WsApply => {
+                for r in std::mem::take(&mut self.ui.ws_queue) {
+                    if r.op == "upload" {
+                        self.workspace_upload(r.server, &r.folder);
+                    } else {
+                        self.workspace_change(r.server, r.op, r.page, &r.name, &r.folder);
+                    }
+                }
+            }
             Action::ServerSignIn => {
                 let (user, pw) = std::mem::take(&mut self.ui.sign_in);
                 self.ui.sign_in.0 = user.clone();

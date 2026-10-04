@@ -106,6 +106,18 @@ pub enum HubOp {
     Renamed(u128, String),
 }
 
+/// A change to the workspace's pages or folders (see `Console::page_op`).
+pub enum PageOp {
+    New { name: String, folder: String },
+    Rename(u128, String),
+    Move(u128, String),
+    Delete(u128),
+    Restore(u128),
+    NewFolder { parent: String, name: String },
+    RenameFolder { folder: String, name: String },
+    DeleteFolder(String),
+}
+
 pub struct Console {
     dir: PathBuf,
     users: Vec<User>,
@@ -631,195 +643,258 @@ impl Console {
         } else {
             let id = get("page");
             let canvas = u128::from_str_radix(&id, 16).ok();
-            match get("action").as_str() {
-                "new_page" if role == Role::Admin => {
-                    let name = clean_name(&get("name"));
-                    let folder = clean_folder(&get("folder"));
-                    match make_page(&self.dir, &name) {
-                        Some(c) => {
-                            if !folder.is_empty() {
-                                self.folders.pages.insert(format!("{c:032x}"), folder);
-                                self.save_folders();
-                            }
-                            ("/console", format!("Made {name}."))
-                        }
-                        None => ("/console", "Couldn't make the page.".into()),
-                    }
+            let op = match (get("action").as_str(), canvas) {
+                ("new_page", _) => PageOp::New {
+                    name: get("name"),
+                    folder: get("folder"),
+                },
+                ("rename", Some(c)) => PageOp::Rename(c, get("name")),
+                ("move", Some(c)) => PageOp::Move(c, get("folder")),
+                ("delete", Some(c)) => PageOp::Delete(c),
+                ("restore", Some(c)) => PageOp::Restore(c),
+                ("new_folder", _) => PageOp::NewFolder {
+                    parent: get("parent"),
+                    name: get("name"),
+                },
+                ("rename_folder", _) => PageOp::RenameFolder {
+                    folder: get("folder"),
+                    name: get("name"),
+                },
+                ("delete_folder", _) => PageOp::DeleteFolder(get("folder")),
+                _ => return ("/console", "No such page.".into()),
+            };
+            match self.page_op(role, op) {
+                Ok((msg, _)) => ("/console", msg),
+                Err(e) => ("/console", e),
+            }
+        }
+    }
+
+    /// The workspace's folders, and which folder each page is in.
+    pub fn folder_list(&self) -> (Vec<String>, Vec<(u128, String)>) {
+        let pages = self
+            .folders
+            .pages
+            .iter()
+            .filter_map(|(k, f)| Some((u128::from_str_radix(k, 16).ok()?, f.clone())))
+            .collect();
+        (self.folders.folders.clone(), pages)
+    }
+
+    /// Change the pages or folders as `role` may (the console and the apps
+    /// both come here): what to say, and the page made, if one was.
+    pub fn page_op(&mut self, role: Role, op: PageOp) -> Result<(String, Option<u128>), String> {
+        let denied = || Err("You don't have permission to do that.".to_string());
+        let no_page = || Err("No such page.".to_string());
+        let admin = role == Role::Admin;
+        match op {
+            PageOp::New { name, folder } => {
+                if !admin {
+                    return denied();
                 }
-                "rename" if role.organizes() => {
-                    let Some(c) = canvas else {
-                        return ("/console", "No such page.".into());
-                    };
-                    let name = clean_name(&get("name"));
-                    let mut all = read_index(&self.dir);
-                    let Some(p) = all.iter_mut().find(|p| p.0 == c) else {
-                        return ("/console", "No such page.".into());
-                    };
-                    p.1 = name.clone();
-                    write_index(&self.dir, &all);
-                    self.ops.push(HubOp::Renamed(c, name.clone()));
-                    ("/console", format!("Renamed to {name}."))
+                let name = clean_name(&name);
+                let folder = clean_folder(&folder);
+                if !folder.is_empty() && !self.folders.folders.contains(&folder) {
+                    return Err("No such folder.".into());
                 }
-                "move" if role.organizes() => {
-                    let Some(c) = canvas else {
-                        return ("/console", "No such page.".into());
-                    };
-                    let folder = clean_folder(&get("folder"));
-                    if !folder.is_empty() && !self.folders.folders.contains(&folder) {
-                        return ("/console", "No such folder.".into());
-                    }
-                    let key = format!("{c:032x}");
+                let Some(c) = make_page(&self.dir, &name) else {
+                    return Err("Couldn't make the page.".into());
+                };
+                if !folder.is_empty() {
+                    self.folders.pages.insert(format!("{c:032x}"), folder);
+                    self.save_folders();
+                }
+                Ok((format!("Made {name}."), Some(c)))
+            }
+            PageOp::Rename(c, name) => {
+                if !role.organizes() {
+                    return denied();
+                }
+                let name = clean_name(&name);
+                let mut all = read_index(&self.dir);
+                let Some(p) = all.iter_mut().find(|p| p.0 == c) else {
+                    return no_page();
+                };
+                p.1 = name.clone();
+                write_index(&self.dir, &all);
+                self.ops.push(HubOp::Renamed(c, name.clone()));
+                Ok((format!("Renamed to {name}."), None))
+            }
+            PageOp::Move(c, folder) => {
+                if !role.organizes() {
+                    return denied();
+                }
+                let folder = clean_folder(&folder);
+                if !folder.is_empty() && !self.folders.folders.contains(&folder) {
+                    return Err("No such folder.".into());
+                }
+                if !read_index(&self.dir).iter().any(|p| p.0 == c) {
+                    return no_page();
+                }
+                let key = format!("{c:032x}");
+                if folder.is_empty() {
+                    self.folders.pages.remove(&key);
+                } else {
+                    self.folders.pages.insert(key, folder.clone());
+                }
+                self.save_folders();
+                Ok((
                     if folder.is_empty() {
-                        self.folders.pages.remove(&key);
+                        "Moved to the top.".into()
                     } else {
-                        self.folders.pages.insert(key, folder.clone());
-                    }
-                    self.save_folders();
-                    (
-                        "/console",
-                        if folder.is_empty() {
-                            "Moved to the top.".into()
-                        } else {
-                            format!("Moved to {folder}.")
-                        },
-                    )
+                        format!("Moved to {folder}.")
+                    },
+                    None,
+                ))
+            }
+            PageOp::Delete(c) => {
+                if !admin {
+                    return denied();
                 }
-                "delete" if role == Role::Admin => {
-                    let Some(c) = canvas else {
-                        return ("/console", "No such page.".into());
-                    };
-                    let mut all = read_index(&self.dir);
-                    let Some(i) = all.iter().position(|p| p.0 == c) else {
-                        return ("/console", "No such page.".into());
-                    };
-                    let (_, name) = all.remove(i);
-                    write_index(&self.dir, &all);
-                    let from = page_path(&self.dir, c);
-                    let _ = std::fs::rename(&from, from.with_extension("ogp.deleted"));
-                    let key = format!("{c:032x}");
-                    let folder = self.folders.pages.remove(&key).unwrap_or_default();
-                    self.folders.deleted.insert(key, (name.clone(), folder));
-                    self.save_folders();
-                    self.ops.push(HubOp::Unload(c));
-                    (
-                        "/console",
-                        format!("{name} is tagged for deletion (restore it below)."),
-                    )
+                let mut all = read_index(&self.dir);
+                let Some(i) = all.iter().position(|p| p.0 == c) else {
+                    return no_page();
+                };
+                let (_, name) = all.remove(i);
+                write_index(&self.dir, &all);
+                let from = page_path(&self.dir, c);
+                let _ = std::fs::rename(&from, from.with_extension("ogp.deleted"));
+                let key = format!("{c:032x}");
+                let folder = self.folders.pages.remove(&key).unwrap_or_default();
+                self.folders.deleted.insert(key, (name.clone(), folder));
+                self.save_folders();
+                self.ops.push(HubOp::Unload(c));
+                Ok((
+                    format!(
+                        "{name} is tagged for deletion (an admin can restore it in the console)."
+                    ),
+                    None,
+                ))
+            }
+            PageOp::Restore(c) => {
+                if !admin {
+                    return denied();
                 }
-                "restore" if role == Role::Admin => {
-                    let Some(c) = canvas else {
-                        return ("/console", "No such page.".into());
-                    };
-                    let key = format!("{c:032x}");
-                    let Some((name, folder)) = self.folders.deleted.remove(&key) else {
-                        return ("/console", "No such page.".into());
-                    };
-                    let from = page_path(&self.dir, c).with_extension("ogp.deleted");
-                    if std::fs::rename(&from, page_path(&self.dir, c)).is_err() {
-                        return ("/console", "The page's file is gone.".into());
-                    }
-                    let mut all = read_index(&self.dir);
-                    all.push((c, name.clone()));
-                    write_index(&self.dir, &all);
-                    if !folder.is_empty() && self.folders.folders.contains(&folder) {
-                        self.folders.pages.insert(key, folder);
-                    }
-                    self.save_folders();
-                    ("/console", format!("Restored {name}."))
+                let key = format!("{c:032x}");
+                let Some((name, folder)) = self.folders.deleted.remove(&key) else {
+                    return no_page();
+                };
+                let from = page_path(&self.dir, c).with_extension("ogp.deleted");
+                if std::fs::rename(&from, page_path(&self.dir, c)).is_err() {
+                    return Err("The page's file is gone.".into());
                 }
-                "new_folder" if role.organizes() => {
-                    let parent = clean_folder(&get("parent"));
-                    let name = clean_folder(&get("name").replace('/', " "));
-                    if name.is_empty() {
-                        return ("/console", "Name the folder.".into());
-                    }
-                    let path = if parent.is_empty() {
-                        name
+                let mut all = read_index(&self.dir);
+                all.push((c, name.clone()));
+                write_index(&self.dir, &all);
+                if !folder.is_empty() && self.folders.folders.contains(&folder) {
+                    self.folders.pages.insert(key, folder);
+                }
+                self.save_folders();
+                Ok((format!("Restored {name}."), None))
+            }
+            PageOp::NewFolder { parent, name } => {
+                if !role.organizes() {
+                    return denied();
+                }
+                let parent = clean_folder(&parent);
+                let name = clean_folder(&name.replace('/', " "));
+                if name.is_empty() {
+                    return Err("Name the folder.".into());
+                }
+                if !parent.is_empty() && !self.folders.folders.contains(&parent) {
+                    return Err("No such folder.".into());
+                }
+                let path = if parent.is_empty() {
+                    name
+                } else {
+                    format!("{parent}/{name}")
+                };
+                if self.folders.folders.contains(&path) {
+                    return Err("That folder exists.".into());
+                }
+                self.folders.folders.push(path.clone());
+                self.folders.folders.sort();
+                self.save_folders();
+                Ok((format!("Made the folder {path}."), None))
+            }
+            PageOp::RenameFolder { folder, name } => {
+                if !role.organizes() {
+                    return denied();
+                }
+                let old = clean_folder(&folder);
+                let name = clean_folder(&name.replace('/', " "));
+                if old.is_empty() || name.is_empty() || !self.folders.folders.contains(&old) {
+                    return Err("No such folder.".into());
+                }
+                let new = match old.rsplit_once('/') {
+                    Some((p, _)) => format!("{p}/{name}"),
+                    None => name,
+                };
+                let swap = |f: &str| -> String {
+                    if f == old {
+                        new.clone()
+                    } else if let Some(rest) = f.strip_prefix(&format!("{old}/")) {
+                        format!("{new}/{rest}")
                     } else {
-                        format!("{parent}/{name}")
-                    };
-                    if self.folders.folders.contains(&path) {
-                        return ("/console", "That folder exists.".into());
+                        f.to_string()
                     }
-                    self.folders.folders.push(path.clone());
-                    self.folders.folders.sort();
-                    self.save_folders();
-                    ("/console", format!("Made the folder {path}."))
+                };
+                self.folders.folders = self.folders.folders.iter().map(|f| swap(f)).collect();
+                self.folders.folders.sort();
+                self.folders.folders.dedup();
+                for f in self.folders.pages.values_mut() {
+                    *f = swap(f);
                 }
-                "rename_folder" if role.organizes() => {
-                    let old = clean_folder(&get("folder"));
-                    let name = clean_folder(&get("name").replace('/', " "));
-                    if old.is_empty() || name.is_empty() || !self.folders.folders.contains(&old) {
-                        return ("/console", "No such folder.".into());
-                    }
-                    let new = match old.rsplit_once('/') {
-                        Some((p, _)) => format!("{p}/{name}"),
-                        None => name,
-                    };
-                    let swap = |f: &str| -> String {
-                        if f == old {
-                            new.clone()
-                        } else if let Some(rest) = f.strip_prefix(&format!("{old}/")) {
-                            format!("{new}/{rest}")
+                self.save_folders();
+                Ok((format!("Renamed the folder to {new}."), None))
+            }
+            PageOp::DeleteFolder(folder) => {
+                if !admin {
+                    return denied();
+                }
+                let old = clean_folder(&folder);
+                if !self.folders.folders.contains(&old) {
+                    return Err("No such folder.".into());
+                }
+                let parent = old
+                    .rsplit_once('/')
+                    .map(|(p, _)| p.to_string())
+                    .unwrap_or_default();
+                // Its pages and folders move up a level.
+                let lift = |f: &str| -> String {
+                    if f == old {
+                        parent.clone()
+                    } else if let Some(rest) = f.strip_prefix(&format!("{old}/")) {
+                        if parent.is_empty() {
+                            rest.to_string()
                         } else {
-                            f.to_string()
+                            format!("{parent}/{rest}")
                         }
-                    };
-                    self.folders.folders = self.folders.folders.iter().map(|f| swap(f)).collect();
-                    self.folders.folders.sort();
-                    self.folders.folders.dedup();
-                    for f in self.folders.pages.values_mut() {
-                        *f = swap(f);
+                    } else {
+                        f.to_string()
                     }
-                    self.save_folders();
-                    ("/console", format!("Renamed the folder to {new}."))
-                }
-                "delete_folder" if role == Role::Admin => {
-                    let old = clean_folder(&get("folder"));
-                    if !self.folders.folders.contains(&old) {
-                        return ("/console", "No such folder.".into());
-                    }
-                    let parent = old
-                        .rsplit_once('/')
-                        .map(|(p, _)| p.to_string())
-                        .unwrap_or_default();
-                    // Its pages and folders move up a level.
-                    let lift = |f: &str| -> String {
-                        if f == old {
-                            parent.clone()
-                        } else if let Some(rest) = f.strip_prefix(&format!("{old}/")) {
-                            if parent.is_empty() {
-                                rest.to_string()
-                            } else {
-                                format!("{parent}/{rest}")
-                            }
-                        } else {
-                            f.to_string()
-                        }
-                    };
-                    self.folders.folders = self
-                        .folders
-                        .folders
-                        .iter()
-                        .filter(|f| **f != old)
-                        .map(|f| lift(f))
-                        .collect();
-                    self.folders.folders.sort();
-                    self.folders.folders.dedup();
-                    let pages: Vec<(String, String)> = self
-                        .folders
-                        .pages
-                        .iter()
-                        .map(|(k, f)| (k.clone(), lift(f)))
-                        .collect();
-                    self.folders.pages = pages.into_iter().filter(|(_, f)| !f.is_empty()).collect();
-                    self.save_folders();
-                    (
-                        "/console",
-                        format!("Removed the folder {old}; what was in it moved up."),
-                    )
-                }
-                _ => denied(),
+                };
+                self.folders.folders = self
+                    .folders
+                    .folders
+                    .iter()
+                    .filter(|f| **f != old)
+                    .map(|f| lift(f))
+                    .collect();
+                self.folders.folders.sort();
+                self.folders.folders.dedup();
+                let pages: Vec<(String, String)> = self
+                    .folders
+                    .pages
+                    .iter()
+                    .map(|(k, f)| (k.clone(), lift(f)))
+                    .collect();
+                self.folders.pages = pages.into_iter().filter(|(_, f)| !f.is_empty()).collect();
+                self.save_folders();
+                Ok((
+                    format!("Removed the folder {old}; what was in it moved up."),
+                    None,
+                ))
             }
         }
     }

@@ -25,6 +25,14 @@ use crate::ui::{LocalPage, ServerView};
 use crate::wire::{Msg, PageInfo};
 use crate::App;
 
+/// The open page on its way into a workspace (see `workspace_upload`).
+pub struct Upload {
+    server: usize,
+    bytes: Vec<u8>,
+    /// The page the workspace made for it, once it answers.
+    canvas: u128,
+}
+
 /// Connection ids for directory requests (server i uses DIR_CONN + i).
 pub const DIR_CONN: u64 = 1000;
 
@@ -37,6 +45,9 @@ pub struct ServerConn {
     pending: Vec<Msg>,
     /// Signed in to an account there: name, role, token.
     account: Option<(String, String, String)>,
+    /// The workspace's folders, and the folder of each page in one.
+    folders: Vec<String>,
+    in_folder: std::collections::HashMap<u128, String>,
     #[cfg(not(target_arch = "wasm32"))]
     client: Option<crate::net::native::Client>,
 }
@@ -58,6 +69,8 @@ pub fn load_servers() -> Vec<ServerConn> {
                         state: "Not checked yet".into(),
                         pending: Vec::new(),
                         account,
+                        folders: Vec::new(),
+                        in_folder: Default::default(),
                         #[cfg(not(target_arch = "wasm32"))]
                         client: None,
                     })
@@ -253,7 +266,12 @@ impl App {
             .map(|s| ServerView {
                 name: host_of(&s.link.url),
                 state: s.state.clone(),
-                can_edit: s.keys.can_edit() || s.account.as_ref().is_some_and(|a| a.1 == "admin"),
+                role: if s.keys.can_edit() {
+                    "admin".into()
+                } else {
+                    s.account.as_ref().map(|a| a.1.clone()).unwrap_or_default()
+                },
+                folders: s.folders.clone(),
                 account: s
                     .account
                     .as_ref()
@@ -261,7 +279,14 @@ impl App {
                 pages: s
                     .pages
                     .iter()
-                    .map(|p| (p.name.clone(), p.changed, p.canvas == self.share.canvas))
+                    .map(|p| {
+                        (
+                            p.name.clone(),
+                            p.changed,
+                            p.canvas == self.share.canvas,
+                            s.in_folder.get(&p.canvas).cloned().unwrap_or_default(),
+                        )
+                    })
                     .collect(),
             })
             .collect()
@@ -289,6 +314,8 @@ impl App {
             state: "Checking…".into(),
             pending: Vec::new(),
             account,
+            folders: Vec::new(),
+            in_folder: Default::default(),
             #[cfg(not(target_arch = "wasm32"))]
             client: None,
         });
@@ -330,6 +357,74 @@ impl App {
         ];
         s.state = "Signing in…".into();
         self.dir_connect(i);
+    }
+
+    /// Change workspace `i`'s pages or folders (see `Msg::Change`); page
+    /// `p` is an index into its page list, when the change is to a page.
+    pub(crate) fn workspace_change(
+        &mut self,
+        i: usize,
+        op: &str,
+        p: Option<usize>,
+        name: &str,
+        folder: &str,
+    ) {
+        let page = p
+            .and_then(|p| self.servers.get(i)?.pages.get(p))
+            .map_or(0, |p| p.canvas);
+        self.server_request(
+            i,
+            Msg::Change {
+                op: op.into(),
+                page,
+                name: name.into(),
+                folder: folder.into(),
+            },
+        );
+    }
+
+    /// Put the open page into workspace `i` (in `folder`): a new page
+    /// there, opened here, with this page's ink and objects brought in.
+    pub(crate) fn workspace_upload(&mut self, i: usize, folder: &str) {
+        let bytes = crate::snapshot::encode(
+            &self.scene,
+            &self.cam,
+            &self.timeline,
+            &self.bookmarks,
+            &self.objs,
+            &self.share.copy_log(),
+        );
+        let name = self.ui.file_name.clone();
+        self.upload = Some(Upload {
+            server: i,
+            bytes,
+            canvas: 0,
+        });
+        self.say(format!("Uploading {name}…"));
+        self.workspace_change(i, "new_page", None, &name, folder);
+    }
+
+    /// After joining a page: if it is the one an upload made, bring the
+    /// uploaded page's content in.
+    pub(crate) fn upload_arrived(&mut self, canvas: u128) {
+        if !self
+            .upload
+            .as_ref()
+            .is_some_and(|u| u.canvas == canvas && canvas != 0)
+        {
+            return;
+        }
+        let Some(up) = self.upload.take() else { return };
+        match crate::snapshot::decode(&up.bytes, crate::BASE_PX) {
+            Ok(s) => {
+                self.import_begin(s.scene, s.objs, "that page");
+                self.import_finish(true);
+                self.cam = s.cam;
+                self.say("Uploaded: it's in the workspace now");
+            }
+            Err(e) => self.say(format!("Could not upload it: {e}")),
+        }
+        self.redraw();
     }
 
     /// Forget the account on server `i`: back to what its link allows.
@@ -436,6 +531,29 @@ impl App {
                     self.redraw();
                     return;
                 }
+                if let Some(Ok(Msg::Folders { folders, pages })) = msg {
+                    s.folders = folders;
+                    s.in_folder = pages.into_iter().collect();
+                    return;
+                }
+                if let Some(Ok(Msg::Changed { note, ok, made })) = msg {
+                    if let Some(up) = self
+                        .upload
+                        .as_mut()
+                        .filter(|u| u.server == i && u.canvas == 0)
+                    {
+                        if ok && made != 0 {
+                            up.canvas = made;
+                        } else {
+                            self.upload = None;
+                        }
+                    }
+                    if !ok || self.upload.is_none() {
+                        self.say(note);
+                    }
+                    self.redraw();
+                    return;
+                }
                 if let Some(Ok(Msg::Pages(list))) = msg {
                     s.state = format!(
                         "{} page{}",
@@ -444,6 +562,16 @@ impl App {
                     );
                     s.pages = list;
                     self.dir_close(i);
+                    let made = self
+                        .upload
+                        .as_ref()
+                        .filter(|u| u.server == i)
+                        .map(|u| u.canvas);
+                    if let Some(c) = made.filter(|c| *c != 0) {
+                        if let Some(p) = self.servers[i].pages.iter().position(|p| p.canvas == c) {
+                            self.open_server_page(i, p);
+                        }
+                    }
                 }
             }
             Ev::Closed(_, why) => {

@@ -237,10 +237,45 @@ pub struct LocalPage {
 pub struct ServerView {
     pub name: String,
     pub state: String,
-    pub can_edit: bool,
+    /// What you may do there: "admin", "subadmin", "user", "viewer" or
+    /// "" (only what the link allows).
+    pub role: String,
     /// Signed in there: name, role.
     pub account: Option<(String, String)>,
-    pub pages: Vec<(String, u64, bool)>,
+    pub folders: Vec<String>,
+    /// Name, last change, open here, folder ("" for the top).
+    pub pages: Vec<(String, u64, bool, String)>,
+}
+
+impl ServerView {
+    fn admin(&self) -> bool {
+        self.role == "admin"
+    }
+    fn organizes(&self) -> bool {
+        self.role == "admin" || self.role == "subadmin"
+    }
+}
+
+/// A change to a workspace's pages or folders (see `Msg::Change`), or
+/// "upload" (put the open page into `folder`).
+#[derive(Clone, Debug)]
+pub struct WsReq {
+    pub server: usize,
+    pub op: &'static str,
+    pub page: Option<usize>,
+    pub name: String,
+    pub folder: String,
+}
+
+/// A name being typed for a workspace change (new page or folder, rename).
+#[derive(Clone, Debug)]
+pub struct WsPrompt {
+    pub server: usize,
+    pub op: &'static str,
+    pub page: Option<usize>,
+    pub folder: String,
+    pub title: String,
+    pub text: String,
 }
 
 /// What the Share live panel shows (from `net`).
@@ -556,6 +591,10 @@ pub struct UiState {
     pub sign_in: (String, String),
     /// The server whose sign-in form is open in Pages.
     pub server_login: Option<usize>,
+    /// A name being typed for a workspace change.
+    pub ws_prompt: Option<WsPrompt>,
+    /// Workspace changes asked for this frame (see `Action::WsApply`).
+    pub ws_queue: Vec<WsReq>,
     pub relay_text: Option<String>,
     pub pages_open: bool,
     pub layout_open: bool,
@@ -768,6 +807,8 @@ impl Default for UiState {
             join_text: String::new(),
             sign_in: (String::new(), String::new()),
             server_login: None,
+            ws_prompt: None,
+            ws_queue: Vec::new(),
             relay_text: None,
             pages_open: false,
             layout_open: false,
@@ -1086,7 +1127,6 @@ pub enum Action {
     AddServer,
     RemoveServer(usize),
     RefreshServer(usize),
-    NewServerPage(usize),
     /// Server, page.
     OpenServerPage(usize, usize),
     /// Stop hosting, or leave a shared canvas.
@@ -1099,6 +1139,8 @@ pub enum Action {
     ServerLogin(usize),
     /// Sign out of server `i`'s account.
     ServerLogout(usize),
+    /// Make the workspace changes queued in `UiState::ws_queue`.
+    WsApply,
     /// The host's rule for rival edits.
     SetPolicy(u8),
     /// Fly to someone's view (true: and follow it).
@@ -1319,7 +1361,12 @@ pub fn draw(ctx: &egui::Context, st: &mut UiState) -> Vec<Action> {
             || (0..st.toolbars.len())
                 .any(|k| (0..hotbar::BAR).any(|i| on_widget(Id::new(("rbar_o", k, i)))));
         let hit = ctx.layer_id_at(pos).map(|l| l.id);
-        let on = |names: &[&str]| hit.is_some_and(|id| names.iter().any(|n| id == Id::new(*n)));
+        // A drop-down menu open in a panel (workspace actions) floats
+        // outside it: a press there belongs to the panel.
+        let in_popup = egui::Popup::is_any_open(ctx);
+        let on = |names: &[&str]| {
+            in_popup || hit.is_some_and(|id| names.iter().any(|n| id == Id::new(*n)))
+        };
         if st.menu != Menu::None && !on_fan && !on(&["app_menu_list"]) {
             st.menu = Menu::None;
         }
@@ -6061,7 +6108,7 @@ fn pages_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>)
                     // Scroll only when the list is long (a scroll area sized
                     // on an earlier, shorter list cuts off its foot).
                     let rows = st.local_pages.len()
-                        + st.servers.iter().map(|s| s.pages.len() + 2).sum::<usize>()
+                        + st.servers.iter().map(|s| s.pages.len() + s.folders.len() + 3).sum::<usize>()
                         + 9;
                     let max_h = screen.height() * 0.72;
                     let tall = rows as f32 * 24.0 > max_h;
@@ -6158,24 +6205,27 @@ fn pages_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>)
                             st.page_new = None;
                         }
                         ui.add_space(10.0);
-                        ui.label(egui::RichText::new("Servers").strong());
+                        ui.label(egui::RichText::new("Workspaces").strong());
                         if st.servers.is_empty() {
-                            help(ui, "Add a server (og-paper --serve-dir, e.g. on a NAS) by its server link to see and open its pages.");
+                            help(ui, "A workspace is a shared home for pages on a server (like og-paper --serve-dir on a NAS). Add one by its link to browse and open its pages.");
                         }
-                        for (i, s) in st.servers.iter().enumerate() {
+                        for i in 0..st.servers.len() {
+                            let s = &st.servers[i];
                             ui.add_space(4.0);
                             ui.horizontal(|ui| {
                                 ui.label(egui::RichText::new(&s.name).strong());
                                 ui.label(egui::RichText::new(&s.state).small().weak());
                                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                    if ui.small_button("Remove").on_hover_text("Forget this server here (its pages stay on it)").clicked() {
+                                    if ui.small_button("Remove").on_hover_text("Forget this workspace here (its pages stay on it)").clicked() {
                                         actions.push(Action::RemoveServer(i));
-                                    }
-                                    if s.can_edit && ui.small_button("+ Page").clicked() {
-                                        actions.push(Action::NewServerPage(i));
                                     }
                                     if ui.small_button("↻").on_hover_text("Check again").clicked() {
                                         actions.push(Action::RefreshServer(i));
+                                    }
+                                    if s.organizes() {
+                                        ui.menu_button("+", |ui| {
+                                            ws_folder_menu(ui, s, i, "", &mut st.ws_prompt, &mut st.ws_queue);
+                                        });
                                     }
                                 });
                             });
@@ -6192,7 +6242,7 @@ fn pages_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>)
                                     None => {
                                         ui.label(egui::RichText::new("Not signed in").small().weak());
                                         let open = st.server_login == Some(i);
-                                        if ui.small_button(if open { "Cancel" } else { "Sign in" }).on_hover_text("Sign in with your account on this server").clicked() {
+                                        if ui.small_button(if open { "Cancel" } else { "Sign in" }).on_hover_text("Sign in with your account on this workspace").clicked() {
                                             st.server_login = if open { None } else { Some(i) };
                                         }
                                     }
@@ -6202,12 +6252,12 @@ fn pages_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>)
                                 let fw = (w - 24.0).max(120.0);
                                 ui.horizontal(|ui| {
                                     ui.add_space(12.0);
-                                    add_field(ui,egui::TextEdit::singleline(&mut st.sign_in.0).hint_text("User name").desired_width(fw));
+                                    add_field(ui, egui::TextEdit::singleline(&mut st.sign_in.0).hint_text("User name").desired_width(fw));
                                 });
                                 let mut go = false;
                                 ui.horizontal(|ui| {
                                     ui.add_space(12.0);
-                                    let pw = add_field(ui,egui::TextEdit::singleline(&mut st.sign_in.1).hint_text("Password").password(true).desired_width(fw - 70.0));
+                                    let pw = add_field(ui, egui::TextEdit::singleline(&mut st.sign_in.1).hint_text("Password").password(true).desired_width(fw - 70.0));
                                     go = pw.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                                     go |= ui.button("Sign in").clicked();
                                 });
@@ -6215,35 +6265,58 @@ fn pages_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>)
                                     actions.push(Action::ServerLogin(i));
                                 }
                             }
-                            for (j, (name, changed, open)) in s.pages.iter().enumerate() {
+                            // A name being typed for a change here.
+                            if let Some(pr) = st.ws_prompt.as_mut().filter(|p| p.server == i) {
                                 ui.horizontal(|ui| {
                                     ui.add_space(12.0);
-                                    if *open {
-                                        ui.label(egui::RichText::new(format!("{name} (open)")).strong());
-                                    } else {
-                                        ui.label(name);
-                                    }
-                                    ui.label(egui::RichText::new(ago(*changed)).small().weak());
-                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                        if ui.small_button(if *open { "Connect" } else { "Open" }).clicked() {
-                                            actions.push(Action::OpenServerPage(i, j));
-                                        }
-                                    });
+                                    ui.label(egui::RichText::new(&pr.title).small());
                                 });
+                                let mut done = None;
+                                ui.horizontal(|ui| {
+                                    ui.add_space(12.0);
+                                    let r = add_field(ui, egui::TextEdit::singleline(&mut pr.text).desired_width((w - 150.0).max(100.0)));
+                                    let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                                    if (ui.button("OK").clicked() || enter) && !pr.text.trim().is_empty() {
+                                        done = Some(true);
+                                    }
+                                    if ui.button("Cancel").clicked() {
+                                        done = Some(false);
+                                    }
+                                });
+                                match done {
+                                    Some(true) => {
+                                        let pr = st.ws_prompt.take().expect("prompt");
+                                        st.ws_queue.push(WsReq {
+                                            server: i,
+                                            op: pr.op,
+                                            page: pr.page,
+                                            name: pr.text.trim().to_string(),
+                                            folder: pr.folder,
+                                        });
+                                    }
+                                    Some(false) => st.ws_prompt = None,
+                                    None => {}
+                                }
                             }
+                            let s = &st.servers[i];
+                            ws_tree(ui, s, i, "", &mut st.ws_prompt, &mut st.ws_queue, actions);
+                        }
+                        if !st.ws_queue.is_empty() {
+                            actions.push(Action::WsApply);
                         }
                         ui.add_space(8.0);
                         ui.horizontal(|ui| {
-                            add_field(ui,
+                            add_field(
+                                ui,
                                 egui::TextEdit::singleline(&mut st.add_server_text)
-                                    .hint_text("Server link (ws://… ?k=…)")
+                                    .hint_text("Workspace link (ws://… ?k=…)")
                                     .desired_width(w - 80.0),
                             );
                             if ui.button("Add").clicked() && !st.add_server_text.trim().is_empty() {
                                 actions.push(Action::AddServer);
                             }
                         });
-                        help(ui, "Opening a server page keeps a copy here; it reconnects whenever you open it, and what you did offline goes up.");
+                        help(ui, "Opening a workspace page keeps a copy on this device; it reconnects whenever you open it, and what you did offline goes up.");
                     };
                     if tall {
                         egui::ScrollArea::vertical()
@@ -6556,6 +6629,179 @@ fn add_field(ui: &mut egui::Ui, edit: egui::TextEdit<'_>) -> egui::Response {
             .push(Rect::from_min_max(rect.min * k, rect.max * k))
     });
     r
+}
+
+/// One level of a workspace's tree: its folders (each folding open), then
+/// its pages, with what the account may do to each.
+fn ws_tree(
+    ui: &mut egui::Ui,
+    s: &ServerView,
+    i: usize,
+    prefix: &str,
+    prompt: &mut Option<WsPrompt>,
+    queue: &mut Vec<WsReq>,
+    actions: &mut Vec<Action>,
+) {
+    let children = s.folders.iter().filter(|f| match f.rsplit_once('/') {
+        Some((p, _)) => p == prefix,
+        None => prefix.is_empty(),
+    });
+    for f in children {
+        let label = f.rsplit('/').next().unwrap_or(f);
+        egui::CollapsingHeader::new(egui::RichText::new(label).strong())
+            .id_salt(("ws-folder", i, f.as_str()))
+            .default_open(true)
+            .show(ui, |ui| {
+                if s.organizes() {
+                    ui.menu_button(egui::RichText::new("Folder …").small(), |ui| {
+                        ws_folder_menu(ui, s, i, f, prompt, queue);
+                        if ui.button("Rename folder…").clicked() {
+                            *prompt = Some(WsPrompt {
+                                server: i,
+                                op: "rename_folder",
+                                page: None,
+                                folder: f.clone(),
+                                title: format!("New name for {label}:"),
+                                text: label.to_string(),
+                            });
+                            ui.close();
+                        }
+                        if s.admin()
+                            && ui
+                                .button("Remove folder")
+                                .on_hover_text("What's in it moves up a level")
+                                .clicked()
+                        {
+                            queue.push(WsReq {
+                                server: i,
+                                op: "delete_folder",
+                                page: None,
+                                name: String::new(),
+                                folder: f.clone(),
+                            });
+                            ui.close();
+                        }
+                    });
+                }
+                ws_tree(ui, s, i, f, prompt, queue, actions);
+            });
+    }
+    let pages = s.pages.iter().enumerate().filter(|(_, p)| p.3 == prefix);
+    for (j, (name, changed, open, folder)) in pages {
+        ui.horizontal(|ui| {
+            ui.add_space(12.0);
+            if *open {
+                ui.label(egui::RichText::new(format!("{name} (open)")).strong());
+            } else {
+                ui.label(name);
+            }
+            ui.label(egui::RichText::new(ago(*changed)).small().weak());
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if s.organizes() {
+                    ui.menu_button("…", |ui| {
+                        if ui.button("Rename…").clicked() {
+                            *prompt = Some(WsPrompt {
+                                server: i,
+                                op: "rename",
+                                page: Some(j),
+                                folder: folder.clone(),
+                                title: format!("New name for {name}:"),
+                                text: name.clone(),
+                            });
+                            ui.close();
+                        }
+                        ui.menu_button("Move to", |ui| {
+                            let targets = std::iter::once("").chain(s.folders.iter().map(String::as_str));
+                            for t in targets.filter(|t| *t != folder.as_str()) {
+                                let label = if t.is_empty() { "(top)" } else { t };
+                                if ui.button(label).clicked() {
+                                    queue.push(WsReq {
+                                        server: i,
+                                        op: "move",
+                                        page: Some(j),
+                                        name: String::new(),
+                                        folder: t.to_string(),
+                                    });
+                                    ui.close();
+                                }
+                            }
+                        });
+                        if s.admin()
+                            && ui
+                                .button("Delete")
+                                .on_hover_text("Tagged for deletion: an admin can restore it in the workspace's console")
+                                .clicked()
+                        {
+                            queue.push(WsReq {
+                                server: i,
+                                op: "delete",
+                                page: Some(j),
+                                name: String::new(),
+                                folder: String::new(),
+                            });
+                            ui.close();
+                        }
+                    });
+                }
+                if ui.small_button(if *open { "Connect" } else { "Open" }).clicked() {
+                    actions.push(Action::OpenServerPage(i, j));
+                }
+            });
+        });
+    }
+}
+
+/// What can be made in a workspace folder (`folder`, "" for the top).
+fn ws_folder_menu(
+    ui: &mut egui::Ui,
+    s: &ServerView,
+    i: usize,
+    folder: &str,
+    prompt: &mut Option<WsPrompt>,
+    queue: &mut Vec<WsReq>,
+) {
+    let place = if folder.is_empty() {
+        "here".to_string()
+    } else {
+        format!("in {}", folder.rsplit('/').next().unwrap_or(folder))
+    };
+    if s.admin() && ui.button("New page").clicked() {
+        *prompt = Some(WsPrompt {
+            server: i,
+            op: "new_page",
+            page: None,
+            folder: folder.to_string(),
+            title: format!("Name of the new page {place}:"),
+            text: String::new(),
+        });
+        ui.close();
+    }
+    if ui.button("New folder").clicked() {
+        *prompt = Some(WsPrompt {
+            server: i,
+            op: "new_folder",
+            page: None,
+            folder: folder.to_string(),
+            title: format!("Name of the new folder {place}:"),
+            text: String::new(),
+        });
+        ui.close();
+    }
+    if s.admin()
+        && ui
+            .button("Upload this page")
+            .on_hover_text("Put the page open now into the workspace, and keep working on it there")
+            .clicked()
+    {
+        queue.push(WsReq {
+            server: i,
+            op: "upload",
+            page: None,
+            name: String::new(),
+            folder: folder.to_string(),
+        });
+        ui.close();
+    }
 }
 
 /// Under an open fan: shade and frost the ground behind the rings only

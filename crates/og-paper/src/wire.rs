@@ -114,6 +114,28 @@ pub enum Msg {
         token: String,
         note: String,
     },
+    /// From a workspace's directory, ahead of `Pages`: its folders, and
+    /// the folder of each page that is in one.
+    Folders {
+        folders: Vec<String>,
+        pages: Vec<(u128, String)>,
+    },
+    /// To a workspace's directory: change its pages or folders ("new_page",
+    /// "rename", "move", "delete", "new_folder", "rename_folder",
+    /// "delete_folder"), as the account's role allows.
+    Change {
+        op: String,
+        page: u128,
+        name: String,
+        folder: String,
+    },
+    /// The answer to a `Change`: what happened, and the page it made, if
+    /// it made one (else 0).
+    Changed {
+        note: String,
+        ok: bool,
+        made: u128,
+    },
 }
 
 /// One page a server hosts.
@@ -373,6 +395,36 @@ impl Msg {
                 w.str(token);
                 w.str(note);
             }
+            Msg::Folders { folders, pages } => {
+                w.u8(19);
+                w.u32(folders.len() as u32);
+                for f in folders {
+                    w.str(f);
+                }
+                w.u32(pages.len() as u32);
+                for (c, f) in pages {
+                    w.u128(*c);
+                    w.str(f);
+                }
+            }
+            Msg::Change {
+                op,
+                page,
+                name,
+                folder,
+            } => {
+                w.u8(20);
+                w.str(op);
+                w.u128(*page);
+                w.str(name);
+                w.str(folder);
+            }
+            Msg::Changed { note, ok, made } => {
+                w.u8(21);
+                w.str(note);
+                w.u8(*ok as u8);
+                w.u128(*made);
+            }
         }
         w.0
     }
@@ -491,6 +543,30 @@ impl Msg {
                 token: r.str()?,
                 note: r.str()?,
             },
+            19 => {
+                let n = r.u32()? as usize;
+                let mut folders = Vec::with_capacity(n.min(4096));
+                for _ in 0..n {
+                    folders.push(r.str()?);
+                }
+                let n = r.u32()? as usize;
+                let mut pages = Vec::with_capacity(n.min(4096));
+                for _ in 0..n {
+                    pages.push((r.u128()?, r.str()?));
+                }
+                Msg::Folders { folders, pages }
+            }
+            20 => Msg::Change {
+                op: r.str()?,
+                page: r.u128()?,
+                name: r.str()?,
+                folder: r.str()?,
+            },
+            21 => Msg::Changed {
+                note: r.str()?,
+                ok: r.u8()? != 0,
+                made: r.u128()?,
+            },
             t => return Err(format!("unknown message {t}")),
         })
     }
@@ -580,6 +656,21 @@ mod tests {
                 role: "admin".into(),
                 token: "t".into(),
                 note: "ok".into(),
+            },
+            Msg::Folders {
+                folders: vec!["Art".into(), "Art/Old".into()],
+                pages: vec![(7, "Art".into())],
+            },
+            Msg::Change {
+                op: "move".into(),
+                page: 7,
+                name: String::new(),
+                folder: "Art".into(),
+            },
+            Msg::Changed {
+                note: "Moved".into(),
+                ok: true,
+                made: 0,
             },
         ];
         for m in all {

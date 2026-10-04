@@ -853,6 +853,7 @@ impl App {
                     g.canvas_name = name.clone();
                     *pushed = usize::MAX;
                     if first {
+                        self.upload_arrived(canvas);
                         self.say(format!(
                             "Joined {}{}",
                             display_name(&name),
