@@ -1041,11 +1041,12 @@ impl Renderer {
             wgpu::CurrentSurfaceTexture::Success(f)
             | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
             wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
+                log::info!("surface outdated or lost; reconfiguring");
                 surface.configure(&self.device, &self.config);
                 return false;
             }
             other => {
-                log::debug!("no frame: {:?}", std::mem::discriminant(&other));
+                log::info!("no frame: {:?}", std::mem::discriminant(&other));
                 return false;
             }
         };

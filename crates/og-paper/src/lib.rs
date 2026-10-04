@@ -186,6 +186,8 @@ pub struct App {
     portal_path: Vec<[f64; 2]>,
     /// Times a zoom went through a portal (try mode's tour).
     portal_passes: u32,
+    /// First frames logged (start-up diagnostics).
+    frames_logged: u32,
     /// Viewing the canvas as it was after timeline event `.0`; `.1` holds the
     /// real deleted flags to put back.
     tl_view: Option<(usize, Vec<bool>)>,
@@ -291,6 +293,7 @@ impl App {
             portal_view: None,
             portal_path: Vec::new(),
             portal_passes: 0,
+            frames_logged: 0,
             tl_view: None,
             tl_from: 0,
             fly: None,
@@ -2952,14 +2955,20 @@ impl App {
             pixels_per_point: out.pixels_per_point,
         };
         let portals = self.portal_layers();
-        if !self.gpu.as_mut().expect("gpu").render(
+        let n_prims = paint.prims.len();
+        let shown = self.gpu.as_mut().expect("gpu").render(
             &self.scene,
             &self.draw,
             &self.objs,
             &portals,
             wet,
             paint,
-        ) {
+        );
+        if self.frames_logged < 12 {
+            self.frames_logged += 1;
+            log::info!("frame {}: {} UI meshes, shown {shown}", self.frames_logged, n_prims);
+        }
+        if !shown {
             log::debug!("frame not presented; retrying");
             window.request_redraw();
         }
