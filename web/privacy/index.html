@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OG Paper — Privacy policy</title>
+<meta name="description" content="OG Paper collects no personal data.">
+<link rel="icon" href="../app/icon-192.png">
+<style>
+  :root { --bg: #f5f3ec; --card: #fcfbf8; --ink: #1c1c24; --muted: #5d5d68; --edge: #dedbd1; --accent: #c8285a; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #15151a; --card: #1e1e25; --ink: #ecebe6; --muted: #a3a2ab; --edge: #33333c; --accent: #ff5c8d; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 17px/1.65 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 28px 20px 64px; }
+  nav { display: flex; align-items: center; gap: 10px; margin-bottom: 28px; }
+  nav a { display: flex; align-items: center; gap: 10px; text-decoration: none; color: inherit; font-weight: 650; }
+  nav img { width: 30px; height: 30px; border-radius: 8px; }
+  h1 { font-size: 2.1rem; line-height: 1.15; margin: 0 0 6px; }
+  h2 { font-size: 1.25rem; margin: 32px 0 6px; }
+  p.meta { color: var(--muted); margin: 0 0 24px; }
+  a { color: var(--accent); }
+  .card { background: var(--card); border: 1px solid var(--edge); border-radius: 14px; padding: 4px 22px 14px; margin-top: 18px; }
+  li { margin: 6px 0; }
+</style>
+</head>
+<body>
+<main>
+<nav><a href="../"><img src="../app/icon-192.png" alt="">OG Paper</a></nav>
+<h1>Privacy policy</h1>
+<p class="meta">OG Paper (the apps for macOS, iOS, iPadOS, Windows, Linux and Android, and the web app) · Updated October 4, 2026</p>
+
+<div class="card">
+<h2>The short version</h2>
+<p>OG Paper collects no data about you. There are no accounts, no analytics, no ads and no trackers, and nothing you draw is sent to us. We do not run servers that see your canvases.</p>
+</div>
+
+<h2>Where your work is kept</h2>
+<p>Your canvases, bookmarks, saved tools, fonts, plugins and settings stay on your device: in the app's own storage (on macOS and iOS, the app's sandboxed container), in files you choose to save, or, in the web app, in your browser's storage. Deleting the app or clearing the browser's site data removes them.</p>
+
+<h2>Sharing, only when you choose it</h2>
+<p>If you use Share live, Sync folder, a relay or a page server, your canvas travels only to the people, folders or servers you pick:</p>
+<ul>
+<li><b>Live sharing</b> connects to the host, relay or page server in the link you open or make. Live frames are encrypted end to end (ChaCha20-Poly1305) and changes are signed (Ed25519), so whoever carries them cannot read or alter them.</li>
+<li><b>Sync folder</b> writes a copy into a folder you pick; whatever syncs that folder (for example iCloud Drive, Dropbox or Syncthing) is governed by its own privacy terms.</li>
+<li><b>Servers</b> you or others host (<code>og-paper --serve-dir</code>) keep the pages shared with them. The OG Paper project hosts none.</li>
+</ul>
+
+<h2>Plugins</h2>
+<p>Plugins run sealed off: they cannot read your files, use the network or see anything but the canvas input the app hands them when you press their button.</p>
+
+<h2>Children</h2>
+<p>OG Paper collects no personal information from anyone, children included.</p>
+
+<h2>Changes and contact</h2>
+<p>If this policy changes, the new version will be posted here with a new date. Questions: open an issue at <a href="https://github.com/OmegaGiven/OG-paper/issues">github.com/OmegaGiven/OG-paper/issues</a>.</p>
+</main>
+</body>
+</html>
