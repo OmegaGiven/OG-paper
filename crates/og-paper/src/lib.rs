@@ -2704,6 +2704,16 @@ impl App {
         let Some(window) = self.window.clone() else {
             return;
         };
+        // Keep the surface the window's size: on iOS the window can have no
+        // size yet when the renderer is made, and its resize can come first.
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(g) = self.gpu.as_mut() {
+            let s = window.inner_size();
+            if s.width > 0 && s.height > 0 && (s.width, s.height) != (g.config.width, g.config.height) {
+                log::info!("surface {}x{} -> {}x{}", g.config.width, g.config.height, s.width, s.height);
+                g.resize(s.width, s.height);
+            }
+        }
         #[cfg(target_arch = "wasm32")]
         if self.gpu.is_none() {
             let ready = self.pending_gpu.borrow_mut().take();
@@ -3417,6 +3427,11 @@ pub(crate) fn web_dpr() -> f32 {
 /// iPhone and iPad entry point (from `main`).
 #[cfg(target_os = "ios")]
 pub fn run_ios() {
+    // To stderr: the Simulator test and Xcode's console show it.
+    env_logger::Builder::from_env(
+        env_logger::Env::default().default_filter_or("info,wgpu_core=warn,wgpu_hal=warn,naga=warn"),
+    )
+    .init();
     if let Some(home) = std::env::var_os("HOME") {
         let docs = PathBuf::from(home).join("Documents");
         let _ = std::fs::create_dir_all(&docs);

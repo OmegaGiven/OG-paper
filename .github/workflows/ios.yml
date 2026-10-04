@@ -48,10 +48,13 @@ jobs:
           xcrun simctl boot "$DEV"
           xcrun simctl bootstatus "$DEV" -b
           xcrun simctl install "$DEV" "build/sim/OG Paper.app"
-          xcrun simctl launch "$DEV" com.omegagiven.ogpaper
-          sleep 20
           mkdir -p shots
+          xcrun simctl launch --stdout="$PWD/shots/stdout.txt" --stderr="$PWD/shots/stderr.txt" "$DEV" com.omegagiven.ogpaper
+          sleep 6
+          xcrun simctl io "$DEV" screenshot shots/after-6s.png
+          sleep 14
           xcrun simctl io "$DEV" screenshot shots/launched.png
+          echo "--- app stderr"; tail -60 shots/stderr.txt || true
           # Still running (not crashed)?
           xcrun simctl spawn "$DEV" launchctl list | grep -i ogpaper || { echo "::error::the app is not running"; xcrun simctl spawn "$DEV" log show --last 2m --predicate 'process == "og-paper"' | tail -80; exit 1; }
           xcrun simctl spawn "$DEV" log show --last 2m --predicate 'process == "og-paper"' | tail -40 || true

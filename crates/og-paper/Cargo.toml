@@ -58,6 +58,7 @@ console_log = "1"
 web-sys = { version = "0.3", features = ["Window", "MediaQueryList", "HtmlCanvasElement", "Storage"] }
 
 [target.'cfg(target_os = "ios")'.dependencies]
+env_logger = "0.11"
 tungstenite = { version = "0.26", default-features = false, features = ["handshake", "rustls-tls-webpki-roots"] }
 
 [target.'cfg(target_os = "android")'.dependencies]
