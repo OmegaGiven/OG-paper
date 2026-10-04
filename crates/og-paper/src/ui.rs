@@ -903,6 +903,7 @@ impl UiState {
         let mut bars = self.toolbars.clone();
         if let Some(b) = bars.get_mut(self.active_bar) {
             b.slots = self.hotbar.clone();
+            b.hold = self.hold;
         }
         // Only the views some slot still points at.
         let used: std::collections::HashSet<u32> = bars
@@ -913,7 +914,6 @@ impl UiState {
             .filter_map(|p| p.view)
             .collect();
         hotbar::Saved {
-            hold: self.hold,
             bars,
             active: self.active_bar,
             inv: self.inventory.clone(),
@@ -965,7 +965,7 @@ impl UiState {
         self.toolbars = s.bars;
         self.inventory = s.inv;
         self.views = s.views;
-        self.hold = s.hold;
+        self.hold = self.toolbars.get(self.active_bar).and_then(|b| b.hold);
     }
 
     /// Show toolbar `k` in the quick bar.
@@ -974,8 +974,10 @@ impl UiState {
             return;
         }
         self.toolbars[self.active_bar].slots = std::mem::take(&mut self.hotbar);
+        self.toolbars[self.active_bar].hold = self.hold;
         self.active_bar = k;
         self.hotbar = self.toolbars[k].slots.clone();
+        self.hold = self.toolbars[k].hold;
         self.bar_rename = None;
         self.presets_dirty = true;
         self.message = Some(format!("Toolbar {}", k + 1));
@@ -1545,8 +1547,9 @@ enum Slots {
     /// Toolbar k (the active one is `hotbar`).
     Row(usize),
     Inventory,
-    /// The hold tool (right click / press and hold).
-    Hold,
+    /// Toolbar k's hold tool (right click / press and hold; the active
+    /// one's is `hold`).
+    Hold(usize),
 }
 
 /// The quick bar (bottom middle) and, when its bag button is on, the
@@ -1743,11 +1746,11 @@ fn quick_bar(ctx: &egui::Context, st: &mut UiState, g: &Geo) {
                         let r = Rect::from_min_size(cell(ri, i + 1), Vec2::splat(s));
                         slot(ui, st, r, Slots::Row(k), i, &mut fx);
                     }
+                    // Its hold slot: the tool a right click or a press and
+                    // hold uses while this toolbar is the active one.
+                    let r = Rect::from_min_size(cell(ri, n + 1), Vec2::splat(s));
+                    slot(ui, st, r, Slots::Hold(k), 0, &mut fx);
                 }
-                // The hold slot: the tool a right click or a press and hold
-                // uses (one for all toolbars).
-                let r = Rect::from_min_size(cell(0, n + 1), Vec2::splat(s));
-                slot(ui, st, r, Slots::Hold, 0, &mut fx);
             });
     }
     // The toolbar list, with the inventory reaching out from it.
@@ -2076,7 +2079,7 @@ fn toolbar_menu(
     // Beside a vertical quick bar (portrait) each toolbar is a column;
     // else a row. `w` is a toolbar's length along it.
     let vert = matches!(side, Side::Right | Side::Left);
-    let w = check + 6.0 + (n + 1) as f32 * (s + gap) + s;
+    let w = check + 6.0 + (n + 2) as f32 * (s + gap) + s;
     let x = (bars.left() - check - 6.0).clamp(
         screen.left() + 8.0,
         (screen.right() - w - 32.0).max(screen.left() + 8.0),
@@ -2246,9 +2249,14 @@ fn toolbar_menu(
                                 );
                                 slot(ui, st, r, Slots::Row(k), i, fx);
                             }
+                            let hr = Rect::from_min_size(
+                                at(x0 + (n + 1) as f32 * (s + gap)),
+                                Vec2::splat(s),
+                            );
+                            slot(ui, st, hr, Slots::Hold(k), 0, fx);
                             // Delete.
                             let dr = Rect::from_min_size(
-                                at(x0 + (n + 1) as f32 * (s + gap)),
+                                at(x0 + (n + 2) as f32 * (s + gap)),
                                 Vec2::splat(s),
                             );
                             let resp = ui.interact(dr, Id::new(("bar_del", k)), Sense::click());
@@ -2392,7 +2400,8 @@ fn slot_mut(st: &mut UiState, which: Slots, i: usize) -> &mut Option<Preset> {
         Slots::Row(k) if k == st.active_bar => &mut st.hotbar[i],
         Slots::Row(k) => &mut st.toolbars[k].slots[i],
         Slots::Inventory => &mut st.inventory[i],
-        Slots::Hold => &mut st.hold,
+        Slots::Hold(k) if k == st.active_bar => &mut st.hold,
+        Slots::Hold(k) => &mut st.toolbars[k].hold,
     }
 }
 
@@ -2452,7 +2461,7 @@ fn slot(ui: &mut egui::Ui, st: &mut UiState, rect: Rect, which: Slots, i: usize,
             Color32::from_gray(150),
         );
     }
-    if which == Slots::Hold {
+    if matches!(which, Slots::Hold(_)) {
         // Marked apart from the numbered slots.
         p.rect_stroke(
             rect.shrink(2.5),
@@ -2489,10 +2498,10 @@ fn slot(ui: &mut egui::Ui, st: &mut UiState, rect: Rect, which: Slots, i: usize,
         (Some(it), None) => preset_icon(p, rect.center(), rect.width() * 0.5, it, &st.egui_fonts),
         _ => {}
     }
-    if resp.clicked() && which == Slots::Hold && !(st.bag_open && st.held.is_some()) {
+    if resp.clicked() && matches!(which, Slots::Hold(_)) && !(st.bag_open && st.held.is_some()) {
         // The hold slot takes the tool in hand (using it as the main tool
         // would defeat it).
-        st.hold = Some(current);
+        *slot_mut(st, which, 0) = Some(current);
         fx.changed = true;
         fx.say = Some(format!(
             "Hold tool: {} (right click, or press and hold)",
@@ -2511,7 +2520,7 @@ fn slot(ui: &mut egui::Ui, st: &mut UiState, rect: Rect, which: Slots, i: usize,
         } else {
             *slot_mut(st, which, i) = Some(current);
             fx.changed = true;
-            fx.say = Some(if which == Slots::Hold {
+            fx.say = Some(if matches!(which, Slots::Hold(_)) {
                 format!(
                     "Hold tool: {} (right click, or press and hold)",
                     describe(&current)
@@ -2522,7 +2531,7 @@ fn slot(ui: &mut egui::Ui, st: &mut UiState, rect: Rect, which: Slots, i: usize,
         }
     }
     let tip = match &item {
-        _ if which == Slots::Hold => match &item {
+        _ if matches!(which, Slots::Hold(_)) => match &item {
             Some(it) => format!(
                 "Hold tool: {} (right click, or press and hold, uses it)",
                 describe(it)

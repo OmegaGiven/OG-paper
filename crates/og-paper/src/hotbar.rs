@@ -15,8 +15,10 @@
 //! A tool is its key then its settings: for pens, color (RGBA hex), width,
 //! pressure (0/1), dash and opacity; for shapes and text, the hex of the same
 //! settings record a canvas file stores (see `snapshot.rs`). Version 1 files
-//! (one bar: `h slot tool…`) still load. `x tool…` is the hold tool (older
-//! apps skip the line).
+//! (one bar: `h slot tool…`) still load. `y N tool…` is toolbar N's hold
+//! tool (right click / press and hold); `x tool…` is the hold tool of
+//! files from before each toolbar had its own (given to every toolbar),
+//! still written for the active toolbar so older apps keep one.
 
 use egui::Color32;
 use ogpaper_core::Dash;
@@ -39,6 +41,8 @@ pub struct Toolbar {
     pub slots: Vec<Option<Preset>>,
     /// Shown as a row in the quick bar even when it isn't the active one.
     pub shown: bool,
+    /// Its hold tool (right click / press and hold).
+    pub hold: Option<Preset>,
 }
 
 /// Everything saved: the toolbars, which one is showing, and the inventory.
@@ -49,8 +53,6 @@ pub struct Saved {
     pub inv: Vec<Option<Preset>>,
     /// Saved views that slots point at.
     pub views: std::collections::BTreeMap<u32, View>,
-    /// The hold tool (right click / press and hold).
-    pub hold: Option<Preset>,
 }
 
 /// Keep at least one empty row at the end of the inventory (and never less
@@ -246,17 +248,18 @@ pub fn defaults() -> Saved {
                 name: "Everyday".into(),
                 slots: bar,
                 shown: false,
+                hold: None,
             },
             Toolbar {
                 name: "Diagram".into(),
                 slots: diagram,
                 shown: false,
+                hold: None,
             },
         ],
         active: 0,
         inv,
         views: Default::default(),
-        hold: None,
     }
 }
 
@@ -266,6 +269,7 @@ pub fn empty_bar(name: impl Into<String>) -> Toolbar {
         name: name.into(),
         slots: vec![None; BAR],
         shown: false,
+        hold: None,
     }
 }
 
@@ -434,6 +438,9 @@ pub fn encode(saved: &Saved) -> String {
                 out += &format!("h {b} {i} {}\n", put(p));
             }
         }
+        if let Some(p) = &bar.hold {
+            out += &format!("y {b} {}\n", put(p));
+        }
     }
     for (i, s) in saved.inv.iter().enumerate() {
         if let Some(p) = s {
@@ -443,7 +450,8 @@ pub fn encode(saved: &Saved) -> String {
     for (id, v) in &saved.views {
         out += &format!("w {id} {} {}\n", v.cam, v.name.replace(['\n', '\r'], " "));
     }
-    if let Some(p) = &saved.hold {
+    // For older apps: one hold tool, the active toolbar's.
+    if let Some(p) = saved.bars.get(saved.active).and_then(|b| b.hold.as_ref()) {
         out += &format!("x {}\n", put(p));
     }
     out
@@ -462,7 +470,9 @@ pub fn decode(text: &str) -> Option<Saved> {
     let mut inv: Vec<Option<Preset>> = Vec::new();
     let mut views = std::collections::BTreeMap::new();
     let mut active = 0;
-    let mut hold = None;
+    // A file from before each toolbar had a hold tool: its one.
+    let mut old_hold = None;
+    let mut per_bar = false;
     let bar = |bars: &mut Vec<Toolbar>, b: usize| -> Option<()> {
         if b > 255 {
             return None;
@@ -518,7 +528,16 @@ pub fn decode(text: &str) -> Option<Saved> {
                     }
                 }
             }
-            (2, "x") => hold = get(rest),
+            (2, "x") => old_hold = get(rest),
+            (2, "y") => {
+                let mut w = rest.splitn(2, ' ');
+                if let (Some(Ok(b)), Some(tool)) = (w.next().map(str::parse::<usize>), w.next()) {
+                    if bar(&mut bars, b).is_some() {
+                        bars[b].hold = get(tool);
+                        per_bar = true;
+                    }
+                }
+            }
             (2, "w") => {
                 let mut w = rest.splitn(3, ' ');
                 if let (Some(Ok(id)), Some(cam)) = (w.next().map(str::parse::<u32>), w.next()) {
@@ -551,6 +570,11 @@ pub fn decode(text: &str) -> Option<Saved> {
     if bars.is_empty() {
         bars.push(empty_bar("Toolbar 1"));
     }
+    if !per_bar {
+        for b in &mut bars {
+            b.hold = old_hold;
+        }
+    }
     grow_inventory(&mut inv);
     let active = active.min(bars.len() - 1);
     Some(Saved {
@@ -558,7 +582,6 @@ pub fn decode(text: &str) -> Option<Saved> {
         active,
         inv,
         views,
-        hold,
     })
 }
 
@@ -605,11 +628,24 @@ mod tests {
         assert_eq!(decode(&text).unwrap(), saved);
         assert!(decode("nonsense").is_none());
         // A bad line leaves its slot empty.
-        // The hold tool round trips; older files simply have none.
+        // Each toolbar's hold tool round trips; older files have none, or
+        // one for every toolbar.
         let mut with_hold = defaults();
-        with_hold.hold = Some(Preset::tool(Tool::Text));
-        assert_eq!(decode(&encode(&with_hold)).unwrap().hold, with_hold.hold);
-        assert_eq!(decode("og-paper-hotbar 2\nb 0 A\n").unwrap().hold, None);
+        with_hold.bars[0].hold = Some(Preset::tool(Tool::Text));
+        with_hold.bars.push(empty_bar("Two"));
+        with_hold.bars[1].hold = Some(Preset::tool(Tool::Eraser));
+        let back = decode(&encode(&with_hold)).unwrap();
+        assert_eq!(back.bars[0].hold, Some(Preset::tool(Tool::Text)));
+        assert_eq!(back.bars[1].hold, Some(Preset::tool(Tool::Eraser)));
+        assert_eq!(
+            decode("og-paper-hotbar 2\nb 0 A\n").unwrap().bars[0].hold,
+            None
+        );
+        let old = decode("og-paper-hotbar 2\nb 0 A\nb 1 B\nx select\n").unwrap();
+        assert!(old
+            .bars
+            .iter()
+            .all(|b| b.hold == Some(Preset::tool(Tool::Select))));
         let s3 = decode("og-paper-hotbar 2\nb 0 A\nh 0 2 pen ink zz\nh 0 4 eraser\n").unwrap();
         assert!(
             s3.bars[0].slots[2].is_none()

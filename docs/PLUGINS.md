@@ -53,8 +53,8 @@ i 3 pen …
 sticker Leaf <base64 of a library sticker (.ogps)>
 ```
 
-`b`/`h`/`i` lines are the toolbar file's own (toolbars, their slots, and
-inventory tools). Installing adds the pack's toolbars as
+`b`/`h`/`y`/`i` lines are the toolbar file's own (toolbars, their slots,
+their hold tools, and inventory tools). Installing adds the pack's toolbars as
 "<pack>: <toolbar>" (switch to them with `[` / `]` or the toolbar list),
 puts its tools in free inventory slots and its stickers in the library.
 Nothing of yours is replaced.

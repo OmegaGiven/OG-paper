@@ -11,6 +11,7 @@
 //! name Watercolor set
 //! b 0 Washes                      (toolbars and slots, as in the toolbar file)
 //! h 0 0 pen …
+//! y 0 eraser                      (a toolbar's hold tool)
 //! i 3 pen …                       (inventory tools)
 //! sticker Leaf <base64 .ogps>     (library stickers)
 //! ```
@@ -43,10 +44,9 @@ pub fn parse(text: &str) -> Result<(String, hotbar::Saved, Vec<(String, Vec<u8>)
                     stickers.push((n.trim().to_string(), bytes));
                 }
             }
-        } else if l.starts_with("b ")
-            || l.starts_with("h ")
-            || l.starts_with("i ")
-            || l.starts_with("s ")
+        } else if ["b ", "h ", "i ", "s ", "y "]
+            .iter()
+            .any(|t| l.starts_with(t))
         {
             bar_text += l;
             bar_text.push('\n');
@@ -62,7 +62,7 @@ impl App {
         let text = hotbar::encode(&self.ui.saved());
         let mut out = format!("{HEADER}\nname My toolbars\n");
         for l in text.lines().skip(1) {
-            if l.starts_with("b ") || l.starts_with("h ") || l.starts_with("i ") {
+            if ["b ", "h ", "i ", "y "].iter().any(|t| l.starts_with(t)) {
                 out += l;
                 out.push('\n');
             }
