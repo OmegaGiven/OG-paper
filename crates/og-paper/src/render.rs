@@ -303,6 +303,20 @@ pub struct GridGpu {
     pub _b: f32,
 }
 
+/// The size to draw at: the window's, except on iOS, where winit's window
+/// size is only the safe area (without the notch and status bar) while the
+/// screen layer drawn into is the whole screen.
+pub(crate) fn surface_size(window: &Window) -> winit::dpi::PhysicalSize<u32> {
+    #[cfg(target_os = "ios")]
+    {
+        window.outer_size()
+    }
+    #[cfg(not(target_os = "ios"))]
+    {
+        window.inner_size()
+    }
+}
+
 pub struct Renderer {
     /// Background grid to draw under the ink this frame, if any.
     pub grid: Option<GridGpu>,
@@ -475,7 +489,7 @@ impl Renderer {
             .await
             .map_err(|e| format!("device: {e}"))?;
 
-        let size = window.inner_size();
+        let size = surface_size(&window);
         let caps = surface.get_capabilities(&adapter);
         // Colors are sRGB bytes end to end (UI and ink alike), so use a surface
         // that stores them as-is rather than one that re-encodes to sRGB.
@@ -917,7 +931,7 @@ impl Renderer {
     pub fn resume(&mut self, window: Arc<Window>) {
         if self.surface.is_none() {
             if let Ok(s) = self.instance.create_surface(window.clone()) {
-                let size = window.inner_size();
+                let size = surface_size(&window);
                 self.config.width = size.width.max(1);
                 self.config.height = size.height.max(1);
                 s.configure(&self.device, &self.config);

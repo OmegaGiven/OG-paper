@@ -2708,7 +2708,7 @@ impl App {
         // size yet when the renderer is made, and its resize can come first.
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(g) = self.gpu.as_mut() {
-            let s = window.inner_size();
+            let s = render::surface_size(&window);
             if s.width > 0 && s.height > 0 && (s.width, s.height) != (g.config.width, g.config.height) {
                 log::info!("surface {}x{} -> {}x{}", g.config.width, g.config.height, s.width, s.height);
                 g.resize(s.width, s.height);
@@ -3087,8 +3087,9 @@ impl ApplicationHandler for App {
                 self.save_view();
                 el.exit();
             }
-            WindowEvent::Resized(s) => {
+            WindowEvent::Resized(_) => {
                 if let Some(g) = self.gpu.as_mut() {
+                    let s = render::surface_size(&window);
                     g.resize(s.width, s.height);
                 }
                 window.request_redraw();
