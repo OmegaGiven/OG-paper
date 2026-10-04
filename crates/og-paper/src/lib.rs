@@ -188,6 +188,8 @@ pub struct App {
     portal_passes: u32,
     /// First frames logged (start-up diagnostics).
     frames_logged: u32,
+    /// A redraw was asked for (see `redraw`; re-asked in `about_to_wait`).
+    redraw_again: std::cell::Cell<bool>,
     /// Viewing the canvas as it was after timeline event `.0`; `.1` holds the
     /// real deleted flags to put back.
     tl_view: Option<(usize, Vec<bool>)>,
@@ -294,6 +296,7 @@ impl App {
             portal_path: Vec::new(),
             portal_passes: 0,
             frames_logged: 0,
+            redraw_again: std::cell::Cell::new(false),
             tl_view: None,
             tl_from: 0,
             fly: None,
@@ -380,6 +383,9 @@ impl App {
     }
 
     fn redraw(&self) {
+        // Asked again once the event loop is idle: iOS drops a request made
+        // while a frame is being drawn.
+        self.redraw_again.set(true);
         if let Some(w) = &self.window {
             w.request_redraw();
         }
@@ -2707,6 +2713,7 @@ impl App {
         let Some(window) = self.window.clone() else {
             return;
         };
+        self.redraw_again.set(false);
         // Keep the surface the window's size: on iOS the window can have no
         // size yet when the renderer is made, and its resize can come first.
         #[cfg(not(target_arch = "wasm32"))]
@@ -2835,7 +2842,7 @@ impl App {
             .get(&egui::ViewportId::ROOT)
             .is_some_and(|v| v.repaint_delay.is_zero())
         {
-            window.request_redraw();
+            self.redraw();
         }
         let prims = self.egui_ctx.tessellate(out.shapes, out.pixels_per_point);
         {
@@ -2862,7 +2869,7 @@ impl App {
 
         // A PDF import: one page per frame.
         if self.pdf.is_some() && self.pdf_step() {
-            window.request_redraw();
+            self.redraw();
         }
         // Search (desktop panel): refresh results as the query changes, and
         // fly to a picked one.
@@ -2879,16 +2886,16 @@ impl App {
                 self.gesture = Gesture::None;
                 self.begin_hold(a, pr);
             } else {
-                window.request_redraw();
+                self.redraw();
             }
         }
         if self.merge_changes.as_ref().is_some_and(|c| c.live()) {
-            window.request_redraw();
+            self.redraw();
         } else {
             self.merge_changes = None;
         }
         if self.flash.is_some_and(|(_, t)| t.elapsed() < search::FLASH) {
-            window.request_redraw();
+            self.redraw();
         } else {
             self.flash = None;
         }
@@ -2970,7 +2977,7 @@ impl App {
         }
         if !shown {
             log::debug!("frame not presented; retrying");
-            window.request_redraw();
+            self.redraw();
         }
     }
 }
@@ -2979,6 +2986,11 @@ impl ApplicationHandler for App {
     /// Wake up to hide a message when its time is up, and every second
     /// while syncing in the background.
     fn about_to_wait(&mut self, el: &ActiveEventLoop) {
+        if self.redraw_again.take() {
+            if let Some(w) = &self.window {
+                w.request_redraw();
+            }
+        }
         let every = if self.net_active() {
             Duration::from_millis(30)
         } else {
