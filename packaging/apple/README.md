@@ -1,8 +1,9 @@
 # Apple App Store packaging
 
-- `icon-1024.svg` / `.png`: the store and iOS icon (full bleed; the system
-  rounds the corners). `icon-mac-1024.*`: the Mac icon (a rounded plate in
-  the standard margin). Regenerate the PNGs with `rsvg-convert -w 1024`.
+- `icon-1024.*`: the store and iOS icon (full bleed; the system rounds
+  the corners). `icon-mac-1024.*`: the Mac icon (a rounded plate in the
+  standard margin). These, the web icons and the Android launcher icons
+  all come from `packaging/make-icons.py`.
 - `macos/OGPaper.entitlements`: the Mac App Store sandbox: files the user
   picks, network client (joining) and server (hosting). Canvases, fonts,
   plugins and settings live in the app's container.

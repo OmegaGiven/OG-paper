@@ -66,6 +66,8 @@ winit = { version = "0.30", features = ["android-native-activity"] }
 package = "app.ogpaper"
 apk_name = "og-paper"
 build_targets = ["aarch64-linux-android"]
+# Launcher icons (packaging/make-icons.py writes them).
+resources = "res"
 
 [package.metadata.android.sdk]
 min_sdk_version = 29
@@ -73,6 +75,7 @@ target_sdk_version = 34
 
 [package.metadata.android.application]
 label = "OG Paper"
+icon = "@mipmap/ic_launcher"
 
 [package.metadata.android.application.activity]
 orientation = "unspecified"
