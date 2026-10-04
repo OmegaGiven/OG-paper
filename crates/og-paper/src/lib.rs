@@ -2538,13 +2538,30 @@ impl App {
                 self.insert_image(a, at.map(|p| [p[0] * k, p[1] * k]));
             }
             Cmd::Field(kind, text) => {
-                let ev = match kind.as_str() {
-                    "paste" => egui::Event::Paste(text),
-                    "cut" => egui::Event::Cut,
-                    _ => egui::Event::Copy,
+                let key = |key: egui::Key, pressed: bool| egui::Event::Key {
+                    key,
+                    physical_key: None,
+                    pressed,
+                    repeat: false,
+                    modifiers: egui::Modifiers::default(),
+                };
+                let evs = match kind.as_str() {
+                    "paste" => vec![egui::Event::Paste(text)],
+                    "cut" => vec![egui::Event::Cut],
+                    "copy" => vec![egui::Event::Copy],
+                    // Typed on a phone's keyboard (see `og_field_at`).
+                    "text" => vec![egui::Event::Text(text)],
+                    "Backspace" => vec![
+                        key(egui::Key::Backspace, true),
+                        key(egui::Key::Backspace, false),
+                    ],
+                    "Enter" => vec![key(egui::Key::Enter, true), key(egui::Key::Enter, false)],
+                    _ => vec![],
                 };
                 if let Some(io) = self.egui_io.as_mut() {
-                    io.push_event(ev);
+                    for ev in evs {
+                        io.push_event(ev);
+                    }
                 }
             }
             Cmd::PasteText(t, at) => {

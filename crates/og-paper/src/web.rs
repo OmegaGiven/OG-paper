@@ -146,11 +146,20 @@ pub fn og_wants_text() -> bool {
 }
 
 /// Paste `text` into, or copy or cut from, the focused text box
-/// (`kind` is "paste", "copy" or "cut"); a copy's text comes back from
+/// (`kind` is "paste", "copy" or "cut"; "text", "Backspace" or "Enter"
+/// from a phone's keyboard); a copy's text comes back from
 /// `og_copied_take`.
 #[wasm_bindgen]
 pub fn og_text_field(kind: String, text: String) {
     push(Cmd::Field(kind, text));
+}
+
+/// Whether (x, y) in CSS px is on one of the app's text boxes: a tap
+/// there on a phone should bring up the keyboard.
+#[wasm_bindgen]
+pub fn og_field_at(x: f32, y: f32) -> bool {
+    let p = egui::pos2(x, y);
+    crate::ui::TEXT_FIELDS.with(|f| f.borrow().iter().any(|r| r.contains(p)))
 }
 
 /// What a text box copied, once.

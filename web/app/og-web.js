@@ -6,7 +6,7 @@
 
 import init, {
   og_load, og_demo, og_blank, og_status, og_requests, og_set_menu, og_text_request, og_text_done, og_font_add,
-  og_copy, og_paste_own, og_wants_text, og_text_field, og_copied_take, og_paste_image, og_paste_text, og_pdf_page,
+  og_copy, og_paste_own, og_wants_text, og_text_field, og_copied_take, og_field_at, og_paste_image, og_paste_text, og_pdf_page,
   og_home, og_bookmark_add, og_bookmark_go, og_bookmark_remove, og_bookmark_rename, og_bookmark_to_bar,
   og_search, og_search_results, og_search_go, og_export, og_export_take, og_has_selection,
   og_sticker_take, og_sticker_svg, og_sticker_place, og_import, og_merge, og_changes_take, og_merge_quiet, og_set_folder, og_net_url, og_net_take, og_net_open, og_net_recv, og_net_closed, og_join, og_poke, og_rtc_host, og_rtc_closing, og_view_token, og_relay_share, og_dir_requests, og_page_arg, og_set_pages, og_plugin_install, og_pack_install, og_pack_sticker_take, og_run, og_set_name, og_add_server,
@@ -1025,6 +1025,49 @@ export async function start({ mode = 'app' } = {}) {
     }
     return true;
   };
+  // Phones: the app's text boxes are drawn on the canvas, which can't
+  // bring up a keyboard. A tap on one focuses this hidden input instead
+  // (inside the tap, as iOS requires) and what is typed goes to the box.
+  // A space stays in it so a backspace on an empty box still shows up.
+  const kbd = el('input', {
+    type: 'text', autocomplete: 'off', autocorrect: 'off', autocapitalize: 'off', spellcheck: 'false',
+    enterkeyhint: 'done', 'aria-hidden': 'true', tabindex: '-1',
+    style: 'position:fixed;left:0;bottom:0;width:1px;height:1px;opacity:0;border:0;padding:0;font-size:16px;pointer-events:none;',
+  });
+  root.append(kbd);
+  const KBD_REST = ' ';
+  let kbdOn = false, kbdSeen = false, kbdAt = 0;
+  const kbdReset = () => { kbd.value = KBD_REST; kbd.setSelectionRange(1, 1); };
+  document.addEventListener('touchend', e => {
+    const t = e.changedTouches[0];
+    if (!t || !onCanvas(e) || !og_field_at(t.clientX, t.clientY)) return;
+    kbdReset();
+    kbd.focus({ preventScroll: true });
+    kbdOn = true; kbdSeen = false; kbdAt = performance.now();
+  }, true);
+  kbd.addEventListener('input', () => {
+    const v = kbd.value;
+    if (v.length < KBD_REST.length) og_text_field('Backspace', '');
+    else if (v.startsWith(KBD_REST) && v.length > KBD_REST.length) og_text_field('text', v.slice(KBD_REST.length));
+    else if (v !== KBD_REST) og_text_field('text', v);
+    kbdReset();
+  });
+  kbd.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); og_text_field('Enter', ''); }
+  });
+  // Let go of the keyboard when the app's text box loses focus (it takes
+  // focus a frame after the tap, hence the grace).
+  (function kbdWatch() {
+    if (kbdOn && document.activeElement === kbd) {
+      const wants = og_wants_text();
+      if (wants) kbdSeen = true;
+      if (!wants && (kbdSeen || performance.now() - kbdAt > 1000)) {
+        kbd.blur();
+        kbdOn = false;
+      }
+    }
+    requestAnimationFrame(kbdWatch);
+  })();
   for (const kind of ['copy', 'cut']) {
     document.addEventListener(kind, e => {
       if (intoField(kind, e)) return;

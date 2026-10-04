@@ -1288,6 +1288,7 @@ fn geo(ctx: &egui::Context, st: &UiState) -> Geo {
 /// Draw the UI; returns actions for the app to perform.
 pub fn draw(ctx: &egui::Context, st: &mut UiState) -> Vec<Action> {
     let mut actions = Vec::new();
+    TEXT_FIELDS.with(|f| f.borrow_mut().clear());
     HINTS.store(st.hints, std::sync::atomic::Ordering::Relaxed);
     if (ctx.zoom_factor() - st.ui_scale).abs() > 1e-3 {
         ctx.set_zoom_factor(st.ui_scale);
@@ -1381,7 +1382,7 @@ pub fn draw(ctx: &egui::Context, st: &mut UiState) -> Vec<Action> {
 
                 // ---- tool fan: quarter-circle rings up and left of the tool button
                 if t > 0.0 {
-                    fan_backdrop(&p, screen, g.tool, tool_halo, t);
+                    fan_backdrop(&p, g.tool, tool_halo, t);
                     // Undo and redo: the fan stays open, to step back several times.
                     for (i, redo) in [(0usize, false), (1, true)] {
                         let (radius, frac) = tool_slots[i];
@@ -3694,7 +3695,8 @@ fn text_editor(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>)
         .show(ctx, |ui| {
             ui.style_mut().visuals = egui::Visuals::light();
             egui::Frame::popup(ui.style()).show(ui, |ui| {
-                let resp = ui.add(
+                let resp = add_field(
+                    ui,
                     egui::TextEdit::multiline(text)
                         .desired_rows(2)
                         .desired_width(240.0)
@@ -5137,7 +5139,8 @@ fn search_panel(ctx: &egui::Context, st: &mut UiState) {
                     ui.set_width(w);
                     let mut close = false;
                     ui.horizontal(|ui| {
-                        let r = ui.add(
+                        let r = add_field(
+                            ui,
                             egui::TextEdit::singleline(&mut st.search_query)
                                 .hint_text("Search text on the canvas")
                                 .desired_width(w - 70.0),
@@ -6077,7 +6080,7 @@ fn pages_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>)
                         let mut cancel_new = false;
                         if let Some(name) = st.page_new.as_mut() {
                             ui.horizontal(|ui| {
-                                let r = ui.add(
+                                let r = add_field(ui,
                                     egui::TextEdit::singleline(name)
                                         .hint_text("Name the new page")
                                         .desired_width(170.0),
@@ -6108,7 +6111,7 @@ fn pages_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>)
                         for (i, p) in st.local_pages.iter().enumerate() {
                             if let Some((k, text)) = st.page_rename.as_mut().filter(|(k, _)| *k == i) {
                                 ui.horizontal(|ui| {
-                                    let r = ui.add(egui::TextEdit::singleline(text).desired_width(170.0));
+                                    let r = add_field(ui,egui::TextEdit::singleline(text).desired_width(170.0));
                                     r.request_focus();
                                     if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                                         rename_done = Some(*k);
@@ -6199,12 +6202,12 @@ fn pages_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>)
                                 let fw = (w - 24.0).max(120.0);
                                 ui.horizontal(|ui| {
                                     ui.add_space(12.0);
-                                    ui.add(egui::TextEdit::singleline(&mut st.sign_in.0).hint_text("User name").desired_width(fw));
+                                    add_field(ui,egui::TextEdit::singleline(&mut st.sign_in.0).hint_text("User name").desired_width(fw));
                                 });
                                 let mut go = false;
                                 ui.horizontal(|ui| {
                                     ui.add_space(12.0);
-                                    let pw = ui.add(egui::TextEdit::singleline(&mut st.sign_in.1).hint_text("Password").password(true).desired_width(fw - 70.0));
+                                    let pw = add_field(ui,egui::TextEdit::singleline(&mut st.sign_in.1).hint_text("Password").password(true).desired_width(fw - 70.0));
                                     go = pw.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                                     go |= ui.button("Sign in").clicked();
                                 });
@@ -6231,7 +6234,7 @@ fn pages_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>)
                         }
                         ui.add_space(8.0);
                         ui.horizontal(|ui| {
-                            ui.add(
+                            add_field(ui,
                                 egui::TextEdit::singleline(&mut st.add_server_text)
                                     .hint_text("Server link (ws://… ?k=…)")
                                     .desired_width(w - 80.0),
@@ -6285,7 +6288,7 @@ fn live_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) 
                     let name = st.name_text.get_or_insert_with(crate::presence::my_name);
                     ui.horizontal(|ui| {
                         ui.label("Your name");
-                        let r = ui.add(egui::TextEdit::singleline(name).desired_width(180.0));
+                        let r = add_field(ui,egui::TextEdit::singleline(name).desired_width(180.0));
                         if r.lost_focus() {
                             actions.push(Action::SetName);
                         }
@@ -6328,14 +6331,14 @@ fn live_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) 
                                     .unwrap_or_else(|| "ws://localhost:8993".into())
                             });
                             ui.horizontal(|ui| {
-                                ui.add(egui::TextEdit::singleline(relay).desired_width(w - 130.0));
+                                add_field(ui,egui::TextEdit::singleline(relay).desired_width(w - 130.0));
                                 if ui.button("Share via relay").clicked() {
                                     actions.push(Action::RelayShare);
                                 }
                             });
                             ui.add_space(6.0);
                             ui.horizontal(|ui| {
-                                ui.add(
+                                add_field(ui,
                                     egui::TextEdit::singleline(&mut st.join_text)
                                         .hint_text("Paste a link (ws://… or …#join=…)")
                                         .desired_width(w - 70.0),
@@ -6353,8 +6356,8 @@ fn live_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) 
                             if info.view_only && info.can_sign_in {
                                 ui.label(egui::RichText::new("Have an account on this server? Sign in to draw.").small());
                                 let w = ui.available_width();
-                                ui.add(egui::TextEdit::singleline(&mut st.sign_in.0).hint_text("User name").desired_width(w));
-                                let pw = ui.add(egui::TextEdit::singleline(&mut st.sign_in.1).hint_text("Password").password(true).desired_width(w));
+                                add_field(ui,egui::TextEdit::singleline(&mut st.sign_in.0).hint_text("User name").desired_width(w));
+                                let pw = add_field(ui,egui::TextEdit::singleline(&mut st.sign_in.1).hint_text("Password").password(true).desired_width(w));
                                 let enter = pw.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                                 if (ui.button("Sign in").clicked() || enter) && !st.sign_in.0.trim().is_empty() {
                                     actions.push(Action::ServerSignIn);
@@ -6537,22 +6540,39 @@ fn view_icon(p: &egui::Painter, c: Pos2, r: f32, name: &str) {
     );
 }
 
-/// The radial toolbar: a button bottom right whose fan holds the active
-/// toolbar's slots, then the toolbar list and the bag.
-/// Under an open fan: shade the page and frost the ground behind the
-/// rings (out to `reach` around `center`), so the tools stand out from
-/// busy drawings. `open` fades it in and out.
-fn fan_backdrop(p: &egui::Painter, screen: Rect, center: Pos2, reach: f32, open: f32) {
-    p.rect_filled(screen, 0.0, Color32::from_black_alpha((70.0 * open) as u8));
+thread_local! {
+    /// Where this frame's text boxes are (CSS px): a tap on one on a phone
+    /// brings up the keyboard (see `og_field_at`).
+    pub static TEXT_FIELDS: std::cell::RefCell<Vec<Rect>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// A text box, noting where it is (see `TEXT_FIELDS`).
+fn add_field(ui: &mut egui::Ui, edit: egui::TextEdit<'_>) -> egui::Response {
+    let r = ui.add(edit);
+    let k = ui.ctx().zoom_factor();
+    let rect = r.interact_rect.intersect(ui.clip_rect());
+    TEXT_FIELDS.with(|f| {
+        f.borrow_mut()
+            .push(Rect::from_min_max(rect.min * k, rect.max * k))
+    });
+    r
+}
+
+/// Under an open fan: shade and frost the ground behind the rings only
+/// (out to `reach` around `center`, fading at the edge), so the tools
+/// stand out from busy drawings. `open` fades it in and out.
+fn fan_backdrop(p: &egui::Painter, center: Pos2, reach: f32, open: f32) {
     let steps = 32;
     for k in 0..steps {
         let t = k as f32 / steps as f32;
         let r = reach * (1.0 + 0.4 * (1.0 - t));
         let a = (open * 11.0 * (0.3 + t)).round() as u8;
-        p.circle_filled(center, r, Color32::from_rgba_unmultiplied(250, 248, 242, a));
+        p.circle_filled(center, r, Color32::from_rgba_unmultiplied(228, 225, 218, a));
     }
 }
 
+/// The radial toolbar: a button bottom right whose fan holds the active
+/// toolbar's slots, then the toolbar list and the bag.
 fn radial_bar(ctx: &egui::Context, st: &mut UiState, g: &Geo) {
     let open = ctx.animate_bool_with_time(Id::new("bar_open"), st.menu == Menu::Bar, 0.12);
     let n = st.hotbar.len();
@@ -6606,7 +6626,7 @@ fn radial_bar(ctx: &egui::Context, st: &mut UiState, g: &Geo) {
             ui.allocate_exact_size(bbox.size(), Sense::hover());
             let p = ui.painter().clone();
             if open > 0.0 {
-                fan_backdrop(&p, screen, g.bar, halo, open);
+                fan_backdrop(&p, g.bar, halo, open);
                 // The slots, then on the inner ring Toolbars (which opens
                 // the inventory too) and the hold tool.
                 for i in 0..n + 2 {
