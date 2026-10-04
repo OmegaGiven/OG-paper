@@ -253,6 +253,8 @@ pub struct LiveInfo {
     /// 0 newest, 1 host wins, 2 guests win.
     pub policy: u8,
     pub view_only: bool,
+    /// On a page server's page: an account there can sign in to draw.
+    pub can_sign_in: bool,
 }
 
 impl PartialEq for InkSettings {
@@ -548,6 +550,8 @@ pub struct UiState {
     pub live: Option<LiveInfo>,
     pub live_open: bool,
     pub join_text: String,
+    /// Signing in to a page server: user name, password.
+    pub sign_in: (String, String),
     pub relay_text: Option<String>,
     pub pages_open: bool,
     pub layout_open: bool,
@@ -758,6 +762,7 @@ impl Default for UiState {
             live: None,
             live_open: false,
             join_text: String::new(),
+            sign_in: (String::new(), String::new()),
             relay_text: None,
             pages_open: false,
             layout_open: false,
@@ -1083,6 +1088,8 @@ pub enum Action {
     NetStop,
     /// Join by the link typed in Share live.
     Join,
+    /// Sign in to the page server with `UiState::sign_in`.
+    ServerSignIn,
     /// The host's rule for rival edits.
     SetPolicy(u8),
     /// Fly to someone's view (true: and follow it).
@@ -6294,6 +6301,16 @@ fn live_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) 
                             ui.label(egui::RichText::new(&info.state).strong());
                             if info.view_only {
                                 ui.label(egui::RichText::new("View link: you can look around and follow, not draw.").small().weak());
+                            }
+                            if info.view_only && info.can_sign_in {
+                                ui.label(egui::RichText::new("Have an account on this server? Sign in to draw.").small());
+                                let w = ui.available_width();
+                                ui.add(egui::TextEdit::singleline(&mut st.sign_in.0).hint_text("User name").desired_width(w));
+                                let pw = ui.add(egui::TextEdit::singleline(&mut st.sign_in.1).hint_text("Password").password(true).desired_width(w));
+                                let enter = pw.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                                if (ui.button("Sign in").clicked() || enter) && !st.sign_in.0.trim().is_empty() {
+                                    actions.push(Action::ServerSignIn);
+                                }
                             }
                             if info.people.is_empty() {
                                 ui.label(egui::RichText::new("Nobody else yet").small().weak());

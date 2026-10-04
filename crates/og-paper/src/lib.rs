@@ -1571,6 +1571,11 @@ impl App {
                     "Left the shared canvas (your copy stays here)"
                 });
             }
+            Action::ServerSignIn => {
+                let (user, pw) = std::mem::take(&mut self.ui.sign_in);
+                self.ui.sign_in.0 = user.clone();
+                self.server_sign_in(user.trim(), &pw);
+            }
             Action::Join => {
                 let link = self.ui.join_text.trim().to_string();
                 self.join(&link);

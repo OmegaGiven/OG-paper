@@ -24,6 +24,10 @@ pub fn encode(p: &Prefs) -> String {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn path() -> Option<std::path::PathBuf> {
+    // Tests keep theirs aside (hosting keys are written here).
+    #[cfg(test)]
+    return Some(std::env::temp_dir().join(format!("ogp-test-prefs-{}.txt", std::process::id())));
+    #[cfg(not(test))]
     Some(crate::fonts_dir()?.parent()?.join("prefs.txt"))
 }
 

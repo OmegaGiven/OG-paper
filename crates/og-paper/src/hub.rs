@@ -283,6 +283,9 @@ pub fn run(dir: PathBuf, port: u16, public: Option<String>) {
                 }
                 Ev::Data(id, b) => match conns.get_mut(&id) {
                     Some(Conn::Page(c)) => {
+                        if sign_in(&console, &server, *c, id, &b) {
+                            continue;
+                        }
                         if let Some(p) = pages.get_mut(c) {
                             p.app.net_event(Ev::Data(id, b));
                         }
@@ -345,6 +348,45 @@ pub fn run(dir: PathBuf, port: u16, public: Option<String>) {
         }
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
+}
+
+/// A guest on a page signing in with a console account: answer with the
+/// page's edit key for any role but viewer. True when `b` was that.
+fn sign_in(console: &Mutex<Console>, server: &Server, canvas: u128, id: u64, b: &[u8]) -> bool {
+    // Sign-ins are small; don't open every big change twice.
+    if b.len() > 4096 {
+        return false;
+    }
+    let (edit, keys) = page_keys_for(canvas);
+    let Some((plain, _)) = keys.open(b) else {
+        return false;
+    };
+    let Ok(Msg::SignIn { user, password }) = Msg::decode(&plain) else {
+        return false;
+    };
+    let checked = console
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .check(&user, &password);
+    let reply = match checked {
+        Ok(role) if role.can_draw() => {
+            println!("[{canvas:032x}] {user} signed in to draw");
+            Msg::SignedIn {
+                edit,
+                note: format!("Signed in as {user}"),
+            }
+        }
+        Ok(_) => Msg::SignedIn {
+            edit: String::new(),
+            note: "That account can view pages, not draw".into(),
+        },
+        Err(e) => Msg::SignedIn {
+            edit: String::new(),
+            note: e.into(),
+        },
+    };
+    server.send(id, keys.seal(&reply.encode(), false));
+    true
 }
 
 /// The index, re-read at most every few seconds (names in the log).
@@ -584,4 +626,80 @@ fn api(
         other => json!({"ok": false, "error": format!("unknown cmd: {other}")}),
     };
     reply(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::hubconsole::Role;
+    use crate::net::native::Client;
+
+    /// Send `m` on page `canvas` with `key` and return the server's answer.
+    fn ask(
+        server: &Server,
+        console: &Mutex<Console>,
+        canvas: u128,
+        key: &crate::seal::Keys,
+        m: Msg,
+    ) -> Msg {
+        let client = Client::connect(format!("ws://127.0.0.1:{}/p/{canvas:032x}", server.port));
+        let start = Instant::now();
+        let mut sent = false;
+        while start.elapsed() < Duration::from_secs(10) {
+            for ev in client.poll() {
+                if let Ev::Data(_, b) = ev {
+                    let (plain, _) = key.open(&b).expect("sealed answer");
+                    return Msg::decode(&plain).expect("answer");
+                }
+            }
+            for ev in server.poll() {
+                match ev {
+                    Ev::Open(_) if !sent => {
+                        client.send(key.seal(&m.encode(), false));
+                        sent = true;
+                    }
+                    Ev::Data(id, b) => {
+                        assert!(sign_in(console, server, canvas, id, &b), "a sign-in");
+                    }
+                    _ => {}
+                }
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        panic!("no answer");
+    }
+
+    #[test]
+    fn page_sign_in_gives_drawing_rights_but_not_to_viewers() {
+        let dir = std::env::temp_dir().join(format!("ogp-signin-{}", crate::uid::new()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let console = Mutex::new(Console::load(&dir));
+        console
+            .lock()
+            .unwrap()
+            .add_user("val", Role::Viewer, "viewpass1");
+        let canvas = make_page(&dir, "Wall").unwrap();
+        let (edit, keys) = page_keys_for(canvas);
+        let view = crate::seal::Keys::parse(&keys.view_token()).unwrap();
+        let server = Server::start(0).unwrap();
+        let sign = |user: &str, password: &str| {
+            ask(
+                &server,
+                &console,
+                canvas,
+                &view,
+                Msg::SignIn {
+                    user: user.into(),
+                    password: password.into(),
+                },
+            )
+        };
+        // The default admin gets the page's edit key, through a view link.
+        assert!(matches!(sign("admin", "password"), Msg::SignedIn { edit: e, .. } if e == edit));
+        // A viewer and a wrong password get none.
+        assert!(matches!(sign("val", "viewpass1"), Msg::SignedIn { edit: e, .. } if e.is_empty()));
+        assert!(matches!(sign("admin", "nope"), Msg::SignedIn { edit: e, .. } if e.is_empty()));
+        server.stop();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

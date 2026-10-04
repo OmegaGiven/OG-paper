@@ -347,6 +347,21 @@ impl App {
         // Guests learn it when they next connect.
     }
 
+    /// On a page server's page: sign in with an account there to draw.
+    pub(crate) fn server_sign_in(&mut self, user: &str, password: &str) {
+        if !matches!(self.net.as_ref().map(|n| &n.role), Some(Role::Guest(g)) if !g.relay) {
+            return;
+        }
+        self.say("Signing in…");
+        self.send(
+            0,
+            &Msg::SignIn {
+                user: user.into(),
+                password: password.into(),
+            },
+        );
+    }
+
     /// Join a shared canvas by its link.
     pub(crate) fn join(&mut self, link: &str) {
         let Some(parsed) = parse_link(link) else {
@@ -871,6 +886,23 @@ impl App {
                     }
                 }
             }
+            Msg::SignedIn { edit, note } => {
+                let url = match self.net.as_ref().map(|n| &n.role) {
+                    Some(Role::Guest(g)) => g.url.clone(),
+                    _ => return,
+                };
+                if edit.is_empty() {
+                    self.say(if note.is_empty() {
+                        "Couldn't sign in".into()
+                    } else {
+                        note
+                    });
+                    return;
+                }
+                // Rejoin with the page's edit key.
+                self.say(format!("{note}: you can draw now"));
+                self.join(&format!("{url}?k={edit}"));
+            }
             Msg::Error(t) => {
                 if let Some(Net {
                     role: Role::Guest(g),
@@ -993,6 +1025,7 @@ impl App {
                     },
                     policy: self.share.log.policy.code(),
                     view_only: false,
+                    can_sign_in: false,
                 }
             }
             Role::Guest(g) if g.relay => {
@@ -1031,6 +1064,7 @@ impl App {
                     links,
                     policy: 0,
                     view_only: self.view_only,
+                    can_sign_in: false,
                 }
             }
             Role::Guest(g) => crate::ui::LiveInfo {
@@ -1056,6 +1090,7 @@ impl App {
                 links: vec![],
                 policy: self.share.log.policy.code(),
                 view_only: self.view_only,
+                can_sign_in: !g.relay && g.url.contains("/p/"),
             },
         })
     }

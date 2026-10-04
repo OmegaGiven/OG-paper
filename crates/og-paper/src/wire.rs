@@ -86,6 +86,17 @@ pub enum Msg {
     NewPage(String),
     RenamePage(u128, String),
     DeletePage(u128),
+    /// To a page server's page: sign in with an account there for the
+    /// right to draw (a viewer account, or a wrong password, gets none).
+    SignIn {
+        user: String,
+        password: String,
+    },
+    /// The answer: the page's edit key, or empty and why not.
+    SignedIn {
+        edit: String,
+        note: String,
+    },
 }
 
 /// One page a server hosts.
@@ -313,6 +324,16 @@ impl Msg {
                 w.u8(14);
                 w.u128(*c);
             }
+            Msg::SignIn { user, password } => {
+                w.u8(15);
+                w.str(user);
+                w.str(password);
+            }
+            Msg::SignedIn { edit, note } => {
+                w.u8(16);
+                w.str(edit);
+                w.str(note);
+            }
         }
         w.0
     }
@@ -412,6 +433,14 @@ impl Msg {
             12 => Msg::NewPage(r.str()?),
             13 => Msg::RenamePage(r.u128()?, r.str()?),
             14 => Msg::DeletePage(r.u128()?),
+            15 => Msg::SignIn {
+                user: r.str()?,
+                password: r.str()?,
+            },
+            16 => Msg::SignedIn {
+                edit: r.str()?,
+                note: r.str()?,
+            },
             t => return Err(format!("unknown message {t}")),
         })
     }
@@ -483,6 +512,14 @@ mod tests {
             Msg::NewPage("New".into()),
             Msg::RenamePage(5, "R".into()),
             Msg::DeletePage(6),
+            Msg::SignIn {
+                user: "u".into(),
+                password: "p".into(),
+            },
+            Msg::SignedIn {
+                edit: "eK".into(),
+                note: String::new(),
+            },
         ];
         for m in all {
             assert_eq!(Msg::decode(&m.encode()).unwrap(), m);

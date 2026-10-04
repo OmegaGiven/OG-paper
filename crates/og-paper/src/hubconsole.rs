@@ -32,6 +32,7 @@ pub enum Role {
     Admin,
     Subadmin,
     User,
+    Viewer,
 }
 
 impl Role {
@@ -40,6 +41,7 @@ impl Role {
             Role::Admin => "admin",
             Role::Subadmin => "subadmin",
             Role::User => "user",
+            Role::Viewer => "viewer",
         }
     }
     fn from(s: &str) -> Option<Role> {
@@ -47,6 +49,7 @@ impl Role {
             "admin" => Role::Admin,
             "subadmin" => Role::Subadmin,
             "user" => Role::User,
+            "viewer" => Role::Viewer,
             _ => return None,
         })
     }
@@ -55,10 +58,15 @@ impl Role {
             Role::Admin => "Admin",
             Role::Subadmin => "Subadmin",
             Role::User => "User",
+            Role::Viewer => "Viewer",
         }
     }
     fn organizes(self) -> bool {
-        self != Role::User
+        matches!(self, Role::Admin | Role::Subadmin)
+    }
+    /// May draw on pages (everyone but viewers).
+    pub fn can_draw(self) -> bool {
+        self != Role::Viewer
     }
 }
 
@@ -392,6 +400,44 @@ impl Console {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn add_user(&mut self, name: &str, role: Role, pw: &str) {
+        self.users.push(new_user(name, role, pw, false));
+    }
+
+    /// Check a user name and password (slowing down guessing): the role.
+    pub fn check(&mut self, name: &str, pw: &str) -> Result<Role, &'static str> {
+        if let Some((n, since)) = self.fails.get(name) {
+            if *n >= 5 && since.elapsed() < Duration::from_secs(60) {
+                return Err("Too many tries: wait a minute and try again.");
+            }
+        }
+        let user = self
+            .users
+            .iter()
+            .find(|u| u.name == name)
+            .filter(|u| same(&hash_password(pw, &u.salt), &u.hash));
+        match user {
+            Some(u) => {
+                let role = u.role;
+                self.fails.remove(name);
+                Ok(role)
+            }
+            None => {
+                let e = self
+                    .fails
+                    .entry(name.to_string())
+                    .or_insert((0, Instant::now()));
+                if e.1.elapsed() > Duration::from_secs(60) {
+                    *e = (0, Instant::now());
+                }
+                e.0 += 1;
+                std::thread::sleep(Duration::from_millis(400));
+                Err("That user name and password don't match.")
+            }
+        }
+    }
+
     fn login(&mut self, req: &WebReq, server_name: &str, secure: bool) -> WebResp {
         let f = form(&req.body);
         let next = safe_next(f.get("next").cloned());
@@ -400,35 +446,9 @@ impl Console {
             .map(|s| s.trim().to_string())
             .unwrap_or_default();
         let pw = f.get("password").cloned().unwrap_or_default();
-        // Slow down guessing: after 5 misses, a minute's wait.
-        if let Some((n, since)) = self.fails.get(&name) {
-            if *n >= 5 && since.elapsed() < Duration::from_secs(60) {
-                return html(self.login_page(
-                    server_name,
-                    Some("Too many tries: wait a minute and try again."),
-                    &next,
-                ));
-            }
+        if let Err(e) = self.check(&name, &pw) {
+            return html(self.login_page(server_name, Some(e), &next));
         }
-        let ok = self
-            .users
-            .iter()
-            .find(|u| u.name == name)
-            .is_some_and(|u| same(&hash_password(&pw, &u.salt), &u.hash));
-        if !ok {
-            let e = self.fails.entry(name).or_insert((0, Instant::now()));
-            if e.1.elapsed() > Duration::from_secs(60) {
-                *e = (0, Instant::now());
-            }
-            e.0 += 1;
-            std::thread::sleep(Duration::from_millis(400));
-            return html(self.login_page(
-                server_name,
-                Some("That user name and password don't match."),
-                &next,
-            ));
-        }
-        self.fails.remove(&name);
         let token = hex(&crate::seal::random_secret());
         let csrf = hex(&crate::seal::random_secret()[..16]);
         self.sessions.insert(
@@ -844,7 +864,7 @@ document.querySelectorAll('time[data-t]').forEach(e => e.textContent = ago(+e.da
 
     fn users_page(&self, server: &str, user: &User, csrf: &str, msg: Option<String>) -> String {
         let roles = |sel: Role| -> String {
-            [Role::Admin, Role::Subadmin, Role::User]
+            [Role::Admin, Role::Subadmin, Role::User, Role::Viewer]
                 .iter()
                 .map(|r| {
                     format!(
@@ -884,7 +904,7 @@ document.querySelectorAll('time[data-t]').forEach(e => e.textContent = ago(+e.da
         }
         let body = format!(
             r#"<section class="card"><h2>Users</h2><div class="scroll"><table><tr><th>User</th><th>Role</th><th>Password</th><th></th></tr>{rows}</table></div>
-<p class="note"><b>Admin</b>: everything, including deleting pages and managing users. <b>Subadmin</b>: rename and move pages, organize folders. <b>User</b>: open and draw on pages.</p></section>
+<p class="note"><b>Admin</b>: everything, including deleting pages and managing users. <b>Subadmin</b>: rename and move pages, organize folders. <b>User</b>: open and draw on pages. <b>Viewer</b>: open pages to look, never draw. In the apps, anyone can sign in with their account from <b>Share live</b> on a server page to get the right to draw.</p></section>
 <section class="card"><h2>Add a user</h2><form method="post" action="/console/users" class="row"><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="action" value="add">
 <input name="name" placeholder="User name" required><input name="password" type="password" placeholder="Temporary password" minlength="8" required autocomplete="new-password"><select name="role">{r}</select><button class="btn primary">Add user</button></form>
 <p class="note">They're asked to change the temporary password after signing in.</p></section>"#,
@@ -932,7 +952,13 @@ document.querySelectorAll('time[data-t]').forEach(e => e.textContent = ago(+e.da
         };
         let page_row = |c: u128, name: &str, folder: &str| -> String {
             let id = format!("{c:032x}");
-            let (edit, _) = crate::net::page_keys_for(c);
+            let (edit, keys) = crate::net::page_keys_for(c);
+            // Viewers get the page's view key: their links can't draw.
+            let edit = if role.can_draw() {
+                edit
+            } else {
+                keys.view_token()
+            };
             let app_link = format!("{base}/p/{id}?k={edit}");
             let web_link = format!("{WEB_APP}#join={base}/p/{id}&k={edit}");
             let mut tools = String::new();
