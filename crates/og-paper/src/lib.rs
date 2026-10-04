@@ -20,6 +20,8 @@ mod hotbar;
 mod hotkeys;
 #[cfg(desktop)]
 mod hub;
+#[cfg(desktop)]
+mod hubpage;
 mod images;
 mod import;
 mod joints;
@@ -2541,6 +2543,12 @@ impl App {
             Cmd::Pages(json) => self.web_pages(&json),
             Cmd::Plugin(bytes, quiet) => self.plugin_install(bytes, quiet),
             Cmd::Pack(bytes) => self.pack_install(&bytes),
+            Cmd::AddServer(link) => {
+                if !self.ui.pages_open {
+                    self.pages_toggle();
+                }
+                self.add_server(&link);
+            }
             Cmd::Name(name) => {
                 if !name.trim().is_empty() {
                     self.ui.file_name = name;

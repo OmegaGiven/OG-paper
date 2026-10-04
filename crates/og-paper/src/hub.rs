@@ -175,6 +175,34 @@ pub fn run(dir: PathBuf, port: u16, public: Option<String>) {
         keys.view_token()
     );
     println!("Add it in OG Paper: Pages > Add server. Keep it private: it opens every page.");
+    // The page a browser sees at the server's address (see `hubpage`).
+    if std::env::var("OGP_WEB").map_or(true, |v| v != "off") {
+        let (d, edit, view, public) = (
+            dir.clone(),
+            token.clone(),
+            keys.view_token(),
+            public.clone(),
+        );
+        let name = std::env::var("OGP_SERVER_NAME").unwrap_or_else(|_| "OG Paper server".into());
+        server.set_web(move |target, base| {
+            let pages = read_index(&d)
+                .into_iter()
+                .map(|(c, n)| (n, changed_ms(&page_path(&d, c))))
+                .collect();
+            let info = crate::hubpage::Info {
+                name: name.clone(),
+                edit_key: edit.clone(),
+                view_key: view.clone(),
+                public: public.clone(),
+                pages,
+            };
+            crate::hubpage::page(target, base, &info)
+        });
+        println!(
+            "In a browser: http://<this address>:{}/ shows how to connect.",
+            server.port
+        );
+    }
     let mut pages: HashMap<u128, Page> = HashMap::new();
     let view_token = keys.view_token();
     let mut conns: HashMap<u64, Conn> = HashMap::new();

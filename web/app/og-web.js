@@ -9,7 +9,7 @@ import init, {
   og_copy, og_paste_own, og_paste_image, og_paste_text, og_pdf_page,
   og_home, og_bookmark_add, og_bookmark_go, og_bookmark_remove, og_bookmark_rename, og_bookmark_to_bar,
   og_search, og_search_results, og_search_go, og_export, og_export_take, og_has_selection,
-  og_sticker_take, og_sticker_svg, og_sticker_place, og_import, og_merge, og_changes_take, og_merge_quiet, og_set_folder, og_net_url, og_net_take, og_net_open, og_net_recv, og_net_closed, og_join, og_poke, og_rtc_host, og_rtc_closing, og_view_token, og_relay_share, og_dir_requests, og_page_arg, og_set_pages, og_plugin_install, og_pack_install, og_pack_sticker_take, og_run, og_set_name,
+  og_sticker_take, og_sticker_svg, og_sticker_place, og_import, og_merge, og_changes_take, og_merge_quiet, og_set_folder, og_net_url, og_net_take, og_net_open, og_net_recv, og_net_closed, og_join, og_poke, og_rtc_host, og_rtc_closing, og_view_token, og_relay_share, og_dir_requests, og_page_arg, og_set_pages, og_plugin_install, og_pack_install, og_pack_sticker_take, og_run, og_set_name, og_add_server,
   og_timeline, og_timeline_range, og_timeline_restore, og_snapshot_request, og_snapshot_take,
 } from './pkg/og_paper.js';
 
@@ -1229,6 +1229,12 @@ export async function start({ mode = 'app' } = {}) {
   }
   pushPages();
   loadPlugins();
+  // Opened from a server's page: add that server to Pages.
+  if (!isTry && location.hash.startsWith('#server=')) {
+    const link = decodeURIComponent(location.hash.slice(8));
+    history.replaceState(null, '', location.pathname + location.search);
+    og_add_server(link);
+  }
   // Automation from the page (devtools, extensions): the same commands as
   // plugins and the server API (docs/PLUGINS.md).
   window.ogPaper = { run: cmds => og_run(JSON.stringify(cmds)) };

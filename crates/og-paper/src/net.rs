@@ -1281,6 +1281,7 @@ pub(crate) mod native {
         stop: Arc<AtomicBool>,
         /// The path each connection asked for (`/`, `/p/<canvas>`, …).
         paths: Arc<Mutex<HashMap<u64, String>>>,
+        web: Web,
     }
 
     /// Sends to a server's connections (shared by the pages it hosts).
@@ -1312,7 +1313,8 @@ pub(crate) mod native {
             let outs: Outs = Arc::default();
             let stop = Arc::new(AtomicBool::new(false));
             let paths: Arc<Mutex<HashMap<u64, String>>> = Arc::default();
-            let (o, s, ps) = (outs.clone(), stop.clone(), paths.clone());
+            let web: Web = Arc::default();
+            let (o, s, ps, wb) = (outs.clone(), stop.clone(), paths.clone(), web.clone());
             std::thread::spawn(move || {
                 let next = AtomicU64::new(1);
                 while !s.load(Ordering::Relaxed) {
@@ -1322,8 +1324,9 @@ pub(crate) mod native {
                             let (otx, orx) = channel();
                             o.lock().expect("outs").insert(id, otx);
                             let (tx, o, s, ps) = (tx.clone(), o.clone(), s.clone(), ps.clone());
+                            let wb = wb.clone();
                             std::thread::spawn(move || {
-                                let why = match accept(stream) {
+                                let why = match accept(stream, &wb) {
                                     Ok((ws, path)) => {
                                         ps.lock().expect("paths").insert(id, path);
                                         let _ = tx.send(Ev::Open(id));
@@ -1349,7 +1352,19 @@ pub(crate) mod native {
                 outs,
                 stop,
                 paths,
+                web,
             })
+        }
+
+        /// Answer plain web requests (a browser opening the server's address)
+        /// with `page(path_and_query, base)`, where base is the address the
+        /// visitor used as `ws://host:port` (`wss://` behind a TLS proxy):
+        /// status, content type, body.
+        pub fn set_web(
+            &self,
+            page: impl Fn(&str, &str) -> (u16, &'static str, Vec<u8>) + Send + Sync + 'static,
+        ) {
+            *self.web.lock().expect("web") = Some(Arc::new(page));
         }
 
         /// The path connection `id` asked for.
@@ -1394,12 +1409,73 @@ pub(crate) mod native {
         }
     }
 
+    /// What answers plain web requests, if anything (see `Server::set_web`).
+    type WebFn = dyn Fn(&str, &str) -> (u16, &'static str, Vec<u8>) + Send + Sync;
+    type Web = Arc<Mutex<Option<Arc<WebFn>>>>;
+
+    /// A plain web request (not a WebSocket upgrade): answered by `web` and
+    /// closed. True when it was one.
+    fn web_request(stream: &mut TcpStream, web: &Web) -> bool {
+        use std::io::Write;
+        let Some(page) = web.lock().expect("web").clone() else {
+            return false;
+        };
+        // Look at the request without taking it, until its headers are in.
+        let mut buf = [0u8; 4096];
+        let start = std::time::Instant::now();
+        let n = loop {
+            let n = stream.peek(&mut buf).unwrap_or(0);
+            if n == buf.len() || buf[..n].windows(4).any(|w| w == b"\r\n\r\n") {
+                break n;
+            }
+            if start.elapsed() > Duration::from_secs(3) {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        let head = String::from_utf8_lossy(&buf[..n]).to_string();
+        let lower = head.to_ascii_lowercase();
+        if !lower.starts_with("get ") || lower.contains("upgrade: websocket") {
+            return false;
+        }
+        let target = head.split_whitespace().nth(1).unwrap_or("/").to_string();
+        let header = |name: &str| {
+            head.lines()
+                .find(|l| l.to_ascii_lowercase().starts_with(name))
+                .map(|l| l[name.len()..].trim().to_string())
+        };
+        // The address the visitor used, as a WebSocket base: wss:// behind a
+        // TLS proxy (it says so in X-Forwarded-Proto), else ws://.
+        let host = header("x-forwarded-host:")
+            .or_else(|| header("host:"))
+            .unwrap_or_default();
+        let tls = header("x-forwarded-proto:").is_some_and(|p| p.eq_ignore_ascii_case("https"));
+        let base = format!("{}://{host}", if tls { "wss" } else { "ws" });
+        let (status, ctype, body) = page(&target, &base);
+        let reason = if status == 200 { "OK" } else { "Not Found" };
+        let mut out = format!(
+            "HTTP/1.1 {status} {reason}\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\n\
+             Cache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\n\
+             Referrer-Policy: no-referrer\r\nConnection: close\r\n\r\n",
+            body.len()
+        )
+        .into_bytes();
+        out.extend_from_slice(&body);
+        let _ = std::io::Read::read(stream, &mut buf);
+        let _ = stream.write_all(&out);
+        let _ = stream.flush();
+        true
+    }
+
     /// The WebSocket handshake; the connection and the path it asked for.
-    fn accept(stream: TcpStream) -> Result<(WebSocket<TcpStream>, String), String> {
+    fn accept(mut stream: TcpStream, web: &Web) -> Result<(WebSocket<TcpStream>, String), String> {
         stream.set_nonblocking(false).map_err(|e| e.to_string())?;
         stream
             .set_read_timeout(Some(Duration::from_secs(10)))
             .map_err(|e| e.to_string())?;
+        if web_request(&mut stream, web) {
+            return Err("web page".into());
+        }
         let mut path = String::from("/");
         let cb = |req: &tungstenite::handshake::server::Request,
                   resp: tungstenite::handshake::server::Response| {
