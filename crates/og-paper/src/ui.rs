@@ -604,6 +604,10 @@ pub struct UiState {
     pub ws_queue: Vec<WsReq>,
     /// The row selected in Pages.
     pub pages_sel: Option<PagesSel>,
+    /// A page being dragged in Pages, and where it would drop (server,
+    /// folder, allowed, the place or why not).
+    pub pages_drag: Option<PagesDrag>,
+    pub pages_drop: Option<(usize, String, bool, String)>,
     /// Folded-shut rows in Pages ("dev", "s<i>", "s<i>/<folder>").
     pub tree_closed: std::collections::HashSet<String>,
     /// Connect to server: open, what is typed, focused once.
@@ -827,6 +831,8 @@ impl Default for UiState {
             present: false,
             ws_queue: Vec::new(),
             pages_sel: None,
+            pages_drag: None,
+            pages_drop: None,
             tree_closed: Default::default(),
             connect_open: false,
             connect_addr: String::new(),
@@ -6139,6 +6145,14 @@ fn ago(ms: u64) -> String {
 }
 
 /// Pages: the pages on this device and on the servers added here.
+/// A page being dragged in Pages: from this device (to upload), or a
+/// server's page (to move): its index, name (and server, folder).
+#[derive(Clone, Debug, PartialEq)]
+pub enum PagesDrag {
+    Local(usize, String),
+    Page(usize, usize, String, String),
+}
+
 /// What is selected in Pages.
 #[derive(Clone, Debug, PartialEq)]
 pub enum PagesSel {
@@ -6268,10 +6282,16 @@ fn tree_row(
     note: &str,
     right: &str,
     selected: bool,
+    draggable: bool,
 ) -> (egui::Response, bool) {
     let h = 26.0;
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::hover());
-    let resp = ui.interact(rect, id, Sense::click());
+    let sense = if draggable {
+        Sense::click_and_drag()
+    } else {
+        Sense::click()
+    };
+    let resp = ui.interact(rect, id, sense);
     named(&resp, name);
     let p = ui.painter();
     if selected {
@@ -6416,6 +6436,7 @@ fn pages_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>)
                             ui.spacing_mut().item_spacing.y = 1.0;
                             pages_tree(ui, st, actions);
                         });
+                    pages_drag_end(ui.ctx(), st);
                     ui.separator();
                     ui.horizontal(|ui| {
                         if ui.button("Connect to server…").on_hover_text("Add a server's pages here by its address or link").clicked() {
@@ -6759,6 +6780,7 @@ fn pages_tree(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>) {
         "",
         "",
         st.pages_sel == Some(PagesSel::Device),
+        false,
     );
     if arrow || r.double_clicked() {
         toggle(&mut st.tree_closed, "dev");
@@ -6784,7 +6806,12 @@ fn pages_tree(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>) {
                 if p.current { "open" } else { "" },
                 &ago(p.changed),
                 st.pages_sel == Some(PagesSel::Local(i)),
+                true,
             );
+            if r.drag_started() {
+                st.pages_drag = Some(PagesDrag::Local(i, p.name.clone()));
+                st.pages_sel = Some(PagesSel::Local(i));
+            }
             if r.double_clicked() && !p.current {
                 actions.push(Action::OpenLocal(i));
             } else if r.clicked() {
@@ -6811,7 +6838,9 @@ fn pages_tree(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>) {
             &note,
             &s.state,
             st.pages_sel == Some(PagesSel::Server(i)),
+            false,
         );
+        drop_target(ui, st, &r, i, "");
         if arrow || r.double_clicked() {
             toggle(&mut st.tree_closed, &key);
         } else if r.clicked() {
@@ -6824,6 +6853,128 @@ fn pages_tree(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>) {
             server_level(ui, st, actions, i, &s, "", 1);
         }
     }
+}
+
+/// While a page is dragged over a server or folder row: whether it may be
+/// dropped there (and why not), shown on the row and remembered for the
+/// drop.
+fn drop_target(ui: &egui::Ui, st: &mut UiState, row: &egui::Response, i: usize, folder: &str) {
+    let Some(drag) = st.pages_drag.clone() else {
+        return;
+    };
+    let over = ui
+        .ctx()
+        .pointer_latest_pos()
+        .is_some_and(|p| row.rect.contains(p));
+    if !over {
+        return;
+    }
+    let s = &st.servers[i];
+    let (ok, why) = match &drag {
+        PagesDrag::Local(..) if s.admin() => (true, String::new()),
+        PagesDrag::Local(..) if s.account.is_none() => {
+            (false, "Sign in to this server to upload here".to_string())
+        }
+        PagesDrag::Local(..) => (false, "Only admins can upload here".to_string()),
+        PagesDrag::Page(si, ..) if *si != i => {
+            (false, "Pages move within their own server".to_string())
+        }
+        PagesDrag::Page(_, _, _, from) if from == folder => {
+            (false, "It's already here".to_string())
+        }
+        PagesDrag::Page(..) if s.organizes() => (true, String::new()),
+        PagesDrag::Page(..) => (
+            false,
+            "Only admins and subadmins can move pages".to_string(),
+        ),
+    };
+    let (fill, edge) = if ok {
+        (
+            Color32::from_rgba_unmultiplied(60, 170, 100, 40),
+            Color32::from_rgb(40, 150, 80),
+        )
+    } else {
+        (
+            Color32::from_rgba_unmultiplied(220, 60, 60, 30),
+            Color32::from_rgb(200, 50, 50),
+        )
+    };
+    ui.painter().rect(
+        row.rect,
+        6.0,
+        fill,
+        Stroke::new(1.5, edge),
+        egui::StrokeKind::Inside,
+    );
+    let place = if folder.is_empty() {
+        s.name.clone()
+    } else {
+        folder.rsplit('/').next().unwrap_or(folder).to_string()
+    };
+    st.pages_drop = Some((i, folder.to_string(), ok, if ok { place } else { why }));
+}
+
+/// After the tree: the dragged page follows the pointer; letting go over
+/// a row that takes it uploads (from this device) or moves it.
+fn pages_drag_end(ctx: &egui::Context, st: &mut UiState) {
+    let Some(drag) = st.pages_drag.clone() else {
+        st.pages_drop = None;
+        return;
+    };
+    let released = ctx.input(|i| !i.pointer.primary_down());
+    let name = match &drag {
+        PagesDrag::Local(_, n) | PagesDrag::Page(_, _, n, _) => n.clone(),
+    };
+    if released {
+        if let Some((i, folder, true, _)) = st.pages_drop.take() {
+            let (op, page) = match drag {
+                PagesDrag::Local(li, _) => ("upload_local", li),
+                PagesDrag::Page(_, j, _, _) => ("move", j),
+            };
+            st.ws_queue.push(WsReq {
+                server: i,
+                op,
+                page: Some(page),
+                name: String::new(),
+                folder,
+            });
+        }
+        st.pages_drag = None;
+        st.pages_drop = None;
+        return;
+    }
+    // The label under the pointer.
+    if let Some(p) = ctx.pointer_latest_pos() {
+        let verb = if matches!(drag, PagesDrag::Local(..)) {
+            "Upload"
+        } else {
+            "Move"
+        };
+        let (text, color) = match &st.pages_drop {
+            Some((_, _, true, place)) => (
+                format!("{verb} \"{name}\" to {place}"),
+                Color32::from_rgb(30, 120, 60),
+            ),
+            Some((_, _, false, why)) => (why.clone(), Color32::from_rgb(180, 40, 40)),
+            None => (
+                format!("{verb} \"{name}\": drop it on a server or folder"),
+                INKY,
+            ),
+        };
+        let painter = ctx.layer_painter(egui::LayerId::new(Order::Tooltip, Id::new("pages_ghost")));
+        let galley = painter.layout_no_wrap(text, egui::FontId::proportional(13.0), color);
+        let r = Rect::from_min_size(p + vec2(14.0, 12.0), galley.size() + vec2(16.0, 10.0));
+        painter.rect(
+            r,
+            8.0,
+            Color32::WHITE,
+            Stroke::new(1.0, EDGE),
+            egui::StrokeKind::Middle,
+        );
+        painter.galley(r.min + vec2(8.0, 5.0), galley, color);
+    }
+    st.pages_drop = None;
+    ctx.request_repaint();
 }
 
 fn toggle(set: &mut std::collections::HashSet<String>, key: &str) {
@@ -6866,7 +7017,9 @@ fn server_level(
             "",
             &format!("{n} page{}", if n == 1 { "" } else { "s" }),
             st.pages_sel == Some(PagesSel::Folder(i, f.clone())),
+            false,
         );
+        drop_target(ui, st, &r, i, &f);
         if arrow || r.double_clicked() {
             toggle(&mut st.tree_closed, &key);
         } else if r.clicked() {
@@ -6890,7 +7043,12 @@ fn server_level(
             if *open { "open" } else { "" },
             &ago(*changed),
             st.pages_sel == Some(PagesSel::Page(i, j)),
+            true,
         );
+        if r.drag_started() {
+            st.pages_drag = Some(PagesDrag::Page(i, j, name.clone(), folder.clone()));
+            st.pages_sel = Some(PagesSel::Page(i, j));
+        }
         if r.double_clicked() {
             actions.push(Action::OpenServerPage(i, j));
         } else if r.clicked() {

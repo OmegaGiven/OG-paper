@@ -175,7 +175,7 @@ pub struct App {
     /// A page from this device to upload once it opens (web): the
     /// workspace, and whether it has opened.
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-    upload_local: Option<(usize, bool)>,
+    upload_local: Option<(usize, bool, String)>,
     /// The files behind Pages' list of this device's pages (desktop).
     #[cfg(not(target_arch = "wasm32"))]
     local_paths: Vec<PathBuf>,
@@ -1516,26 +1516,7 @@ impl App {
                     web::page_request("open-page", &key);
                 }
             }
-            Action::UploadLocal(i, server) => {
-                let current = self.ui.local_pages.get(i).is_some_and(|p| p.current);
-                if current {
-                    self.workspace_upload(server, "");
-                } else {
-                    #[cfg(not(target_arch = "wasm32"))]
-                    if let Some(p) = self.local_paths.get(i).cloned() {
-                        self.net_stop();
-                        self.open_file(p);
-                        self.refresh_local();
-                        self.workspace_upload(server, "");
-                    }
-                    #[cfg(target_arch = "wasm32")]
-                    if let Some(key) = self.ui.local_pages.get(i).map(|p| p.key.clone()) {
-                        self.net_stop();
-                        self.upload_local = Some((server, false));
-                        web::page_request("open-page", &key);
-                    }
-                }
-            }
+            Action::UploadLocal(i, server) => self.upload_local_page(i, server, String::new()),
             Action::NewLocalNamed => {
                 let name = page_name(&self.ui.page_new.take().unwrap_or_default());
                 self.net_stop();
@@ -1614,6 +1595,10 @@ impl App {
                 for r in std::mem::take(&mut self.ui.ws_queue) {
                     if r.op == "upload" {
                         self.workspace_upload(r.server, &r.folder);
+                    } else if r.op == "upload_local" {
+                        if let Some(i) = r.page {
+                            self.upload_local_page(i, r.server, r.folder);
+                        }
                     } else {
                         self.workspace_change(r.server, r.op, r.page, &r.name, &r.folder);
                     }
@@ -2462,6 +2447,29 @@ impl App {
 
     // ---- web page bridge ---------------------------------------------------
 
+    /// Upload page `i` on this device to workspace `server`, into
+    /// `folder` ("" for the top): opened first if it isn't open.
+    fn upload_local_page(&mut self, i: usize, server: usize, folder: String) {
+        let current = self.ui.local_pages.get(i).is_some_and(|p| p.current);
+        if current {
+            self.workspace_upload(server, &folder);
+            return;
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(p) = self.local_paths.get(i).cloned() {
+            self.net_stop();
+            self.open_file(p);
+            self.refresh_local();
+            self.workspace_upload(server, &folder);
+        }
+        #[cfg(target_arch = "wasm32")]
+        if let Some(key) = self.ui.local_pages.get(i).map(|p| p.key.clone()) {
+            self.net_stop();
+            self.upload_local = Some((server, false, folder));
+            web::page_request("open-page", &key);
+        }
+    }
+
     #[cfg(target_arch = "wasm32")]
     fn web_cmd(&mut self, c: web::Cmd) {
         use web::Cmd;
@@ -2891,9 +2899,9 @@ impl App {
         }
         // A page from this device on its way to a workspace: once it has
         // opened (its copy and its name are in), upload it.
-        if self.upload_local.is_some_and(|(_, loaded)| loaded) {
-            if let Some((server, _)) = self.upload_local.take() {
-                self.workspace_upload(server, "");
+        if self.upload_local.as_ref().is_some_and(|u| u.1) {
+            if let Some((server, _, folder)) = self.upload_local.take() {
+                self.workspace_upload(server, &folder);
             }
         }
         self.fly_step();
