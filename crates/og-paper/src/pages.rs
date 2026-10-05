@@ -577,6 +577,23 @@ impl App {
             Ev::Closed(_, why) => {
                 if s.state == "Checking…" || s.state == "Signing in…" {
                     s.state = format!("Could not reach it ({why})");
+                    // Browsers block a public site from a private server
+                    // (a tailnet or home network): its own copy of the web
+                    // app is at the same address and isn't blocked.
+                    #[cfg(target_arch = "wasm32")]
+                    if let Some(host) = s
+                        .link
+                        .url
+                        .strip_prefix("wss://")
+                        .map(|r| r.split('/').next().unwrap_or(r).to_string())
+                    {
+                        let here = web_sys::window()
+                            .and_then(|w| w.location().host().ok())
+                            .unwrap_or_default();
+                        if here != host {
+                            s.state = format!("Could not reach it: open https://{host}/app/ (the browser blocks this site from it)");
+                        }
+                    }
                 }
                 #[cfg(not(target_arch = "wasm32"))]
                 {
