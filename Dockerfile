@@ -22,7 +22,8 @@ WORKDIR /src
 COPY . .
 RUN cargo build --release -p og-paper --lib --target wasm32-unknown-unknown \
     && wasm-bindgen --target web --no-typescript --out-dir web/app/pkg \
-       target/wasm32-unknown-unknown/release/og_paper.wasm
+       target/wasm32-unknown-unknown/release/og_paper.wasm \
+    && gzip -9 -k web/app/pkg/*.wasm web/app/pkg/*.js web/app/og-web.js
 
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \

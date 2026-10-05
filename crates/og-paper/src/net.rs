@@ -1565,14 +1565,25 @@ pub(crate) mod native {
         let resp = page(&req);
         let reason = match resp.status {
             200 => "OK",
+            304 => "Not Modified",
             303 => "See Other",
             400 => "Bad Request",
             403 => "Forbidden",
             _ => "Not Found",
         };
+        // Nothing is cached unless the response says how.
+        let cache = if resp
+            .headers
+            .iter()
+            .any(|(k, _)| k.eq_ignore_ascii_case("cache-control"))
+        {
+            ""
+        } else {
+            "Cache-Control: no-store\r\n"
+        };
         let mut out = format!(
             "HTTP/1.1 {} {reason}\r\nContent-Type: {}\r\nContent-Length: {}\r\n\
-             Cache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\n\
+             {cache}X-Content-Type-Options: nosniff\r\n\
              X-Frame-Options: DENY\r\nReferrer-Policy: no-referrer\r\nConnection: close\r\n",
             resp.status,
             resp.ctype,

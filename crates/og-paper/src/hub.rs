@@ -33,7 +33,7 @@ use web_time::{Duration, Instant};
 use std::sync::{Arc, Mutex};
 
 use crate::hubconsole::{Console, HubOp, PageOp, Role};
-use crate::net::native::{Server, WebResp};
+use crate::net::native::{Server, WebReq, WebResp};
 use crate::net::{page_keys_for, Ev};
 use crate::seal::Keys;
 use crate::wire::{Msg, PageInfo};
@@ -238,7 +238,10 @@ pub fn run(dir: PathBuf, port: u16, public: Option<String>) {
                 .home_nav(req);
             let (status, ctype, body) = crate::hubpage::page(target, base, &info, &nav);
             if status == 404 {
-                if let Some(r) = web_app.as_deref().and_then(|root| web_app_file(root, path)) {
+                if let Some(r) = web_app
+                    .as_deref()
+                    .and_then(|root| web_app_file(root, path, req))
+                {
                     return r;
                 }
             }
@@ -371,7 +374,10 @@ pub fn run(dir: PathBuf, port: u16, public: Option<String>) {
 }
 
 /// A file of the web app, for `/app/...` (`/app` itself goes to `/app/`).
-fn web_app_file(root: &Path, path: &str) -> Option<WebResp> {
+/// Gzipped when the browser takes it and a `.gz` copy is there (the Docker
+/// image makes them: the wasm is 14 MB, 4.6 MB gzipped); browsers keep it
+/// and ask again with its ETag (304 when unchanged).
+fn web_app_file(root: &Path, path: &str, req: &WebReq) -> Option<WebResp> {
     if path == "/app" {
         return Some(WebResp {
             status: 303,
@@ -390,7 +396,18 @@ fn web_app_file(root: &Path, path: &str) -> Option<WebResp> {
         return None;
     }
     let file = root.join(rel);
-    let body = std::fs::read(&file).ok()?;
+    let meta = std::fs::metadata(&file).ok().filter(|m| m.is_file())?;
+    let mtime = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |d| d.as_secs());
+    let etag = format!("\"{:x}-{mtime:x}\"", meta.len());
+    let mut headers = vec![
+        ("Cache-Control".to_string(), "no-cache".to_string()),
+        ("ETag".to_string(), etag.clone()),
+        ("Vary".to_string(), "Accept-Encoding".to_string()),
+    ];
     let ctype = match file.extension().and_then(|e| e.to_str()).unwrap_or("") {
         "html" => "text/html; charset=utf-8",
         "js" | "mjs" => "text/javascript; charset=utf-8",
@@ -405,10 +422,32 @@ fn web_app_file(root: &Path, path: &str) -> Option<WebResp> {
         "txt" | "md" => "text/plain; charset=utf-8",
         _ => "application/octet-stream",
     };
+    if req
+        .header("if-none-match")
+        .is_some_and(|t| t.split(',').any(|t| t.trim() == etag))
+    {
+        return Some(WebResp {
+            status: 304,
+            ctype,
+            headers,
+            body: vec![],
+        });
+    }
+    let gzip = req
+        .header("accept-encoding")
+        .is_some_and(|a| a.split(',').any(|e| e.trim().starts_with("gzip")));
+    let gz = PathBuf::from(format!("{}.gz", file.display()));
+    let body = match (gzip, std::fs::read(&gz)) {
+        (true, Ok(b)) => {
+            headers.push(("Content-Encoding".to_string(), "gzip".to_string()));
+            b
+        }
+        _ => std::fs::read(&file).ok()?,
+    };
     Some(WebResp {
         status: 200,
         ctype,
-        headers: vec![],
+        headers,
         body,
     })
 }
@@ -1006,11 +1045,24 @@ mod tests {
         std::fs::write(root.join("index.html"), "<!doctype html>app").unwrap();
         std::fs::write(root.join("pkg/a.wasm"), [0u8, 97, 115, 109]).unwrap();
         std::fs::write(root.parent().unwrap().join("secret.txt"), "no").unwrap();
-        assert_eq!(web_app_file(&root, "/app").unwrap().status, 303);
-        let index = web_app_file(&root, "/app/").unwrap();
+        let req = |headers: Vec<(&str, &str)>| WebReq {
+            method: "GET".into(),
+            target: String::new(),
+            base: String::new(),
+            headers: headers
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            body: vec![],
+        };
+        let plain = req(vec![]);
+        assert_eq!(web_app_file(&root, "/app", &plain).unwrap().status, 303);
+        let index = web_app_file(&root, "/app/", &plain).unwrap();
         assert!(index.ctype.starts_with("text/html") && index.body.ends_with(b"app"));
         assert_eq!(
-            web_app_file(&root, "/app/pkg/a.wasm").unwrap().ctype,
+            web_app_file(&root, "/app/pkg/a.wasm", &plain)
+                .unwrap()
+                .ctype,
             "application/wasm"
         );
         for bad in [
@@ -1020,8 +1072,37 @@ mod tests {
             "/app//etc/passwd",
             "/other/index.html",
         ] {
-            assert!(web_app_file(&root, bad).is_none(), "{bad}");
+            assert!(web_app_file(&root, bad, &plain).is_none(), "{bad}");
         }
+        // Gzipped for browsers that take it; 304 for one that has it.
+        std::fs::write(root.join("pkg/a.wasm.gz"), b"GZ").unwrap();
+        let gz = web_app_file(
+            &root,
+            "/app/pkg/a.wasm",
+            &req(vec![("accept-encoding", "gzip, br")]),
+        )
+        .unwrap();
+        assert!(
+            gz.body == b"GZ"
+                && gz
+                    .headers
+                    .iter()
+                    .any(|(k, v)| k == "Content-Encoding" && v == "gzip")
+        );
+        let etag = gz
+            .headers
+            .iter()
+            .find(|(k, _)| k == "ETag")
+            .unwrap()
+            .1
+            .clone();
+        let again = web_app_file(
+            &root,
+            "/app/pkg/a.wasm",
+            &req(vec![("if-none-match", &etag)]),
+        )
+        .unwrap();
+        assert!(again.status == 304 && again.body.is_empty());
         let _ = std::fs::remove_dir_all(&root);
     }
 }
