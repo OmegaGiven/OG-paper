@@ -69,7 +69,7 @@ reports features without tests and tests named here that don't exist.
 
 | ID | Feature | Where | Platforms | Tests |
 |---|---|---|---|---|
-| WS-01 | Add a workspace by its link | Menu › Pages › Workspaces › link + Add; "Open in the web app" on the server's page | W D M | ui:workspace |
+| WS-01 | Add a workspace by its link | Menu › Pages › Workspaces › link + Add; Menu › Share live › paste it › Join; "Open in the web app" on the server's page (the server's own copy of the app) | W D M | ui:workspace, ui:join-workspace-link |
 | WS-02 | Sign in to a workspace account (remembered until sign-out or password change) | Menu › Pages › Workspaces › Sign in | W D M | ui:workspace, rust:hub::tests::directory_accounts_decide_what_the_page_list_gives |
 | WS-03 | Browse a workspace's folders and open its pages | Menu › Pages › Workspaces (tree) | W D M | ui:workspace |
 | WS-04 | Workspace changes by role: new page / folder, rename, move, delete | Menu › Pages › Workspaces › + and … menus | W D M | ui:workspace, rust:hub::tests::directory_accounts_decide_what_the_page_list_gives |
@@ -80,7 +80,7 @@ reports features without tests and tests named here that don't exist.
 
 | ID | Feature | Where | Platforms | Tests |
 |---|---|---|---|---|
-| LIVE-01 | Join by pasting a link | Menu › Share live › Paste a link › Join | W D M | ui:share-live, rust:net::tests::links_parse_in_every_form |
+| LIVE-01 | Join by pasting a link (a page link joins it; a server link adds the workspace) | Menu › Share live › Paste a link › Join | W D M | ui:share-live, ui:join-workspace-link, rust:net::tests::links_parse_in_every_form |
 | LIVE-02 | Host in this browser (no server; invite and reply codes) | Menu › Share live › Host in this browser | W | todo |
 | LIVE-03 | Host from the desktop app (a port on this machine) | Menu › Share live › Host | D | todo |
 | LIVE-04 | Share through a relay (keeps locked changes for people who come and go) | Menu › Share live › Share via relay | W D M | todo |

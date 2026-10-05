@@ -914,6 +914,19 @@ impl App {
                 }
                 self.say(t);
             }
+            // Joined a workspace's link as if it were a page: it answers
+            // with its page list. Add it as a workspace instead.
+            Msg::Pages(_) => {
+                let link = match self.net.as_ref().map(|n| &n.role) {
+                    Some(Role::Guest(g)) => format!("{}/?k={}", g.link.url, g.link.key),
+                    _ => return,
+                };
+                self.net_stop();
+                self.add_server(&link);
+                self.ui.live_open = false;
+                self.ui.pages_open = true;
+                self.say("That's a workspace link: it's added under Pages › Workspaces. Open a page there.");
+            }
             Msg::Gone(peer) => {
                 self.peers.remove(&peer);
                 self.redraw();

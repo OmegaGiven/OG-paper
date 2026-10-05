@@ -608,7 +608,9 @@ fn directory(
             "delete_folder" => Some(PageOp::DeleteFolder(folder)),
             _ => None,
         },
-        Msg::ListPages => None,
+        // An app joining the server link as if it were a page (Share live ›
+        // Join): the page list tells it this is a workspace.
+        Msg::ListPages | Msg::Hello { .. } => None,
         _ => return,
     };
     let mut c = console.lock().unwrap_or_else(|e| e.into_inner());
