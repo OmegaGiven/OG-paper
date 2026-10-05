@@ -118,7 +118,7 @@ const CSS = `
   background: #1c1c24; color: #fff; padding: 8px 14px; border-radius: 10px; font: 14px system-ui, sans-serif; opacity: 0;
   transition: opacity .25s; pointer-events: none; max-width: calc(100vw - 32px); }
 .og-toast.on { opacity: .92; }
-@media (max-width: 520px) { .og-tl .dual { flex-basis: 60px; } .og-tl .restore { padding: 6px 8px; } .og-tl { right: calc(84px + env(safe-area-inset-right)); bottom: calc(86px + env(safe-area-inset-bottom)); } }
+@media (max-width: 520px) { .og-tl .dual { flex-basis: 60px; } .og-tl .restore, .og-tl .mark { padding: 6px 8px; } .og-tl { right: calc(84px + env(safe-area-inset-right)); bottom: calc(86px + env(safe-area-inset-bottom)); } }
 `;
 
 const TOUR = [
@@ -415,7 +415,7 @@ export async function start({ mode = 'app' } = {}) {
         return w.slice(0, 3).map(x => [...x][0]).join('').toUpperCase();
       };
       chips.innerHTML = `<button data-home title="Home: where the canvas starts">${svg('home')}Home</button>`
-        + marks.map((b, i) => `<button data-i="${i}" title="${esc(b.name)}">${esc(abbr(b.name))}</button>`).join('')
+        + marks.map((b, i) => `<button data-i="${i}" title="${esc(b.name)}${b.at != null ? ` (as it was on ${when(b.at)})` : ''}">${b.at != null ? '◷ ' : ''}${esc(abbr(b.name))}</button>`).join('')
         + `<button class="add" title="Save this view">${svg('plus')}</button>`;
     };
     cards.bookmarks.renderChips([]);
@@ -623,6 +623,7 @@ export async function start({ mode = 'app' } = {}) {
       <input class="lo" type="range" min="0" max="0" value="0" aria-label="Window start">
       <input class="hi" type="range" min="0" max="0" value="0" aria-label="Window end">
     </div>
+    <button class="og-btn mark" title="Bookmark this moment: fly back to it, as it was then, any time">Bookmark</button>
     <button class="og-btn restore" title="Make the moment at the right handle the current canvas (the left handle only narrows the view)">Restore</button>
     <button class="og-icon close" title="Back to now" aria-label="Close timeline">${svg('close')}</button>`;
   root.append(tl);
@@ -660,6 +661,11 @@ export async function start({ mode = 'app' } = {}) {
     } else og_timeline(-1);
   }
   tl.querySelector('.close').onclick = () => openTimeline(false);
+  tl.querySelector('.mark').onclick = () => {
+    stopPlay();
+    const name = prompt('Name this moment', '');
+    if (name !== null) og_bookmark_add(name);
+  };
   tl.querySelector('.restore').onclick = () => { stopPlay(); og_timeline_restore(); tlOpen = false; tl.hidden = true; };
   range.oninput = () => {
     stopPlay();
@@ -1592,14 +1598,15 @@ export async function start({ mode = 'app' } = {}) {
         // Bookmarks added in this session count as "your own" for the tour.
         if (before !== null && s.bookmarks.length > before) ownMarksFrom = Math.min(ownMarksFrom, before);
         markList.innerHTML = s.bookmarks.length
-          ? s.bookmarks.map((b, i) => `<li data-i="${i}"><button class="go">${fmt(b.name)}<small>zoom ${zoomText(b.zoom)}</small></button>
+          ? s.bookmarks.map((b, i) => `<li data-i="${i}"><button class="go">${fmt(b.name)}<small>${b.at != null ? `as it was on ${when(b.at)} · ` : ''}zoom ${zoomText(b.zoom)}</small></button>
               <button class="mini" data-act="bar" title="Put it in the quick toolbar">+ bar</button><button class="mini" data-act="rename" title="Rename">Rename</button><button class="mini" data-act="remove" title="Delete" aria-label="Delete">✕</button></li>`).join('')
           : '<li class="og-empty">No bookmarks yet.</li>';
         cards.bookmarks.renderChips(s.bookmarks);
       }
 
-      // Timeline.
+      // Timeline (it opens itself when a bookmarked moment is shown).
       const t = s.timeline;
+      if (!tlOpen && t?.on) { tlOpen = true; tl.hidden = false; }
       if (tlOpen && t) {
         lo.max = range.max = Math.max(0, t.n - 1);
         if (!playing && document.activeElement !== range && document.activeElement !== lo) {

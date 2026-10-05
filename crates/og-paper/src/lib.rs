@@ -2289,25 +2289,50 @@ impl App {
 
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     fn bookmark_add(&mut self, name: String) {
-        let name = if name.trim().is_empty() {
-            format!("View {}", self.bookmarks.len() + 1)
-        } else {
+        // With the timeline open, the bookmark keeps the moment shown too.
+        let ev = &self.timeline.events;
+        let when = self.tl_view.as_ref().and_then(|(i, _)| {
+            let to = ev.get(*i)?.t;
+            let from = if self.tl_from == 0 {
+                i64::MIN
+            } else {
+                ev.get(self.tl_from)?.t
+            };
+            Some((from, to))
+        });
+        let name = if !name.trim().is_empty() {
             name.trim().to_string()
+        } else if when.is_some() {
+            format!("Moment {}", self.bookmarks.len() + 1)
+        } else {
+            format!("View {}", self.bookmarks.len() + 1)
         };
-        self.say(format!("Bookmarked \"{name}\""));
+        self.say(if when.is_some() {
+            format!("Bookmarked the moment \"{name}\"")
+        } else {
+            format!("Bookmarked \"{name}\"")
+        });
         self.bookmarks.push(Bookmark {
             name,
             cam: self.cam.clone(),
             view_px: self.view_px(),
+            when,
         });
     }
 
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     /// Start flying to bookmark `i`, framed for this screen.
     fn bookmark_go(&mut self, i: usize) {
-        let Some(b) = self.bookmarks.get(i) else {
+        let Some(b) = self.bookmarks.get(i).cloned() else {
             return;
         };
+        // A moment: the canvas as it was then (the timeline opens on it).
+        if let Some(when) = b.when {
+            match self.timeline.span_of(when) {
+                Some(span) => self.timeline_range(Some(span)),
+                None => self.say("Nothing had been drawn yet at that moment"),
+            }
+        }
         self.fly_to(b.cam.clone(), b.view_px);
     }
 
@@ -2786,9 +2811,10 @@ impl App {
             .iter()
             .map(|b| {
                 format!(
-                    "{{\"name\":{},\"zoom\":{:.2}}}",
+                    "{{\"name\":{},\"zoom\":{:.2},\"at\":{}}}",
                     web::json_str(&b.name),
-                    b.cam.log10_zoom()
+                    b.cam.log10_zoom(),
+                    b.when.map_or("null".to_string(), |(_, t)| t.to_string())
                 )
             })
             .collect();

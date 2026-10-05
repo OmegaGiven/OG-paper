@@ -8,7 +8,7 @@
 //! in browser storage and downloads it as an offline copy (`.ogpt`). It is
 //! not the `.ogp` format and holds no undo history.
 //!
-//! Layout (little endian): b"OGPT", version u8 (6; 1 to 5 are still read), camera,
+//! Layout (little endian): b"OGPT", version u8 (7; 1 to 6 are still read), camera,
 //! then
 //! - strokes: count u32; each: addr, width f32, color u32, brush u8,
 //!   deleted u8, uid u128, point count u32, points (f32 x4 each),
@@ -27,6 +27,8 @@
 //! - v6 portals: count u32; each: group index u32, then the portal's view
 //!   (see [`put_portal`]). The group itself is stored as the shape older
 //!   apps show in its place (a window of paper).
+//! - v7 timeline bookmarks: count u32; each: bookmark index u32, then the
+//!   moment's start and time (ms i64 each; start i64::MIN = everything).
 //!
 //! Compatibility: a newer version may only add at the end (a new section
 //! after the last; never a field inside an existing record), so an older
@@ -45,7 +47,7 @@ use crate::shapes::{ArrowType, FillStyle, Geom, Head, ShapeKind, ShapeStyle, Slo
 use crate::timeline::{Bookmark, Event, Timeline};
 
 const MAGIC: &[u8; 4] = b"OGPT";
-const VERSION: u8 = 6;
+const VERSION: u8 = 7;
 /// Marks a portal's view after its shape in a lone object's bytes.
 const PORTAL_TAG: &[u8; 4] = b"OGPV";
 
@@ -316,6 +318,17 @@ pub fn encode(
         b.extend_from_slice(&(i as u32).to_le_bytes());
         put_portal(&mut b, v);
     }
+    let moments: Vec<(usize, (i64, i64))> = bookmarks
+        .iter()
+        .enumerate()
+        .filter_map(|(i, m)| m.when.map(|w| (i, w)))
+        .collect();
+    b.extend_from_slice(&(moments.len() as u32).to_le_bytes());
+    for (i, (from, to)) in moments {
+        b.extend_from_slice(&(i as u32).to_le_bytes());
+        b.extend_from_slice(&from.to_le_bytes());
+        b.extend_from_slice(&to.to_le_bytes());
+    }
     b
 }
 
@@ -395,7 +408,12 @@ pub fn decode(bytes: &[u8], base_px: f64) -> Result<Snapshot, String> {
         let name = String::from_utf8_lossy(r.take(len)?).into_owned();
         let cam = r.cam(base_px)?;
         let view_px = r.f64()?;
-        bookmarks.push(Bookmark { name, cam, view_px });
+        bookmarks.push(Bookmark {
+            name,
+            cam,
+            view_px,
+            when: None,
+        });
     }
     let mut objs = Objects::default();
     if v >= 2 {
@@ -485,6 +503,17 @@ pub fn decode(bytes: &[u8], base_px: f64) -> Result<Snapshot, String> {
                     if let Some(&s) = g.strokes.first() {
                         objs.portal_of.insert(s, i as u32);
                     }
+                }
+            }
+        }
+        if v >= 7 && r.at < bytes.len() {
+            let n = r.u32()? as usize;
+            for _ in 0..n.min(bookmarks.len()) {
+                let i = r.u32()? as usize;
+                let from = i64::from_le_bytes(r.take(8)?.try_into().expect("8 bytes"));
+                let to = i64::from_le_bytes(r.take(8)?.try_into().expect("8 bytes"));
+                if let Some(m) = bookmarks.get_mut(i) {
+                    m.when = Some((from, to));
                 }
             }
         }
@@ -774,11 +803,20 @@ mod tests {
         ]);
         let mut cam = Camera::new(deep.clone(), [0.25, 0.75], 800.0);
         cam.zoom_at(1.5, [0.0, 0.0]);
-        let marks = vec![Bookmark {
-            name: "deep ✨".into(),
-            cam: cam.clone(),
-            view_px: 640.0,
-        }];
+        let marks = vec![
+            Bookmark {
+                name: "deep ✨".into(),
+                cam: cam.clone(),
+                view_px: 640.0,
+                when: None,
+            },
+            Bookmark {
+                name: "that afternoon".into(),
+                cam: cam.clone(),
+                view_px: 640.0,
+                when: Some((i64::MIN, 1_791_000_000_000)),
+            },
+        ];
         let mut objs = Objects::default();
         objs.add(Group {
             cell: deep.clone(),
@@ -881,6 +919,12 @@ mod tests {
         assert_eq!(snap.scene.strokes[0].z, s.strokes[0].z);
         assert_eq!(snap.bookmarks[0].cam.cell, cam.cell);
         assert_eq!(snap.bookmarks[0].view_px, 640.0);
+        assert_eq!(snap.bookmarks[0].when, None);
+        assert_eq!(
+            snap.bookmarks[1].when,
+            Some((i64::MIN, 1_791_000_000_000)),
+            "a timeline moment"
+        );
         assert_eq!(snap.cam.cell, cam.cell);
         assert_eq!(snap.cam.off, cam.off);
         assert!((snap.cam.scale - cam.scale).abs() < 1e-12);

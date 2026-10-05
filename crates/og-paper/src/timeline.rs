@@ -132,6 +132,29 @@ pub struct Bookmark {
     /// Smaller side of the viewport (px) when saved, so the same area is
     /// framed on a phone and on a monitor.
     pub view_px: f64,
+    /// A moment on the timeline too: the canvas as it was at the second
+    /// time (ms), showing only what was drawn since the first (`i64::MIN`:
+    /// everything up to then). Times, not positions in the history, so it
+    /// stays right as more is drawn.
+    pub when: Option<(i64, i64)>,
+}
+
+impl Timeline {
+    /// The history positions (from, to) a bookmark's moment shows: `to` the
+    /// last change at or before its time, `from` the first at or after its
+    /// start. None when nothing had been drawn by then.
+    pub fn span_of(&self, (from_t, to_t): (i64, i64)) -> Option<(usize, usize)> {
+        let to = self
+            .events
+            .partition_point(|e| e.t <= to_t)
+            .checked_sub(1)?;
+        let from = if from_t == i64::MIN {
+            0
+        } else {
+            self.events.partition_point(|e| e.t < from_t).min(to)
+        };
+        Some((from, to))
+    }
 }
 
 #[cfg(test)]
@@ -199,5 +222,28 @@ mod tests {
         let t = uid_ms(id).unwrap();
         assert!((t - now_ms()).abs() < 5_000);
         assert_eq!(uid_ms(0), None);
+    }
+
+    #[test]
+    fn a_moment_finds_its_place_in_the_history() {
+        let tl = Timeline::from_events(
+            [100, 200, 300, 400]
+                .iter()
+                .enumerate()
+                .map(|(i, &t)| Event {
+                    t,
+                    id: i as u32,
+                    alive: true,
+                })
+                .collect(),
+        );
+        assert_eq!(tl.span_of((i64::MIN, 250)), Some((0, 1)));
+        assert_eq!(tl.span_of((200, 400)), Some((1, 3)));
+        assert_eq!(
+            tl.span_of((i64::MIN, 50)),
+            None,
+            "before anything was drawn"
+        );
+        assert_eq!(tl.span_of((350, 1000)), Some((3, 3)));
     }
 }

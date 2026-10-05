@@ -140,6 +140,11 @@ class Browser {
         this.onFrame?.(m.params);
         this.send('Page.screencastFrameAck', { sessionId: m.params.sessionId }).catch(() => {});
       }
+      // Prompts and confirms (the page asks for a name): answered with
+      // `promptText` (set it before the tap that asks).
+      if (m.method === 'Page.javascriptDialogOpening') {
+        this.send('Page.handleJavaScriptDialog', { accept: true, promptText: this.promptText ?? '' }).catch(() => {});
+      }
       if (m.method === 'Runtime.exceptionThrown') this.errors.push(m.params.exceptionDetails.exception?.description || m.params.exceptionDetails.text);
     };
   }

@@ -225,6 +225,7 @@ impl Demo {
             name,
             cam: frame_cell(&self.worlds[k], BASE_PX, BASE_PX),
             view_px: BASE_PX,
+            when: None,
         };
         let mut v = vec![
             at(0, "Home".into()),
@@ -243,6 +244,7 @@ impl Demo {
             name: "Endless street".into(),
             cam,
             view_px,
+            when: None,
         });
         v
     }

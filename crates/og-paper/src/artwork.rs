@@ -276,6 +276,7 @@ pub fn bookmarks(origin: [f64; 2]) -> Vec<Bookmark> {
             name: name.into(),
             cam: f.camera(700.0),
             view_px: 700.0,
+            when: None,
         })
         .collect()
 }

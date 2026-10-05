@@ -50,7 +50,7 @@ reports features without tests and tests named here that don't exist.
 | NAV-04 | Bookmarks: save a view, fly back to it, rename, delete | Menu › Bookmarks | W D M | ui:bookmarks, rust:snapshot::tests::roundtrip_keeps_strokes_timeline_bookmarks_and_view |
 | NAV-05 | Bookmarks folded into a bar (Home first, initials, + to save) | Menu › Bookmarks › fold (⌃) | W | ui:bookmarks |
 | NAV-06 | Search text and fly to it | Menu › Search text | W D M | rust:search::tests::finds_case_insensitively_with_excerpt, todo |
-| NAV-07 | Timeline: scrub and replay the drawing, restore an older state | Menu › Timeline | W D M | ui:tools-tour, rust:timeline::tests::replays_draws_and_erases, rust:timeline::tests::window_leaves_out_older_ink |
+| NAV-07 | Timeline: scrub and replay the drawing, restore an older state, bookmark a moment | Menu › Timeline (its Bookmark button keeps the moment); Menu › Bookmarks flies back to it | W D M | ui:timeline-bookmark, ui:tools-tour, rust:timeline::tests::replays_draws_and_erases, rust:timeline::tests::window_leaves_out_older_ink |
 | NAV-08 | Portals: a shape or outline that shows a saved view; zoom through it | Tool button › Portal | W D M | rust:portal::tests::a_portal_shows_its_view_at_every_zoom, rust:portal::tests::zooming_down_the_endless_street_goes_round, rust:portal::tests::portals_survive_saving_and_old_apps_see_a_shape |
 | NAV-09 | Endless street demo (infinite zoom loop through a portal) | Try mode › Menu › Bookmarks › Endless street | W | rust:portal::tests::zooming_down_the_endless_street_goes_round, todo |
 
