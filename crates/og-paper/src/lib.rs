@@ -5,6 +5,7 @@
 
 //! OG Paper: an open-source infinite canvas.
 
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 mod artwork;
 mod bucket;
 mod crop;
@@ -169,6 +170,10 @@ pub struct App {
     servers: Vec<pages::ServerConn>,
     /// The open page on its way into a workspace.
     upload: Option<pages::Upload>,
+    /// A page from this device to upload once it opens (web): the
+    /// workspace, and whether it has opened.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    upload_local: Option<(usize, bool)>,
     /// The files behind Pages' list of this device's pages (desktop).
     #[cfg(not(target_arch = "wasm32"))]
     local_paths: Vec<PathBuf>,
@@ -289,6 +294,7 @@ impl App {
             plugins: Vec::new(),
             servers: Vec::new(),
             upload: None,
+            upload_local: None,
             #[cfg(not(target_arch = "wasm32"))]
             local_paths: Vec::new(),
             headless: false,
@@ -1511,6 +1517,26 @@ impl App {
                     web::page_request("open-page", &key);
                 }
             }
+            Action::UploadLocal(i, server) => {
+                let current = self.ui.local_pages.get(i).is_some_and(|p| p.current);
+                if current {
+                    self.workspace_upload(server, "");
+                } else {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if let Some(p) = self.local_paths.get(i).cloned() {
+                        self.net_stop();
+                        self.open_file(p);
+                        self.refresh_local();
+                        self.workspace_upload(server, "");
+                    }
+                    #[cfg(target_arch = "wasm32")]
+                    if let Some(key) = self.ui.local_pages.get(i).map(|p| p.key.clone()) {
+                        self.net_stop();
+                        self.upload_local = Some((server, false));
+                        web::page_request("open-page", &key);
+                    }
+                }
+            }
             Action::NewLocalNamed => {
                 let name = page_name(&self.ui.page_new.take().unwrap_or_default());
                 self.net_stop();
@@ -2460,6 +2486,9 @@ impl App {
                         self.say("That is a changes file: open the canvas, then Merge copy it");
                     }
                     Some(Ok(s)) => {
+                        if let Some(u) = self.upload_local.as_mut() {
+                            u.1 = true;
+                        }
                         self.load_scene(s.scene, s.cam);
                         self.share = share::Share::loaded(&self.scene, s.share);
                         self.reconnect_page();
@@ -2850,6 +2879,13 @@ impl App {
         #[cfg(target_arch = "wasm32")]
         for c in web::take_cmds() {
             self.web_cmd(c);
+        }
+        // A page from this device on its way to a workspace: once it has
+        // opened (its copy and its name are in), upload it.
+        if self.upload_local.is_some_and(|(_, loaded)| loaded) {
+            if let Some((server, _)) = self.upload_local.take() {
+                self.workspace_upload(server, "");
+            }
         }
         self.fly_step();
         // Every message (from the app or the UI) shows for 4 seconds.

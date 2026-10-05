@@ -1121,6 +1121,8 @@ pub enum Action {
     /// Save the toolbars and inventory as a pack.
     PackExport,
     OpenLocal(usize),
+    /// Upload page `.0` on this device to workspace `.1` (a new page there).
+    UploadLocal(usize, usize),
     /// Make a page here named `page_new`.
     NewLocalNamed,
     DeleteLocal(usize),
@@ -6196,6 +6198,32 @@ fn pages_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>)
                                 ui.label(name);
                                 ui.label(egui::RichText::new(ago(p.changed)).small().weak());
                                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    // Up to a workspace where you may make pages.
+                                    let targets: Vec<(usize, &str)> = st
+                                        .servers
+                                        .iter()
+                                        .enumerate()
+                                        .filter(|(_, s)| s.admin())
+                                        .map(|(k, s)| (k, s.name.as_str()))
+                                        .collect();
+                                    match targets.as_slice() {
+                                        [] => {}
+                                        [(k, name)] => {
+                                            if ui.small_button("Upload").on_hover_text(format!("Put a copy of this page into {name}")).clicked() {
+                                                actions.push(Action::UploadLocal(i, *k));
+                                            }
+                                        }
+                                        many => {
+                                            ui.menu_button("Upload", |ui| {
+                                                for (k, name) in many {
+                                                    if ui.button(format!("To {name}")).clicked() {
+                                                        actions.push(Action::UploadLocal(i, *k));
+                                                        ui.close();
+                                                    }
+                                                }
+                                            });
+                                        }
+                                    }
                                     if !p.current {
                                         if ui.small_button("Delete").clicked() {
                                             actions.push(Action::DeleteLocal(i));
