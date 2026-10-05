@@ -5,6 +5,7 @@
 
 //! OG Paper: an open-source infinite canvas.
 
+mod artwork;
 mod bucket;
 mod crop;
 #[cfg(any(test, target_arch = "wasm32"))]
@@ -2490,6 +2491,18 @@ impl App {
                 self.ui.file_name = "Try-mode demo".into();
             }
             Cmd::Blank => self.new_canvas(),
+            Cmd::Artwork => {
+                self.new_canvas();
+                let mut scene = Scene::new();
+                let mut objs = objects::Objects::default();
+                objs.add(artwork::draw(&mut scene, artwork::PAGE_ORIGIN));
+                let [w, h] = self.size();
+                let cam = artwork::loop_camera(0.0, h.min(w * 0.625) * 0.98, artwork::PAGE_ORIGIN);
+                self.load_scene(scene, cam);
+                self.objs = objs;
+                self.bookmarks = artwork::bookmarks(artwork::PAGE_ORIGIN);
+                self.ui.file_name = "The Maker's Loop".into();
+            }
             Cmd::Menu(items) => self.ui.app_items = items,
             Cmd::Home => {
                 self.fly = Some(home_camera());
@@ -2541,6 +2554,29 @@ impl App {
             Cmd::Picture(a, at) => {
                 let k = web_dpr() as f64;
                 self.insert_image(a, at.map(|p| [p[0] * k, p[1] * k]));
+            }
+            Cmd::ArtView(x) => {
+                let [w, h] = self.size();
+                // The whole frame on a landscape screen; on a portrait one
+                // (phone video) the frame fills the height, centred.
+                let view_px = if h > w {
+                    h * 0.98
+                } else {
+                    h.min(w * 0.625) * 0.98
+                };
+                // The artwork's own canvas has it centred; the demo, to the left.
+                let origin = if self.ui.file_name == "The Maker's Loop" {
+                    artwork::PAGE_ORIGIN
+                } else {
+                    artwork::ORIGIN
+                };
+                self.cam = artwork::loop_camera(x, view_px, origin);
+                self.fly = None;
+                self.redraw();
+            }
+            Cmd::Present(on) => {
+                self.ui.present = on;
+                self.redraw();
             }
             Cmd::Field(kind, text) => {
                 let key = |key: egui::Key, pressed: bool| egui::Event::Key {

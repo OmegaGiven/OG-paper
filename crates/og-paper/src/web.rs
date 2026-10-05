@@ -90,6 +90,12 @@ pub enum Cmd {
     PasteText(String, Option<[f64; 2]>),
     /// Paste, copy or cut in the focused text box (not the canvas).
     Field(String, String),
+    /// Demos: the camera along the Maker's Loop (see `artwork::loop_camera`).
+    ArtView(f64),
+    /// A new canvas holding just the Maker's Loop.
+    Artwork,
+    /// Demos: hide (or show) the app's own buttons and panels.
+    Present(bool),
 }
 
 /// Counters the try-mode tour checks off.
@@ -143,6 +149,26 @@ pub fn test_mode() -> bool {
 
 pub fn set_ui_nodes(json: String) {
     UI_NODES.with(|n| *n.borrow_mut() = json);
+}
+
+/// Demos: put the camera `x` along the Maker's Loop's endless zoom (0..5
+/// is once round; it repeats).
+#[wasm_bindgen]
+pub fn og_art_view(x: f64) {
+    push(Cmd::ArtView(x));
+}
+
+/// A new canvas with just "The Maker's Loop" on it (to keep, share or
+/// upload to a workspace).
+#[wasm_bindgen]
+pub fn og_load_artwork() {
+    push(Cmd::Artwork);
+}
+
+/// Demos: hide the app's buttons and panels (clean footage), or show them.
+#[wasm_bindgen]
+pub fn og_present(on: bool) {
+    push(Cmd::Present(on));
 }
 
 /// The app's widgets as last drawn, for UI tests: JSON

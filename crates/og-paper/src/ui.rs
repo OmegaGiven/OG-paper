@@ -593,6 +593,8 @@ pub struct UiState {
     pub server_login: Option<usize>,
     /// A name being typed for a workspace change.
     pub ws_prompt: Option<WsPrompt>,
+    /// Demos: no buttons or panels, just the canvas.
+    pub present: bool,
     /// Workspace changes asked for this frame (see `Action::WsApply`).
     pub ws_queue: Vec<WsReq>,
     pub relay_text: Option<String>,
@@ -808,6 +810,7 @@ impl Default for UiState {
             sign_in: (String::new(), String::new()),
             server_login: None,
             ws_prompt: None,
+            present: false,
             ws_queue: Vec::new(),
             relay_text: None,
             pages_open: false,
@@ -1331,6 +1334,9 @@ fn geo(ctx: &egui::Context, st: &UiState) -> Geo {
 pub fn draw(ctx: &egui::Context, st: &mut UiState) -> Vec<Action> {
     let mut actions = Vec::new();
     TEXT_FIELDS.with(|f| f.borrow_mut().clear());
+    if st.present {
+        return actions;
+    }
     HINTS.store(st.hints, std::sync::atomic::Ordering::Relaxed);
     if (ctx.zoom_factor() - st.ui_scale).abs() > 1e-3 {
         ctx.set_zoom_factor(st.ui_scale);

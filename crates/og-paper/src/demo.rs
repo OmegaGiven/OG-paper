@@ -237,6 +237,7 @@ impl Demo {
             WORLDS,
             format!("The bottom (10^{})", depth_label(WORLDS)),
         ));
+        v.extend(crate::artwork::bookmarks(crate::artwork::ORIGIN));
         let (cam, view_px) = street_view();
         v.push(Bookmark {
             name: "Endless street".into(),
@@ -290,7 +291,9 @@ pub fn build() -> Demo {
         parent = cell;
         portal = next;
     }
-    let objs = street(&mut scene);
+    let mut objs = street(&mut scene);
+    // The Maker's Loop, left of home (see `artwork`).
+    objs.add(crate::artwork::draw(&mut scene, crate::artwork::ORIGIN));
     Demo {
         scene,
         worlds,
