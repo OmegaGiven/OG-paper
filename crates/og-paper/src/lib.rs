@@ -1590,7 +1590,8 @@ impl App {
                 self.server_sign_in(user.trim(), &pw);
             }
             Action::Join => {
-                let link = self.ui.join_text.trim().to_string();
+                // The box empties once used (a next paste starts fresh).
+                let link = std::mem::take(&mut self.ui.join_text).trim().to_string();
                 self.join(&link);
             }
             #[cfg(not(target_arch = "wasm32"))]

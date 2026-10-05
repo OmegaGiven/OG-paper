@@ -113,6 +113,51 @@ fn vs_fill(vi: u32, sid: u32, s: StrokeRec, o: vec2<f32>, scale: f32) -> VsOut {
     if (hi.x <= lo.x || hi.y <= lo.y) {
         return collapsed();
     }
+    // When no edge of the outline crosses the view, the view is wholly
+    // inside the polygon (paint it solid, no per-pixel test) or wholly
+    // outside (nothing to draw). Deep in a picture, big fills around you
+    // (walls, screens, glows) cover the whole view: without this every
+    // pixel walks all their edges, and it slows the deeper you go.
+    var kind = 1u;
+    let vlo = vec2<f32>(-2.0);
+    let vhi = g.viewport + vec2<f32>(2.0);
+    var crosses = false;
+    var prev = o + point_at(s.start + n - 1u).xy * scale;
+    for (var i = 0u; i < n; i = i + 1u) {
+        let cur = o + point_at(s.start + i).xy * scale;
+        if (seg_hits_rect(prev, cur, vlo, vhi)) {
+            crosses = true;
+            break;
+        }
+        prev = cur;
+    }
+    if (!crosses) {
+        if (winding_at(0.5 * (vlo + vhi), s, o, scale, n) == 0) {
+            return collapsed();
+        }
+        kind = 2u;
+    }
+    // The biggest circle round the outline's middle that no edge enters:
+    // pixels in it are inside without walking the outline (most of a big
+    // disc, like a glow). Exact for any polygon whose middle is inside.
+    var mid = vec2<f32>(0.0);
+    var r_in = 0.0;
+    if (kind == 1u) {
+        var sum = vec2<f32>(0.0);
+        for (var i = 0u; i < n; i = i + 1u) {
+            sum = sum + o + point_at(s.start + i).xy * scale;
+        }
+        mid = sum / f32(n);
+        if (winding_at(mid, s, o, scale, n) != 0) {
+            r_in = 1e30;
+            var e0 = o + point_at(s.start + n - 1u).xy * scale;
+            for (var i = 0u; i < n; i = i + 1u) {
+                let e1 = o + point_at(s.start + i).xy * scale;
+                r_in = min(r_in, seg_dist(mid, e0, e1).x);
+                e0 = e1;
+            }
+        }
+    }
     var cx = array<f32, 6>(0.0, 1.0, 1.0, 0.0, 1.0, 0.0);
     var cy = array<f32, 6>(0.0, 0.0, 1.0, 0.0, 1.0, 1.0);
     let p = vec2<f32>(mix(lo.x, hi.x, cx[vi]), mix(lo.y, hi.y, cy[vi]));
@@ -120,9 +165,65 @@ fn vs_fill(vi: u32, sid: u32, s: StrokeRec, o: vec2<f32>, scale: f32) -> VsOut {
     out.pos = to_clip(p);
     out.px = p;
     out.color = unpack4x8unorm(s.color);
-    out.ids = vec2<u32>(sid, 1u);
+    out.ids = vec2<u32>(sid, kind);
     out.xform = vec4<f32>(o, scale, 0.0);
+    out.a = mid;
+    out.r = vec2<f32>(r_in, 0.0);
     return out;
+}
+
+// Whether segment a-b touches the rectangle lo-hi (Liang-Barsky clipping).
+fn seg_hits_rect(a: vec2<f32>, b: vec2<f32>, lo: vec2<f32>, hi: vec2<f32>) -> bool {
+    if (all(a >= lo) && all(a <= hi)) {
+        return true;
+    }
+    if (all(b >= lo) && all(b <= hi)) {
+        return true;
+    }
+    let d = b - a;
+    var t0 = 0.0;
+    var t1 = 1.0;
+    let p = array<f32, 4>(-d.x, d.x, -d.y, d.y);
+    let q = array<f32, 4>(a.x - lo.x, hi.x - a.x, a.y - lo.y, hi.y - a.y);
+    for (var k = 0u; k < 4u; k = k + 1u) {
+        if (p[k] == 0.0) {
+            if (q[k] < 0.0) {
+                return false;
+            }
+        } else {
+            let r = q[k] / p[k];
+            if (p[k] < 0.0) {
+                t0 = max(t0, r);
+            } else {
+                t1 = min(t1, r);
+            }
+            if (t0 > t1) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+// The non-zero winding number of a fill's outline around point `px`.
+fn winding_at(px: vec2<f32>, s: StrokeRec, o: vec2<f32>, scale: f32, n: u32) -> i32 {
+    var wind = 0;
+    var prev = o + point_at(s.start + n - 1u).xy * scale;
+    for (var i = 0u; i < n; i = i + 1u) {
+        let cur = o + point_at(s.start + i).xy * scale;
+        if ((prev.y <= px.y) != (cur.y <= px.y)) {
+            let x = prev.x + (px.y - prev.y) / (cur.y - prev.y) * (cur.x - prev.x);
+            if (x > px.x) {
+                if (cur.y > prev.y) {
+                    wind = wind + 1;
+                } else {
+                    wind = wind - 1;
+                }
+            }
+        }
+        prev = cur;
+    }
+    return wind;
 }
 
 @vertex
@@ -242,6 +343,10 @@ fn coverage(in: VsOut) -> f32 {
 // between two contours (a letter's hole or second part): its edge counts for
 // the winding (the joins cancel out) but is not an edge you can see.
 fn fill_coverage(in: VsOut) -> f32 {
+    // Well inside the outline (see vs_fill): no need to walk it.
+    if (distance(in.px, in.a) < in.r.x - 1.0) {
+        return 1.0;
+    }
     let s = stroke_at(in.ids.x);
     let o = in.xform.xy;
     let scale = in.xform.z;
@@ -278,7 +383,10 @@ fn fill_coverage(in: VsOut) -> f32 {
 @fragment
 fn fs_stroke(in: VsOut) -> @location(0) vec4<f32> {
     var cov = 0.0;
-    if (in.ids.y == 1u) {
+    if (in.ids.y == 2u) {
+        // A fill that covers the whole view (see vs_fill).
+        cov = 1.0;
+    } else if (in.ids.y == 1u) {
         cov = fill_coverage(in);
     } else {
         cov = coverage(in);

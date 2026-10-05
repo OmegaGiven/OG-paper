@@ -176,12 +176,15 @@ impl Art<'_> {
         let v = Self::ellipse_pts(c, r, r, a0, a1, 24);
         self.line(&v, width, color);
     }
-    /// A soft glow: translucent discs, larger and fainter.
+    /// A soft glow: translucent discs, larger and fainter. Few discs of
+    /// few sides: every disc whose edge crosses the view costs each pixel a
+    /// walk round its outline, and glows are big.
     fn glow(&mut self, c: [f64; 2], r: f64, rgb3: (u8, u8, u8), strength: f64) {
-        for i in 0..6 {
-            let k = 1.0 - i as f64 / 6.0;
-            let a = (strength * 26.0 * (1.0 - k * 0.7)) as u8;
-            self.disc(c, r * k, rgba(rgb3.0, rgb3.1, rgb3.2, a.max(4)));
+        for i in 0..4 {
+            let k = 1.0 - i as f64 / 4.0;
+            let a = (strength * 36.0 * (1.0 - k * 0.7)) as u8;
+            let v = Self::ellipse_pts(c, r * k, r * k, 0.0, TAU, 28);
+            self.fill(&v, rgba(rgb3.0, rgb3.1, rgb3.2, a.max(5)));
         }
     }
     /// A four-point sparkle.

@@ -18,13 +18,13 @@ reports features without tests and tests named here that don't exist.
 
 | ID | Feature | Where | Platforms | Tests |
 |---|---|---|---|---|
-| DRAW-01 | Draw with the brush (pressure, width, colour, opacity, dashes) | Tool button (bottom right) › Brush; settings in the tool panel | W D M | ui:draw-undo, rust:brush::tests::dabs_follow_spacing_and_repeat, rust:brush::tests::params_round_trip |
-| DRAW-02 | Texture brush | Tool button › Texture | W D M | rust:brush::tests::huge_strokes_are_capped, todo |
-| DRAW-03 | Highlighter | Tool button › Highlighter | W D M | todo |
-| DRAW-04 | Eraser | Tool button › Eraser | W D M | rust:timeline::tests::replays_draws_and_erases, todo |
-| DRAW-05 | Shapes: rectangle, ellipse, diamond, triangle, star, hexagon, line, arrow; sloppiness, edges, fills | Tool button › Shapes | W D M | rust:shapes::tests::every_shape_and_fill_makes_ink, rust:shapes::tests::hachure_stays_inside, rust:shapes::tests::same_seed_same_wobble |
-| DRAW-06 | Text with bundled and your own fonts | Tool button › Text; tool panel › Add your own font | W D M | rust:font::tests::bundled_fonts_parse_and_draw, rust:font::tests::user_fonts_register_by_family_name, rust:objects::tests::text_scales_with_resize |
-| DRAW-07 | Bucket fill (closes small gaps) | Tool button › Bucket | W D M | rust:bucket::tests::floods_inside_and_refuses_outside, rust:bucket::tests::gap_closing_bridges_a_small_gap |
+| DRAW-01 | Draw with the brush (pressure, width, colour, opacity, dashes) | Tool button (bottom right) › Brush; settings in the tool panel | W D M | ui:tools-tour, ui:draw-undo, rust:brush::tests::dabs_follow_spacing_and_repeat, rust:brush::tests::params_round_trip |
+| DRAW-02 | Texture brush | Tool button › Texture | W D M | ui:tools-tour, rust:brush::tests::huge_strokes_are_capped |
+| DRAW-03 | Highlighter | Tool button › Highlighter | W D M | ui:tools-tour |
+| DRAW-04 | Eraser | Tool button › Eraser | W D M | ui:tools-tour, rust:timeline::tests::replays_draws_and_erases |
+| DRAW-05 | Shapes: rectangle, ellipse, diamond, triangle, star, hexagon, line, arrow; sloppiness, edges, fills | Tool button › Shapes | W D M | ui:tools-tour, rust:shapes::tests::every_shape_and_fill_makes_ink, rust:shapes::tests::hachure_stays_inside, rust:shapes::tests::same_seed_same_wobble |
+| DRAW-06 | Text with bundled and your own fonts | Tool button › Text; tool panel › Add your own font | W D M | ui:tools-tour, rust:font::tests::bundled_fonts_parse_and_draw, rust:font::tests::user_fonts_register_by_family_name, rust:objects::tests::text_scales_with_resize |
+| DRAW-07 | Bucket fill (closes small gaps) | Tool button › Bucket | W D M | ui:tools-tour, rust:bucket::tests::floods_inside_and_refuses_outside, rust:bucket::tests::gap_closing_bridges_a_small_gap |
 | DRAW-08 | Colour picker (eyedropper) | Tool panel › eyedropper | W D M | todo |
 | DRAW-09 | Diagram mode (shapes join with connectors) | Menu › Diagram | W D M | rust:diagram::tests::outlines |
 
@@ -32,8 +32,8 @@ reports features without tests and tests named here that don't exist.
 
 | ID | Feature | Where | Platforms | Tests |
 |---|---|---|---|---|
-| EDIT-01 | Undo and redo | Tool button › Undo / Redo; Ctrl+Z / Ctrl+Shift+Z; two-finger tap | W D M | ui:draw-undo, rust:history::tests::undo_redo_add_and_delete, rust:history::tests::undo_redo_replace |
-| EDIT-02 | Select and lasso; move, rotate, scale, duplicate, delete, flip, order | Tool button › Select / Lasso; Selection panel | W D M | rust:objects::tests::rotate_and_scale_ops, rust:edit::tests::point_in_loop, todo |
+| EDIT-01 | Undo and redo | Tool button › Undo / Redo; Ctrl+Z / Ctrl+Shift+Z; two-finger tap | W D M | ui:tools-tour, ui:draw-undo, rust:history::tests::undo_redo_add_and_delete, rust:history::tests::undo_redo_replace |
+| EDIT-02 | Select and lasso; move, rotate, scale, duplicate, delete, flip, order | Tool button › Select / Lasso; Selection panel | W D M | ui:tools-tour, rust:objects::tests::rotate_and_scale_ops, rust:edit::tests::point_in_loop |
 | EDIT-03 | Copy, cut and paste inside the app | Ctrl+C / X / V; Menu › Paste | W D M | todo |
 | EDIT-04 | Paste pictures, text and tables from other apps | Ctrl+V; Menu › Paste | W D M | rust:objects::tests::pasted_tables_parse, rust:objects::tests::tables_and_pictures_make_pieces |
 | EDIT-05 | Insert a picture or PDF | Menu › Insert picture / PDF | W D M | rust:images::tests::prepares_and_mips_pictures, rust:pdf::tests::renders_a_page, rust:images::svg_tests::svg_becomes_a_picture |
@@ -44,13 +44,13 @@ reports features without tests and tests named here that don't exist.
 
 | ID | Feature | Where | Platforms | Tests |
 |---|---|---|---|---|
-| NAV-01 | Endless zoom in and out (exact at any depth) | Mouse wheel, pinch, trackpad | W D M | ui:zoom-home, rust:camera::tests::zoom_in_and_out_1e30_is_lossless, rust:addr::tests::origin_is_exact_at_huge_depth |
+| NAV-01 | Endless zoom in and out (exact at any depth) | Mouse wheel, pinch, trackpad | W D M | ui:tools-tour, ui:zoom-home, rust:camera::tests::zoom_in_and_out_1e30_is_lossless, rust:addr::tests::origin_is_exact_at_huge_depth |
 | NAV-02 | Pan | Right-drag, two fingers, Tool button › Pan | W D M | rust:camera::tests::point_stays_put_under_cursor_at_depth, todo |
-| NAV-03 | Home: fly back to where the canvas starts | Menu › Home; Menu › Bookmarks › Home; ⌂ on the folded bookmarks bar | W D M | ui:zoom-home |
+| NAV-03 | Home: fly back to where the canvas starts | Menu › Home; Menu › Bookmarks › Home; ⌂ on the folded bookmarks bar | W D M | ui:tools-tour, ui:zoom-home |
 | NAV-04 | Bookmarks: save a view, fly back to it, rename, delete | Menu › Bookmarks | W D M | ui:bookmarks, rust:snapshot::tests::roundtrip_keeps_strokes_timeline_bookmarks_and_view |
 | NAV-05 | Bookmarks folded into a bar (Home first, initials, + to save) | Menu › Bookmarks › fold (⌃) | W | ui:bookmarks |
 | NAV-06 | Search text and fly to it | Menu › Search text | W D M | rust:search::tests::finds_case_insensitively_with_excerpt, todo |
-| NAV-07 | Timeline: scrub and replay the drawing, restore an older state | Menu › Timeline | W D M | rust:timeline::tests::replays_draws_and_erases, rust:timeline::tests::window_leaves_out_older_ink, todo |
+| NAV-07 | Timeline: scrub and replay the drawing, restore an older state | Menu › Timeline | W D M | ui:tools-tour, rust:timeline::tests::replays_draws_and_erases, rust:timeline::tests::window_leaves_out_older_ink |
 | NAV-08 | Portals: a shape or outline that shows a saved view; zoom through it | Tool button › Portal | W D M | rust:portal::tests::a_portal_shows_its_view_at_every_zoom, rust:portal::tests::zooming_down_the_endless_street_goes_round, rust:portal::tests::portals_survive_saving_and_old_apps_see_a_shape |
 | NAV-09 | Endless street demo (infinite zoom loop through a portal) | Try mode › Menu › Bookmarks › Endless street | W | rust:portal::tests::zooming_down_the_endless_street_goes_round, todo |
 
@@ -69,9 +69,9 @@ reports features without tests and tests named here that don't exist.
 
 | ID | Feature | Where | Platforms | Tests |
 |---|---|---|---|---|
-| WS-01 | Add a workspace by its link | Menu › Pages › Workspaces › link + Add; Menu › Share live › paste it › Join; "Open in the web app" on the server's page (the server's own copy of the app) | W D M | ui:workspace, ui:join-workspace-link |
-| WS-02 | Sign in to a workspace account (remembered until sign-out or password change) | Menu › Pages › Workspaces › Sign in | W D M | ui:workspace, rust:hub::tests::directory_accounts_decide_what_the_page_list_gives |
-| WS-03 | Browse a workspace's folders and open its pages | Menu › Pages › Workspaces (tree) | W D M | ui:workspace |
+| WS-01 | Add a workspace by its link | Menu › Pages › Workspaces › link + Add; Menu › Share live › paste it › Join; "Open in the web app" on the server's page (the server's own copy of the app) | W D M | ui:connections-tour, ui:workspace, ui:join-workspace-link |
+| WS-02 | Sign in to a workspace account (remembered until sign-out or password change) | Menu › Pages › Workspaces › Sign in | W D M | ui:connections-tour, ui:workspace, rust:hub::tests::directory_accounts_decide_what_the_page_list_gives |
+| WS-03 | Browse a workspace's folders and open its pages | Menu › Pages › Workspaces (tree) | W D M | ui:connections-tour, ui:workspace |
 | WS-04 | Workspace changes by role: new page / folder, rename, move, delete | Menu › Pages › Workspaces › + and … menus | W D M | ui:workspace, rust:hub::tests::directory_accounts_decide_what_the_page_list_gives |
 | WS-05 | Upload this page into a workspace folder | Menu › Pages › Workspaces › Folder … › Upload this page | W D M | ui:workspace |
 | WS-06 | Sign in on a page to get drawing rights (viewers stay view-only) | Share live (joined with a view link) › Sign in to draw | W D M | rust:hub::tests::page_sign_in_gives_drawing_rights_but_not_to_viewers, todo |
@@ -80,12 +80,12 @@ reports features without tests and tests named here that don't exist.
 
 | ID | Feature | Where | Platforms | Tests |
 |---|---|---|---|---|
-| LIVE-01 | Join by pasting a link (a page link joins it; a server link adds the workspace) | Menu › Share live › Paste a link › Join | W D M | ui:share-live, ui:join-workspace-link, rust:net::tests::links_parse_in_every_form |
+| LIVE-01 | Join by pasting a link (a page link joins it; a server link adds the workspace) | Menu › Share live › Paste a link › Join | W D M | ui:connections-tour, ui:share-live, ui:join-workspace-link, rust:net::tests::links_parse_in_every_form |
 | LIVE-02 | Host in this browser (no server; invite and reply codes) | Menu › Share live › Host in this browser | W | todo |
 | LIVE-03 | Host from the desktop app (a port on this machine) | Menu › Share live › Host | D | todo |
 | LIVE-04 | Share through a relay (keeps locked changes for people who come and go) | Menu › Share live › Share via relay | W D M | todo |
-| LIVE-05 | See and follow other people | Menu › Share live › Follow / Go to | W D M | todo |
-| LIVE-06 | Edits merge without conflicts; rival edits keep the newest (or host / guest wins) | automatic; Share live › rival edits policy | W D M | rust:sync::tests::rival_edits_keep_the_newest_branch_only, rust:sync::tests::the_host_policy_picks_its_own_or_its_guests_edit, rust:wire::tests::every_message_round_trips |
+| LIVE-05 | See and follow other people | Menu › Share live › Follow / Go to | W D M | ui:connections-tour |
+| LIVE-06 | Edits merge without conflicts; rival edits keep the newest (or host / guest wins) | automatic; Share live › rival edits policy | W D M | ui:connections-tour, rust:sync::tests::rival_edits_keep_the_newest_branch_only, rust:sync::tests::the_host_policy_picks_its_own_or_its_guests_edit, rust:wire::tests::every_message_round_trips |
 | LIVE-07 | Edit and view links (sealed, signed) | Share live links | W D M S | rust:seal::tests::edit_and_view_keys_seal_open_and_sign |
 
 ## Page server (workspace host)
@@ -105,7 +105,7 @@ reports features without tests and tests named here that don't exist.
 |---|---|---|---|---|
 | UI-01 | Menu (gear, top right) grouped in sections | gear button | W D M | ui:menu |
 | UI-02 | Tool fan (undo, redo, tools) | Tool button (bottom right) | W D M | ui:draw-undo |
-| UI-03 | Quick toolbar with numbered slots and a hold slot per toolbar | Menu › UI › Quick toolbar | W D M | rust:hotbar::tests::slots_round_trip, rust:hotbar::tests::names_and_many_toolbars_survive |
+| UI-03 | Quick toolbar with numbered slots and a hold slot per toolbar | Menu › UI › Quick toolbar | W D M | ui:tools-tour, rust:hotbar::tests::slots_round_trip, rust:hotbar::tests::names_and_many_toolbars_survive |
 | UI-04 | Inventory: drag tools between slots; drag onto the trash to delete | Quick toolbar › bag | W D M | rust:hotbar::tests::inventory_keeps_a_free_row, todo |
 | UI-05 | Radial toolbar; page shaded only under an open fan | Menu › UI › Radial toolbar | W D M | rust:layout::tests::fans_open_toward_the_middle, todo |
 | UI-06 | Edit layout (move the buttons) | Menu › UI › Edit layout | W D M | rust:layout::tests::layouts_round_trip, todo |
