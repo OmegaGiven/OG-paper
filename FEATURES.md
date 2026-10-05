@@ -58,7 +58,7 @@ reports features without tests and tests named here that don't exist.
 
 | ID | Feature | Where | Platforms | Tests |
 |---|---|---|---|---|
-| FILE-01 | Pages on this device: new (named), open, rename, upload to a workspace | Menu › Pages › On this device | W D M | ui:pages-local, ui:upload-local |
+| FILE-01 | Pages on this device: new (named), open, rename, upload to a workspace | Menu › Pages › This device (select a page; the bar: Open, Rename, Upload, Delete) | W D M | ui:pages-local, ui:upload-local |
 | FILE-02 | Autosave; offline copies (save, open) | automatic; Menu › Save copy / Open | W D M | rust:snapshot::tests::roundtrip_keeps_strokes_timeline_bookmarks_and_view, todo |
 | FILE-03 | Export PNG, SVG, PDF (all or the selection) | Menu › Export | W D M | rust:export::tests::svg_has_the_items_in_css_px, rust:export::tests::pdf_is_well_formed, rust:export::tests::pictures_embed_and_rasterise |
 | FILE-04 | Import a canvas into this one (place it) | Menu › Import canvas | W D M | todo |
@@ -69,11 +69,11 @@ reports features without tests and tests named here that don't exist.
 
 | ID | Feature | Where | Platforms | Tests |
 |---|---|---|---|---|
-| WS-01 | Add a workspace by its link | Menu › Pages › Workspaces › link + Add; Menu › Share live › paste it › Join; "Open in the web app" on the server's page (the server's own copy of the app) | W D M | ui:connections-tour, ui:workspace, ui:join-workspace-link |
-| WS-02 | Sign in to a workspace account (remembered until sign-out or password change) | Menu › Pages › Workspaces › Sign in | W D M | ui:connections-tour, ui:workspace, rust:hub::tests::directory_accounts_decide_what_the_page_list_gives |
-| WS-03 | Browse a workspace's folders and open its pages | Menu › Pages › Workspaces (tree) | W D M | ui:connections-tour, ui:workspace |
-| WS-04 | Workspace changes by role: new page / folder, rename, move, delete | Menu › Pages › Workspaces › + and … menus | W D M | ui:workspace, rust:hub::tests::directory_accounts_decide_what_the_page_list_gives |
-| WS-05 | Upload a page into a workspace: the open one into a folder, or any page on this device | Menu › Pages › Workspaces › + or Folder … › Upload this page; Menu › Pages › On this device › Upload | W D M | ui:workspace, ui:upload-local |
+| WS-01 | Add a workspace by its link | Menu › Connect to server (an address like paper.example.com, or the server's link); Share live › Join with a server link; "Open in the web app" on the server's page | W D M | ui:connections-tour, ui:workspace, ui:join-workspace-link |
+| WS-02 | Sign in to a workspace account (remembered until sign-out or password change) | Menu › Connect to server (your account there); or Pages › select the server › Sign in | W D M | ui:connections-tour, ui:workspace, rust:hub::tests::directory_accounts_decide_what_the_page_list_gives |
+| WS-03 | Browse a workspace's folders and open its pages | Menu › Pages: each server is a drive; folders fold open; select a page › Open (or double-click) | W D M | ui:connections-tour, ui:workspace |
+| WS-04 | Workspace changes by role: new page / folder, rename, move, delete | Menu › Pages › select a server, folder or page › the bar (New page, New folder, Rename, Move to, Delete) | W D M | ui:workspace, rust:hub::tests::directory_accounts_decide_what_the_page_list_gives |
+| WS-05 | Upload a page into a workspace: the open one into a folder, or any page on this device | Menu › Pages › select a server or folder › Upload open page; or select a page on This device › Upload | W D M | ui:workspace, ui:upload-local |
 | WS-06 | Sign in on a page to get drawing rights (viewers stay view-only) | Share live (joined with a view link) › Sign in to draw | W D M | rust:hub::tests::page_sign_in_gives_drawing_rights_but_not_to_viewers, todo |
 
 ## Sharing: live sessions

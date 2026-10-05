@@ -8,7 +8,7 @@ export default {
     await t.open();
     await t.caption('The gear (top right) opens the menu');
     await t.tap('Menu');
-    for (const item of ['New canvas', 'Pages', 'Export', 'Paste', 'Insert picture / PDF', 'Search text', 'Bookmarks', 'Home', 'Share live', 'UI', 'Plugins']) {
+    for (const item of ['New canvas', 'Pages', 'Export', 'Paste', 'Insert picture / PDF', 'Search text', 'Bookmarks', 'Home', 'Share live', 'Connect to server', 'UI', 'Plugins']) {
       await t.find(item, { ms: 2000 });
       t.check(true, `the menu has ${item}`);
     }

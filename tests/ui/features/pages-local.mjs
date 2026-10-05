@@ -6,11 +6,10 @@ export default {
   title: 'Pages on this device',
   async run(t) {
     await t.open();
-    await t.caption('Menu › Pages lists the pages on this device');
-    await t.tap('Menu');
-    await t.tap('Pages');
-    await t.caption('Make a new page and name it');
-    await t.tap('+ New page');
+    await t.caption('Menu › Pages: your pages, like files');
+    await t.pages();
+    await t.caption('New page, with a name');
+    await t.tap('New page');
     await t.find('Name the new page');
     await t.type('Sketches');
     await t.key('Enter');
@@ -18,10 +17,10 @@ export default {
     t.check(true, 'made the page "Sketches"');
     await t.shot('made');
 
-    await t.caption('Rename it');
-    // Some layouts close Pages after making a page: open it again.
-    if (!(await t.maybe('Sketches (open)', 700))) { await t.tap('Menu'); await t.tap('Pages'); }
-    await t.tap('Rename', { row: 'Sketches (open)' });
+    await t.caption('Select it, then Rename');
+    await t.pages();
+    await t.rowAction('Sketches', 'Rename');
+    await t.find('Name');
     for (let i = 0; i < 12; i++) await t.key('Backspace');
     await t.type('Ideas');
     await t.key('Enter');

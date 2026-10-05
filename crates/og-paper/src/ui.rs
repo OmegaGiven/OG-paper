@@ -357,6 +357,8 @@ pub enum AppItem {
     Folder,
     Live,
     Pages,
+    /// Connect to a server (opens Pages on it).
+    Connect,
     LayoutMenu,
     Plugins,
     New,
@@ -405,6 +407,7 @@ const APP_SECTIONS: [(&str, &[AppItem]); 5] = [
     (
         "Share & sync",
         &[
+            AppItem::Connect,
             AppItem::Live,
             AppItem::Folder,
             AppItem::Merge,
@@ -472,6 +475,7 @@ impl AppItem {
             AppItem::Folder => "Sync folder",
             AppItem::Live => "Share live",
             AppItem::Pages => "Pages",
+            AppItem::Connect => "Connect to server",
             AppItem::LayoutMenu => "UI",
             AppItem::Plugins => "Plugins",
             AppItem::New => "New canvas",
@@ -507,6 +511,7 @@ impl AppItem {
             AppItem::Folder => Action::SyncFolder,
             AppItem::Live => Action::LivePanel,
             AppItem::Pages => Action::PagesPanel,
+            AppItem::Connect => Action::ConnectPanel,
             AppItem::LayoutMenu => Action::LayoutMenu,
             AppItem::Plugins => Action::PluginsPanel,
             AppItem::New => Action::New,
@@ -597,6 +602,14 @@ pub struct UiState {
     pub present: bool,
     /// Workspace changes asked for this frame (see `Action::WsApply`).
     pub ws_queue: Vec<WsReq>,
+    /// The row selected in Pages.
+    pub pages_sel: Option<PagesSel>,
+    /// Folded-shut rows in Pages ("dev", "s<i>", "s<i>/<folder>").
+    pub tree_closed: std::collections::HashSet<String>,
+    /// Connect to server: open, what is typed, focused once.
+    pub connect_open: bool,
+    pub connect_addr: String,
+    pub connect_focused: bool,
     pub relay_text: Option<String>,
     pub pages_open: bool,
     pub layout_open: bool,
@@ -784,6 +797,7 @@ impl Default for UiState {
                 AppItem::Changes,
                 AppItem::Folder,
                 AppItem::Live,
+                AppItem::Connect,
                 AppItem::Export,
                 AppItem::Paste,
                 AppItem::Library,
@@ -812,6 +826,11 @@ impl Default for UiState {
             ws_prompt: None,
             present: false,
             ws_queue: Vec::new(),
+            pages_sel: None,
+            tree_closed: Default::default(),
+            connect_open: false,
+            connect_addr: String::new(),
+            connect_focused: false,
             relay_text: None,
             pages_open: false,
             layout_open: false,
@@ -1128,8 +1147,6 @@ pub enum Action {
     DeleteLocal(usize),
     /// Rename page k here to the name in `page_rename`.
     RenameLocal(usize),
-    /// Add the server whose link is typed in Pages.
-    AddServer,
     RemoveServer(usize),
     RefreshServer(usize),
     /// Server, page.
@@ -1140,6 +1157,10 @@ pub enum Action {
     Join,
     /// Sign in to the page server with `UiState::sign_in`.
     ServerSignIn,
+    /// Open Connect to server.
+    ConnectPanel,
+    /// Connect to the server typed in Connect to server.
+    ConnectServer,
     /// Sign in to server `i`'s account (Pages) with `UiState::sign_in`.
     ServerLogin(usize),
     /// Sign out of server `i`'s account.
@@ -1391,6 +1412,9 @@ pub fn draw(ctx: &egui::Context, st: &mut UiState) -> Vec<Action> {
         if st.pages_open && !on(&["pages"]) && !on_fan {
             st.pages_open = false;
         }
+        if st.connect_open && !on(&["connect"]) && !on_fan {
+            st.connect_open = false;
+        }
         if st.layout_open && !on(&["layout_menu"]) && !on_fan {
             st.layout_open = false;
         }
@@ -1598,6 +1622,11 @@ pub fn draw(ctx: &egui::Context, st: &mut UiState) -> Vec<Action> {
     }
     if st.pages_open {
         pages_panel(ctx, st, &mut actions);
+    }
+    if st.connect_open {
+        connect_panel(ctx, st, &mut actions);
+    } else {
+        st.connect_focused = false;
     }
     if st.layout_open {
         layout_panel(ctx, st, &mut actions);
@@ -4184,6 +4213,19 @@ fn app_icon(
             line(&[vec2(-0.5, -0.25), vec2(0.2, -0.25)]);
             line(&[vec2(-0.5, 0.15), vec2(0.2, 0.15)]);
         }
+        AppItem::Connect => {
+            // A plug going into a socket.
+            p.rect_stroke(
+                Rect::from_center_size(c + vec2(0.45, 0.0) * s, vec2(0.7, 1.1) * s),
+                2.0,
+                st,
+                egui::StrokeKind::Middle,
+            );
+            line(&[vec2(-0.95, 0.0), vec2(-0.3, 0.0)]);
+            line(&[vec2(-0.3, -0.35), vec2(0.1, -0.35)]);
+            line(&[vec2(-0.3, 0.35), vec2(0.1, 0.35)]);
+            line(&[vec2(-0.3, -0.5), vec2(-0.3, 0.5)]);
+        }
         AppItem::Live => {
             // Two people.
             p.circle_stroke(c + vec2(-0.4, -0.35) * s, s * 0.3, st);
@@ -6097,9 +6139,230 @@ fn ago(ms: u64) -> String {
 }
 
 /// Pages: the pages on this device and on the servers added here.
+/// What is selected in Pages.
+#[derive(Clone, Debug, PartialEq)]
+pub enum PagesSel {
+    Device,
+    Local(usize),
+    Server(usize),
+    Folder(usize, String),
+    Page(usize, usize),
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum RowIcon {
+    Device,
+    Server,
+    Folder(bool),
+    Page(bool),
+}
+
+/// A small drawn icon (the app's fonts have no emoji).
+fn row_icon(p: &egui::Painter, c: Pos2, icon: RowIcon) {
+    let ink = Stroke::new(1.3, INKY);
+    match icon {
+        RowIcon::Page(open) => {
+            let r = Rect::from_center_size(c, vec2(11.0, 14.0));
+            let fold = 4.0;
+            let pts = vec![
+                r.left_top(),
+                pos2(r.right() - fold, r.top()),
+                pos2(r.right(), r.top() + fold),
+                r.right_bottom(),
+                r.left_bottom(),
+            ];
+            let fill = if open {
+                Color32::from_rgb(255, 214, 226)
+            } else {
+                Color32::WHITE
+            };
+            p.add(Shape::convex_polygon(pts.clone(), fill, ink));
+            p.line_segment(
+                [
+                    pos2(r.right() - fold, r.top()),
+                    pos2(r.right() - fold, r.top() + fold),
+                ],
+                ink,
+            );
+            p.line_segment(
+                [
+                    pos2(r.right() - fold, r.top() + fold),
+                    pos2(r.right(), r.top() + fold),
+                ],
+                ink,
+            );
+            for k in 0..3 {
+                let y = r.top() + 6.0 + k as f32 * 2.6;
+                p.line_segment(
+                    [pos2(r.left() + 2.5, y), pos2(r.right() - 2.5, y)],
+                    Stroke::new(0.8, Color32::from_gray(150)),
+                );
+            }
+        }
+        RowIcon::Folder(open) => {
+            let body = Rect::from_center_size(c + vec2(0.0, 1.0), vec2(16.0, 11.0));
+            let tab = Rect::from_min_size(body.left_top() - vec2(0.0, 2.5), vec2(7.0, 3.5));
+            let yellow = Color32::from_rgb(244, 201, 93);
+            p.rect(tab, 1.0, yellow, ink, egui::StrokeKind::Middle);
+            p.rect(body, 2.0, yellow, ink, egui::StrokeKind::Middle);
+            if open {
+                let flap = vec![
+                    pos2(body.left() + 2.5, body.top() + 3.0),
+                    pos2(body.right() + 1.5, body.top() + 3.0),
+                    pos2(body.right() - 1.0, body.bottom()),
+                    pos2(body.left(), body.bottom()),
+                ];
+                p.add(Shape::convex_polygon(
+                    flap,
+                    Color32::from_rgb(250, 222, 140),
+                    ink,
+                ));
+            }
+        }
+        RowIcon::Device => {
+            let scr = Rect::from_center_size(c + vec2(0.0, -1.5), vec2(14.0, 9.0));
+            p.rect(
+                scr,
+                1.5,
+                Color32::from_rgb(214, 232, 255),
+                ink,
+                egui::StrokeKind::Middle,
+            );
+            p.line_segment(
+                [pos2(c.x - 9.0, c.y + 5.5), pos2(c.x + 9.0, c.y + 5.5)],
+                Stroke::new(2.0, INKY),
+            );
+        }
+        RowIcon::Server => {
+            for k in 0..2 {
+                let r =
+                    Rect::from_center_size(c + vec2(0.0, -3.5 + k as f32 * 7.0), vec2(15.0, 6.0));
+                p.rect(
+                    r,
+                    1.5,
+                    Color32::from_rgb(222, 226, 236),
+                    ink,
+                    egui::StrokeKind::Middle,
+                );
+                p.circle_filled(
+                    pos2(r.right() - 3.0, r.center().y),
+                    1.2,
+                    Color32::from_rgb(40, 170, 90),
+                );
+            }
+        }
+    }
+}
+
+/// One row of the Pages tree: a fold arrow (when `fold` is set: open or
+/// shut), an icon, the name, a note after it and a date on the right.
+/// Click selects; the response says what was clicked (`.1`: the arrow).
+#[allow(clippy::too_many_arguments)]
+fn tree_row(
+    ui: &mut egui::Ui,
+    id: Id,
+    depth: usize,
+    fold: Option<bool>,
+    icon: RowIcon,
+    name: &str,
+    note: &str,
+    right: &str,
+    selected: bool,
+) -> (egui::Response, bool) {
+    let h = 26.0;
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::hover());
+    let resp = ui.interact(rect, id, Sense::click());
+    named(&resp, name);
+    let p = ui.painter();
+    if selected {
+        p.rect_filled(rect, 6.0, Color32::from_rgb(255, 228, 236));
+    } else if resp.hovered() {
+        p.rect_filled(rect, 6.0, Color32::from_rgb(242, 240, 234));
+    }
+    for d in 0..depth {
+        let x = rect.left() + 16.0 + d as f32 * 20.0;
+        p.line_segment(
+            [pos2(x, rect.top()), pos2(x, rect.bottom())],
+            Stroke::new(1.0, Color32::from_gray(224)),
+        );
+    }
+    let x0 = rect.left() + 6.0 + depth as f32 * 20.0;
+    let arrow = Rect::from_min_size(pos2(x0, rect.top()), vec2(14.0, h));
+    if let Some(open) = fold {
+        let c = arrow.center();
+        let pts = if open {
+            vec![
+                c + vec2(-4.0, -2.0),
+                c + vec2(4.0, -2.0),
+                c + vec2(0.0, 3.0),
+            ]
+        } else {
+            vec![
+                c + vec2(-2.0, -4.0),
+                c + vec2(3.0, 0.0),
+                c + vec2(-2.0, 4.0),
+            ]
+        };
+        p.add(Shape::convex_polygon(
+            pts,
+            Color32::from_gray(120),
+            Stroke::NONE,
+        ));
+    }
+    row_icon(p, pos2(x0 + 24.0, rect.center().y), icon);
+    let tx = x0 + 36.0;
+    let right_w = if right.is_empty() {
+        0.0
+    } else {
+        p.layout_no_wrap(
+            right.to_string(),
+            egui::FontId::proportional(11.5),
+            Color32::GRAY,
+        )
+        .size()
+        .x + 14.0
+    };
+    let name_g = p.layout_no_wrap(name.to_string(), egui::FontId::proportional(14.0), INKY);
+    let room = (rect.right() - right_w - tx).max(20.0);
+    let clip = Rect::from_min_max(pos2(tx, rect.top()), pos2(tx + room, rect.bottom()));
+    p.with_clip_rect(clip).galley(
+        pos2(tx, rect.center().y - name_g.size().y / 2.0),
+        name_g.clone(),
+        INKY,
+    );
+    if !note.is_empty() {
+        let nx = tx + name_g.size().x + 8.0;
+        p.with_clip_rect(clip).text(
+            pos2(nx, rect.center().y),
+            Align2::LEFT_CENTER,
+            note,
+            egui::FontId::proportional(11.5),
+            Color32::from_rgb(200, 40, 90),
+        );
+    }
+    if !right.is_empty() {
+        p.text(
+            pos2(rect.right() - 8.0, rect.center().y),
+            Align2::RIGHT_CENTER,
+            right,
+            egui::FontId::proportional(11.5),
+            Color32::from_gray(140),
+        );
+    }
+    let on_arrow = fold.is_some()
+        && resp.clicked()
+        && resp
+            .interact_pointer_pos()
+            .is_some_and(|q| q.x < arrow.right() + 4.0);
+    (resp, on_arrow)
+}
+
+/// Pages, as a file browser: this device and each workspace are drives;
+/// their folders and pages are rows. Select a row; the bar at the top shows
+/// what can be done with it. Double-click opens.
 fn pages_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) {
     let screen = ctx.content_rect();
-    let w = 420.0f32.min(screen.width() - 24.0);
+    let w = 520.0f32.min(screen.width() - 24.0);
     egui::Area::new(Id::new("pages"))
         .order(Order::Foreground)
         .pivot(Align2::CENTER_CENTER)
@@ -6122,253 +6385,637 @@ fn pages_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>)
                             }
                         });
                     });
-                    // Scroll only when the list is long (a scroll area sized
-                    // on an earlier, shorter list cuts off its foot).
-                    let rows = st.local_pages.len()
-                        + st.servers.iter().map(|s| s.pages.len() + s.folders.len() + 3).sum::<usize>()
-                        + 9;
-                    let max_h = screen.height() * 0.72;
-                    let tall = rows as f32 * 24.0 > max_h;
-                    let mut body = |ui: &mut egui::Ui| {
-                        ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new("On this device").strong());
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                if st.page_new.is_none() && ui.small_button("+ New page").clicked() {
-                                    st.page_new = Some(String::new());
-                                    st.page_rename = None;
-                                }
-                            });
-                        });
-                        // Naming a new page.
-                        let mut create = false;
-                        let mut cancel_new = false;
-                        if let Some(name) = st.page_new.as_mut() {
-                            ui.horizontal(|ui| {
-                                let r = add_field(ui,
-                                    egui::TextEdit::singleline(name)
-                                        .hint_text("Name the new page")
-                                        .desired_width(170.0),
-                                );
-                                r.request_focus();
-                                if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                                    create = true;
-                                }
-                                if ui.small_button("Create").clicked() {
-                                    create = true;
-                                }
-                                if ui.small_button("Cancel").clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                                    cancel_new = true;
-                                }
-                            });
-                        }
-                        if create {
-                            actions.push(Action::NewLocalNamed);
-                        } else if cancel_new {
-                            st.page_new = None;
-                        }
-                        if st.local_pages.is_empty() {
-                            ui.label(egui::RichText::new("Nothing saved here yet").small().weak());
-                        }
-                        let mut rename_done = None;
-                        let mut rename_cancel = false;
-                        let mut rename_start: Option<(usize, String)> = None;
-                        for (i, p) in st.local_pages.iter().enumerate() {
-                            if let Some((k, text)) = st.page_rename.as_mut().filter(|(k, _)| *k == i) {
-                                ui.horizontal(|ui| {
-                                    let r = add_field(ui,egui::TextEdit::singleline(text).desired_width(170.0));
-                                    r.request_focus();
-                                    if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                                        rename_done = Some(*k);
-                                    }
-                                    if ui.small_button("OK").clicked() {
-                                        rename_done = Some(*k);
-                                    }
-                                    if ui.small_button("Cancel").clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                                        rename_cancel = true;
-                                    }
-                                });
-                                continue;
-                            }
-                            ui.horizontal(|ui| {
-                                let name = if p.current {
-                                    egui::RichText::new(format!("{} (open)", p.name)).strong()
-                                } else {
-                                    egui::RichText::new(&p.name)
-                                };
-                                ui.label(name);
-                                ui.label(egui::RichText::new(ago(p.changed)).small().weak());
-                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                    // Up to a workspace where you may make pages.
-                                    let targets: Vec<(usize, &str)> = st
-                                        .servers
-                                        .iter()
-                                        .enumerate()
-                                        .filter(|(_, s)| s.admin())
-                                        .map(|(k, s)| (k, s.name.as_str()))
-                                        .collect();
-                                    match targets.as_slice() {
-                                        [] => {}
-                                        [(k, name)] => {
-                                            if ui.small_button("Upload").on_hover_text(format!("Put a copy of this page into {name}")).clicked() {
-                                                actions.push(Action::UploadLocal(i, *k));
-                                            }
-                                        }
-                                        many => {
-                                            ui.menu_button("Upload", |ui| {
-                                                for (k, name) in many {
-                                                    if ui.button(format!("To {name}")).clicked() {
-                                                        actions.push(Action::UploadLocal(i, *k));
-                                                        ui.close();
-                                                    }
-                                                }
-                                            });
-                                        }
-                                    }
-                                    if !p.current {
-                                        if ui.small_button("Delete").clicked() {
-                                            actions.push(Action::DeleteLocal(i));
-                                        }
-                                        if ui.small_button("Open").clicked() {
-                                            actions.push(Action::OpenLocal(i));
-                                        }
-                                    }
-                                    if ui.small_button("Rename").clicked() {
-                                        rename_start = Some((i, p.name.clone()));
-                                    }
-                                });
-                            });
-                        }
-                        if let Some(k) = rename_done {
-                            actions.push(Action::RenameLocal(k));
-                        } else if rename_cancel {
-                            st.page_rename = None;
-                        }
-                        if let Some(r) = rename_start.take() {
-                            st.page_rename = Some(r);
-                            st.page_new = None;
-                        }
-                        ui.add_space(10.0);
-                        ui.label(egui::RichText::new("Workspaces").strong());
-                        if st.servers.is_empty() {
-                            help(ui, "A workspace is a shared home for pages on a server (like og-paper --serve-dir on a NAS). Add one by its link to browse and open its pages.");
-                        }
-                        for i in 0..st.servers.len() {
-                            let s = &st.servers[i];
-                            ui.add_space(4.0);
-                            ui.horizontal(|ui| {
-                                ui.label(egui::RichText::new(&s.name).strong());
-                                ui.label(egui::RichText::new(&s.state).small().weak());
-                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                    if ui.small_button("Remove").on_hover_text("Forget this workspace here (its pages stay on it)").clicked() {
-                                        actions.push(Action::RemoveServer(i));
-                                    }
-                                    if ui.small_button("↻").on_hover_text("Check again").clicked() {
-                                        actions.push(Action::RefreshServer(i));
-                                    }
-                                    if s.organizes() {
-                                        ui.menu_button("+", |ui| {
-                                            ws_folder_menu(ui, s, i, "", &mut st.ws_prompt, &mut st.ws_queue);
-                                        });
-                                    }
-                                });
-                            });
-                            // An account on the server: what you may do there.
-                            ui.horizontal(|ui| {
-                                ui.add_space(12.0);
-                                match &s.account {
-                                    Some((user, role)) => {
-                                        ui.label(egui::RichText::new(format!("Signed in as {user} · {role}")).small());
-                                        if ui.small_button("Sign out").clicked() {
-                                            actions.push(Action::ServerLogout(i));
-                                        }
-                                    }
-                                    None => {
-                                        ui.label(egui::RichText::new("Not signed in").small().weak());
-                                        let open = st.server_login == Some(i);
-                                        if ui.small_button(if open { "Cancel" } else { "Sign in" }).on_hover_text("Sign in with your account on this workspace").clicked() {
-                                            st.server_login = if open { None } else { Some(i) };
-                                        }
-                                    }
-                                }
-                            });
-                            if s.account.is_none() && st.server_login == Some(i) {
-                                let fw = (w - 24.0).max(120.0);
-                                ui.horizontal(|ui| {
-                                    ui.add_space(12.0);
-                                    add_field(ui, egui::TextEdit::singleline(&mut st.sign_in.0).hint_text("User name").desired_width(fw));
-                                });
-                                let mut go = false;
-                                ui.horizontal(|ui| {
-                                    ui.add_space(12.0);
-                                    let pw = add_field(ui, egui::TextEdit::singleline(&mut st.sign_in.1).hint_text("Password").password(true).desired_width(fw - 70.0));
-                                    go = pw.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                                    go |= ui.button("Sign in").clicked();
-                                });
-                                if go && !st.sign_in.0.trim().is_empty() {
-                                    actions.push(Action::ServerLogin(i));
-                                }
-                            }
-                            // A name being typed for a change here.
-                            if let Some(pr) = st.ws_prompt.as_mut().filter(|p| p.server == i) {
-                                ui.horizontal(|ui| {
-                                    ui.add_space(12.0);
-                                    ui.label(egui::RichText::new(&pr.title).small());
-                                });
-                                let mut done = None;
-                                ui.horizontal(|ui| {
-                                    ui.add_space(12.0);
-                                    let r = add_field(ui, egui::TextEdit::singleline(&mut pr.text).hint_text("Name").desired_width((w - 150.0).max(100.0)));
-                                    let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                                    if (ui.button("OK").clicked() || enter) && !pr.text.trim().is_empty() {
-                                        done = Some(true);
-                                    }
-                                    if ui.button("Cancel").clicked() {
-                                        done = Some(false);
-                                    }
-                                });
-                                match done {
-                                    Some(true) => {
-                                        let pr = st.ws_prompt.take().expect("prompt");
-                                        st.ws_queue.push(WsReq {
-                                            server: i,
-                                            op: pr.op,
-                                            page: pr.page,
-                                            name: pr.text.trim().to_string(),
-                                            folder: pr.folder,
-                                        });
-                                    }
-                                    Some(false) => st.ws_prompt = None,
-                                    None => {}
-                                }
-                            }
-                            let s = &st.servers[i];
-                            ws_tree(ui, s, i, "", &mut st.ws_prompt, &mut st.ws_queue, actions);
-                        }
-                        if !st.ws_queue.is_empty() {
-                            actions.push(Action::WsApply);
-                        }
-                        ui.add_space(8.0);
-                        ui.horizontal(|ui| {
-                            add_field(
-                                ui,
-                                egui::TextEdit::singleline(&mut st.add_server_text)
-                                    .hint_text("Workspace link (ws://… ?k=…)")
-                                    .desired_width(w - 80.0),
-                            );
-                            if ui.button("Add").clicked() && !st.add_server_text.trim().is_empty() {
-                                actions.push(Action::AddServer);
-                            }
-                        });
-                        help(ui, "Opening a workspace page keeps a copy on this device; it reconnects whenever you open it, and what you did offline goes up.");
+                    // A selection that no longer exists is no selection.
+                    let valid = match &st.pages_sel {
+                        Some(PagesSel::Local(i)) => *i < st.local_pages.len(),
+                        Some(PagesSel::Server(i)) => *i < st.servers.len(),
+                        Some(PagesSel::Folder(i, f)) => st.servers.get(*i).is_some_and(|s| s.folders.contains(f)),
+                        Some(PagesSel::Page(i, j)) => st.servers.get(*i).is_some_and(|s| *j < s.pages.len()),
+                        _ => true,
                     };
-                    if tall {
-                        egui::ScrollArea::vertical()
-                            .id_salt("pages_scroll")
-                            .max_height(max_h)
-                            .show(ui, body);
-                    } else {
-                        body(ui);
+                    if !valid {
+                        st.pages_sel = None;
                     }
+                    pages_toolbar(ui, st, actions);
+                    ui.separator();
+                    pages_prompt(ui, st, actions);
+                    ui.horizontal(|ui| {
+                        ui.add_space(42.0);
+                        ui.label(egui::RichText::new("Name").small().weak());
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.add_space(8.0);
+                            ui.label(egui::RichText::new("Modified").small().weak());
+                        });
+                    });
+                    let max_h = (screen.height() * 0.6).max(160.0);
+                    egui::ScrollArea::vertical()
+                        .id_salt("pages_tree")
+                        .max_height(max_h)
+                        .auto_shrink([false, true])
+                        .show(ui, |ui| {
+                            ui.spacing_mut().item_spacing.y = 1.0;
+                            pages_tree(ui, st, actions);
+                        });
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        if ui.button("Connect to server…").on_hover_text("Add a server's pages here by its address or link").clicked() {
+                            st.connect_open = true;
+                            st.pages_open = false;
+                        }
+                    });
+                    help(ui, "Pages from a server keep a copy on this device: they reconnect whenever you open them, and what you did offline goes up.");
+                });
+        });
+    if !st.ws_queue.is_empty() {
+        actions.push(Action::WsApply);
+    }
+}
+
+/// The bar of what can be done with the selected row.
+fn pages_toolbar(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>) {
+    let sel = st.pages_sel.clone();
+    let q =
+        |st: &mut UiState, server: usize, op: &'static str, page: Option<usize>, folder: String| {
+            st.ws_queue.push(WsReq {
+                server,
+                op,
+                page,
+                name: String::new(),
+                folder,
+            });
+        };
+    let prompt = |st: &mut UiState,
+                  server: usize,
+                  op: &'static str,
+                  page: Option<usize>,
+                  folder: String,
+                  title: String,
+                  text: String| {
+        st.ws_prompt = Some(WsPrompt {
+            server,
+            op,
+            page,
+            folder,
+            title,
+            text,
+        });
+        st.page_new = None;
+        st.page_rename = None;
+    };
+    ui.horizontal_wrapped(|ui| match sel {
+        None | Some(PagesSel::Device) => {
+            if ui
+                .button("New page")
+                .on_hover_text("A new page on this device")
+                .clicked()
+            {
+                st.page_new = Some(String::new());
+                st.page_rename = None;
+                st.ws_prompt = None;
+            }
+            if sel.is_none() {
+                ui.label(
+                    egui::RichText::new("Select a page or folder to see what you can do")
+                        .small()
+                        .weak(),
+                );
+            }
+        }
+        Some(PagesSel::Local(i)) => {
+            let p = st.local_pages[i].clone();
+            if !p.current && ui.button("Open").clicked() {
+                actions.push(Action::OpenLocal(i));
+            }
+            if ui.button("Rename").clicked() {
+                st.page_rename = Some((i, p.name.clone()));
+                st.page_new = None;
+                st.ws_prompt = None;
+            }
+            let targets: Vec<(usize, String)> = st
+                .servers
+                .iter()
+                .enumerate()
+                .filter(|(_, s)| s.admin())
+                .map(|(k, s)| (k, s.name.clone()))
+                .collect();
+            match targets.as_slice() {
+                [] => {}
+                [(k, name)] => {
+                    if ui
+                        .button("Upload")
+                        .on_hover_text(format!("Put a copy of this page on {name}"))
+                        .clicked()
+                    {
+                        actions.push(Action::UploadLocal(i, *k));
+                    }
+                }
+                many => {
+                    ui.menu_button("Upload", |ui| {
+                        for (k, name) in many {
+                            if ui.button(format!("To {name}")).clicked() {
+                                actions.push(Action::UploadLocal(i, *k));
+                                ui.close();
+                            }
+                        }
+                    });
+                }
+            }
+            if !p.current && ui.button("Delete").clicked() {
+                actions.push(Action::DeleteLocal(i));
+            }
+        }
+        Some(PagesSel::Server(i)) => {
+            let s = st.servers[i].clone();
+            if s.admin() && ui.button("New page").clicked() {
+                prompt(
+                    st,
+                    i,
+                    "new_page",
+                    None,
+                    String::new(),
+                    format!("New page on {}:", s.name),
+                    String::new(),
+                );
+            }
+            if s.organizes() && ui.button("New folder").clicked() {
+                prompt(
+                    st,
+                    i,
+                    "new_folder",
+                    None,
+                    String::new(),
+                    format!("New folder on {}:", s.name),
+                    String::new(),
+                );
+            }
+            if s.admin()
+                && ui
+                    .button("Upload open page")
+                    .on_hover_text("Put the page open now on this server")
+                    .clicked()
+            {
+                q(st, i, "upload", None, String::new());
+            }
+            if ui.button("Refresh").clicked() {
+                actions.push(Action::RefreshServer(i));
+            }
+            if s.account.is_some() {
+                if ui.button("Sign out").clicked() {
+                    actions.push(Action::ServerLogout(i));
+                }
+            } else if ui
+                .button("Sign in")
+                .on_hover_text("Sign in with your account on this server")
+                .clicked()
+            {
+                st.server_login = Some(i);
+            }
+            if ui
+                .button("Remove")
+                .on_hover_text("Forget this server here (its pages stay on it)")
+                .clicked()
+            {
+                actions.push(Action::RemoveServer(i));
+                st.pages_sel = None;
+            }
+        }
+        Some(PagesSel::Folder(i, f)) => {
+            let s = st.servers[i].clone();
+            let label = f.rsplit('/').next().unwrap_or(&f).to_string();
+            if s.admin() && ui.button("New page").clicked() {
+                prompt(
+                    st,
+                    i,
+                    "new_page",
+                    None,
+                    f.clone(),
+                    format!("New page in {label}:"),
+                    String::new(),
+                );
+            }
+            if s.organizes() && ui.button("New folder").clicked() {
+                prompt(
+                    st,
+                    i,
+                    "new_folder",
+                    None,
+                    f.clone(),
+                    format!("New folder in {label}:"),
+                    String::new(),
+                );
+            }
+            if s.admin()
+                && ui
+                    .button("Upload open page")
+                    .on_hover_text("Put the page open now in this folder")
+                    .clicked()
+            {
+                q(st, i, "upload", None, f.clone());
+            }
+            if s.organizes() && ui.button("Rename").clicked() {
+                prompt(
+                    st,
+                    i,
+                    "rename_folder",
+                    None,
+                    f.clone(),
+                    format!("New name for {label}:"),
+                    label.clone(),
+                );
+            }
+            if s.admin()
+                && ui
+                    .button("Remove folder")
+                    .on_hover_text("What's in it moves up a level")
+                    .clicked()
+            {
+                q(st, i, "delete_folder", None, f.clone());
+                st.pages_sel = Some(PagesSel::Server(i));
+            }
+        }
+        Some(PagesSel::Page(i, j)) => {
+            let s = st.servers[i].clone();
+            let (name, _, open, folder) = s.pages[j].clone();
+            if ui.button(if open { "Connect" } else { "Open" }).clicked() {
+                actions.push(Action::OpenServerPage(i, j));
+            }
+            if s.organizes() {
+                if ui.button("Rename").clicked() {
+                    prompt(
+                        st,
+                        i,
+                        "rename",
+                        Some(j),
+                        folder.clone(),
+                        format!("New name for {name}:"),
+                        name.clone(),
+                    );
+                }
+                ui.menu_button("Move to", |ui| {
+                    let targets = std::iter::once(String::new()).chain(s.folders.iter().cloned());
+                    for t in targets.filter(|t| *t != folder) {
+                        let label = if t.is_empty() {
+                            "(top)".to_string()
+                        } else {
+                            t.clone()
+                        };
+                        if ui.button(label).clicked() {
+                            st.ws_queue.push(WsReq {
+                                server: i,
+                                op: "move",
+                                page: Some(j),
+                                name: String::new(),
+                                folder: t,
+                            });
+                            ui.close();
+                        }
+                    }
+                });
+            }
+            if s.admin()
+                && ui
+                    .button("Delete")
+                    .on_hover_text(
+                        "Tagged for deletion: an admin can restore it in the server's console",
+                    )
+                    .clicked()
+            {
+                q(st, i, "delete", Some(j), String::new());
+                st.pages_sel = Some(PagesSel::Server(i));
+            }
+        }
+    });
+}
+
+/// Naming something: a new or renamed page here, or a change on a server.
+fn pages_prompt(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>) {
+    let width = (ui.available_width() - 150.0).max(120.0);
+    let row = |ui: &mut egui::Ui, title: &str, hint: &str, text: &mut String| -> Option<bool> {
+        ui.label(egui::RichText::new(title).small());
+        let mut done = None;
+        ui.horizontal(|ui| {
+            let r = add_field(
+                ui,
+                egui::TextEdit::singleline(text)
+                    .hint_text(hint)
+                    .desired_width(width),
+            );
+            if !r.has_focus() && !r.lost_focus() {
+                r.request_focus();
+            }
+            let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            if (ui.button("OK").clicked() || enter) && !text.trim().is_empty() {
+                done = Some(true);
+            }
+            if ui.button("Cancel").clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                done = Some(false);
+            }
+        });
+        ui.add_space(4.0);
+        done
+    };
+    if let Some(name) = st.page_new.as_mut() {
+        match row(ui, "New page on this device:", "Name the new page", name) {
+            Some(true) => actions.push(Action::NewLocalNamed),
+            Some(false) => st.page_new = None,
+            None => {}
+        }
+    } else if let Some((k, text)) = st.page_rename.as_mut() {
+        let k = *k;
+        match row(ui, "Rename this page:", "Name", text) {
+            Some(true) => actions.push(Action::RenameLocal(k)),
+            Some(false) => st.page_rename = None,
+            None => {}
+        }
+    } else if let Some(pr) = st.ws_prompt.as_mut() {
+        let title = pr.title.clone();
+        match row(ui, &title, "Name", &mut pr.text) {
+            Some(true) => {
+                let pr = st.ws_prompt.take().expect("prompt");
+                st.ws_queue.push(WsReq {
+                    server: pr.server,
+                    op: pr.op,
+                    page: pr.page,
+                    name: pr.text.trim().to_string(),
+                    folder: pr.folder,
+                });
+            }
+            Some(false) => st.ws_prompt = None,
+            None => {}
+        }
+    }
+}
+
+/// The tree: this device, then each server with its folders and pages.
+fn pages_tree(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>) {
+    let dev_open = !st.tree_closed.contains("dev");
+    let (r, arrow) = tree_row(
+        ui,
+        Id::new("pg_dev"),
+        0,
+        Some(dev_open),
+        RowIcon::Device,
+        "This device",
+        "",
+        "",
+        st.pages_sel == Some(PagesSel::Device),
+    );
+    if arrow || r.double_clicked() {
+        toggle(&mut st.tree_closed, "dev");
+    } else if r.clicked() {
+        st.pages_sel = Some(PagesSel::Device);
+    }
+    if dev_open {
+        if st.local_pages.is_empty() {
+            ui.horizontal(|ui| {
+                ui.add_space(62.0);
+                ui.label(egui::RichText::new("Nothing saved here yet").small().weak());
+            });
+        }
+        for i in 0..st.local_pages.len() {
+            let p = st.local_pages[i].clone();
+            let (r, _) = tree_row(
+                ui,
+                Id::new(("pg_local", i)),
+                1,
+                None,
+                RowIcon::Page(p.current),
+                &p.name,
+                if p.current { "open" } else { "" },
+                &ago(p.changed),
+                st.pages_sel == Some(PagesSel::Local(i)),
+            );
+            if r.double_clicked() && !p.current {
+                actions.push(Action::OpenLocal(i));
+            } else if r.clicked() {
+                st.pages_sel = Some(PagesSel::Local(i));
+            }
+        }
+    }
+    for i in 0..st.servers.len() {
+        ui.add_space(4.0);
+        let key = format!("s{i}");
+        let open = !st.tree_closed.contains(&key);
+        let s = st.servers[i].clone();
+        let note = match &s.account {
+            Some((user, role)) => format!("{user} · {role}"),
+            None => "not signed in".into(),
+        };
+        let (r, arrow) = tree_row(
+            ui,
+            Id::new(("pg_srv", i)),
+            0,
+            Some(open),
+            RowIcon::Server,
+            &s.name,
+            &note,
+            &s.state,
+            st.pages_sel == Some(PagesSel::Server(i)),
+        );
+        if arrow || r.double_clicked() {
+            toggle(&mut st.tree_closed, &key);
+        } else if r.clicked() {
+            st.pages_sel = Some(PagesSel::Server(i));
+        }
+        if s.account.is_none() && st.server_login == Some(i) {
+            sign_in_rows(ui, st, actions, i);
+        }
+        if open {
+            server_level(ui, st, actions, i, &s, "", 1);
+        }
+    }
+}
+
+fn toggle(set: &mut std::collections::HashSet<String>, key: &str) {
+    if !set.remove(key) {
+        set.insert(key.to_string());
+    }
+}
+
+/// One level of a server's tree: its folders (each folding), then pages.
+fn server_level(
+    ui: &mut egui::Ui,
+    st: &mut UiState,
+    actions: &mut Vec<Action>,
+    i: usize,
+    s: &ServerView,
+    prefix: &str,
+    depth: usize,
+) {
+    let children: Vec<String> = s
+        .folders
+        .iter()
+        .filter(|f| match f.rsplit_once('/') {
+            Some((p, _)) => p == prefix,
+            None => prefix.is_empty(),
+        })
+        .cloned()
+        .collect();
+    for f in children {
+        let key = format!("s{i}/{f}");
+        let open = !st.tree_closed.contains(&key);
+        let label = f.rsplit('/').next().unwrap_or(&f).to_string();
+        let n = s.pages.iter().filter(|p| p.3 == f).count();
+        let (r, arrow) = tree_row(
+            ui,
+            Id::new(("pg_fold", i, f.as_str())),
+            depth,
+            Some(open),
+            RowIcon::Folder(open),
+            &label,
+            "",
+            &format!("{n} page{}", if n == 1 { "" } else { "s" }),
+            st.pages_sel == Some(PagesSel::Folder(i, f.clone())),
+        );
+        if arrow || r.double_clicked() {
+            toggle(&mut st.tree_closed, &key);
+        } else if r.clicked() {
+            st.pages_sel = Some(PagesSel::Folder(i, f.clone()));
+        }
+        if open {
+            server_level(ui, st, actions, i, s, &f, depth + 1);
+        }
+    }
+    for (j, (name, changed, open, folder)) in s.pages.iter().enumerate() {
+        if folder != prefix {
+            continue;
+        }
+        let (r, _) = tree_row(
+            ui,
+            Id::new(("pg_page", i, j)),
+            depth,
+            None,
+            RowIcon::Page(*open),
+            name,
+            if *open { "open" } else { "" },
+            &ago(*changed),
+            st.pages_sel == Some(PagesSel::Page(i, j)),
+        );
+        if r.double_clicked() {
+            actions.push(Action::OpenServerPage(i, j));
+        } else if r.clicked() {
+            st.pages_sel = Some(PagesSel::Page(i, j));
+        }
+    }
+}
+
+/// Signing in to server `i`, under its row.
+fn sign_in_rows(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>, i: usize) {
+    let fw = (ui.available_width() - 120.0).max(120.0);
+    ui.horizontal(|ui| {
+        ui.add_space(42.0);
+        add_field(
+            ui,
+            egui::TextEdit::singleline(&mut st.sign_in.0)
+                .hint_text("User name")
+                .desired_width(fw),
+        );
+    });
+    let mut go = false;
+    let mut cancel = false;
+    ui.horizontal(|ui| {
+        ui.add_space(42.0);
+        let pw = add_field(
+            ui,
+            egui::TextEdit::singleline(&mut st.sign_in.1)
+                .hint_text("Password")
+                .password(true)
+                .desired_width(fw - 90.0),
+        );
+        go = pw.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+        go |= ui.button("Sign in").clicked();
+        cancel = ui.button("Cancel").clicked();
+    });
+    if go && !st.sign_in.0.trim().is_empty() {
+        actions.push(Action::ServerLogin(i));
+    }
+    if cancel {
+        st.server_login = None;
+    }
+}
+
+/// Connect to server: an address or a link, and (if you have one) your
+/// account there. Pages opens on it once connected.
+fn connect_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) {
+    let screen = ctx.content_rect();
+    let w = 380.0f32.min(screen.width() - 24.0);
+    egui::Area::new(Id::new("connect"))
+        .order(Order::Foreground)
+        .pivot(Align2::CENTER_CENTER)
+        .fixed_pos(screen.center())
+        .show(ctx, |ui| {
+            ui.style_mut().visuals = egui::Visuals::light();
+            egui::Frame::new()
+                .fill(FACE)
+                .stroke(Stroke::new(1.0, EDGE))
+                .corner_radius(12.0)
+                .inner_margin(14.0)
+                .shadow(egui::Shadow {
+                    offset: [0, 3],
+                    blur: 14,
+                    spread: 0,
+                    color: Color32::from_black_alpha(45),
+                })
+                .show(ui, |ui| {
+                    ui.set_width(w);
+                    ui.horizontal(|ui| {
+                        ui.strong("Connect to server");
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button("×").on_hover_text("Close").clicked() {
+                                st.connect_open = false;
+                            }
+                        });
+                    });
+                    ui.label(
+                        egui::RichText::new(
+                            "The server's address (like paper.example.com) or the link it shows.",
+                        )
+                        .small(),
+                    );
+                    ui.add_space(4.0);
+                    let r = add_field(
+                        ui,
+                        egui::TextEdit::singleline(&mut st.connect_addr)
+                            .hint_text("Server address or link")
+                            .desired_width(w),
+                    );
+                    if !st.connect_focused {
+                        r.request_focus();
+                        st.connect_focused = true;
+                    }
+                    ui.add_space(6.0);
+                    ui.label(
+                        egui::RichText::new("Your account there (optional: to draw and organise)")
+                            .small()
+                            .weak(),
+                    );
+                    add_field(
+                        ui,
+                        egui::TextEdit::singleline(&mut st.sign_in.0)
+                            .hint_text("User name")
+                            .desired_width(w),
+                    );
+                    let pw = add_field(
+                        ui,
+                        egui::TextEdit::singleline(&mut st.sign_in.1)
+                            .hint_text("Password")
+                            .password(true)
+                            .desired_width(w),
+                    );
+                    let enter = pw.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        let go = ui.add(
+                            egui::Button::new(egui::RichText::new("Connect").color(Color32::WHITE))
+                                .fill(Color32::from_rgb(200, 40, 90)),
+                        );
+                        if (go.clicked() || enter) && !st.connect_addr.trim().is_empty() {
+                            actions.push(Action::ConnectServer);
+                        }
+                        if ui.button("Cancel").clicked() {
+                            st.connect_open = false;
+                        }
+                    });
                 });
         });
 }
@@ -6679,179 +7326,6 @@ fn add_field(ui: &mut egui::Ui, edit: egui::TextEdit<'_>) -> egui::Response {
             .push(Rect::from_min_max(rect.min * k, rect.max * k))
     });
     r
-}
-
-/// One level of a workspace's tree: its folders (each folding open), then
-/// its pages, with what the account may do to each.
-fn ws_tree(
-    ui: &mut egui::Ui,
-    s: &ServerView,
-    i: usize,
-    prefix: &str,
-    prompt: &mut Option<WsPrompt>,
-    queue: &mut Vec<WsReq>,
-    actions: &mut Vec<Action>,
-) {
-    let children = s.folders.iter().filter(|f| match f.rsplit_once('/') {
-        Some((p, _)) => p == prefix,
-        None => prefix.is_empty(),
-    });
-    for f in children {
-        let label = f.rsplit('/').next().unwrap_or(f);
-        egui::CollapsingHeader::new(egui::RichText::new(label).strong())
-            .id_salt(("ws-folder", i, f.as_str()))
-            .default_open(true)
-            .show(ui, |ui| {
-                if s.organizes() {
-                    ui.menu_button(egui::RichText::new("Folder …").small(), |ui| {
-                        ws_folder_menu(ui, s, i, f, prompt, queue);
-                        if ui.button("Rename folder…").clicked() {
-                            *prompt = Some(WsPrompt {
-                                server: i,
-                                op: "rename_folder",
-                                page: None,
-                                folder: f.clone(),
-                                title: format!("New name for {label}:"),
-                                text: label.to_string(),
-                            });
-                            ui.close();
-                        }
-                        if s.admin()
-                            && ui
-                                .button("Remove folder")
-                                .on_hover_text("What's in it moves up a level")
-                                .clicked()
-                        {
-                            queue.push(WsReq {
-                                server: i,
-                                op: "delete_folder",
-                                page: None,
-                                name: String::new(),
-                                folder: f.clone(),
-                            });
-                            ui.close();
-                        }
-                    });
-                }
-                ws_tree(ui, s, i, f, prompt, queue, actions);
-            });
-    }
-    let pages = s.pages.iter().enumerate().filter(|(_, p)| p.3 == prefix);
-    for (j, (name, changed, open, folder)) in pages {
-        ui.horizontal(|ui| {
-            ui.add_space(12.0);
-            if *open {
-                ui.label(egui::RichText::new(format!("{name} (open)")).strong());
-            } else {
-                ui.label(name);
-            }
-            ui.label(egui::RichText::new(ago(*changed)).small().weak());
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if s.organizes() {
-                    ui.menu_button("…", |ui| {
-                        if ui.button("Rename…").clicked() {
-                            *prompt = Some(WsPrompt {
-                                server: i,
-                                op: "rename",
-                                page: Some(j),
-                                folder: folder.clone(),
-                                title: format!("New name for {name}:"),
-                                text: name.clone(),
-                            });
-                            ui.close();
-                        }
-                        ui.menu_button("Move to", |ui| {
-                            let targets = std::iter::once("").chain(s.folders.iter().map(String::as_str));
-                            for t in targets.filter(|t| *t != folder.as_str()) {
-                                let label = if t.is_empty() { "(top)" } else { t };
-                                if ui.button(label).clicked() {
-                                    queue.push(WsReq {
-                                        server: i,
-                                        op: "move",
-                                        page: Some(j),
-                                        name: String::new(),
-                                        folder: t.to_string(),
-                                    });
-                                    ui.close();
-                                }
-                            }
-                        });
-                        if s.admin()
-                            && ui
-                                .button("Delete")
-                                .on_hover_text("Tagged for deletion: an admin can restore it in the workspace's console")
-                                .clicked()
-                        {
-                            queue.push(WsReq {
-                                server: i,
-                                op: "delete",
-                                page: Some(j),
-                                name: String::new(),
-                                folder: String::new(),
-                            });
-                            ui.close();
-                        }
-                    });
-                }
-                if ui.small_button(if *open { "Connect" } else { "Open" }).clicked() {
-                    actions.push(Action::OpenServerPage(i, j));
-                }
-            });
-        });
-    }
-}
-
-/// What can be made in a workspace folder (`folder`, "" for the top).
-fn ws_folder_menu(
-    ui: &mut egui::Ui,
-    s: &ServerView,
-    i: usize,
-    folder: &str,
-    prompt: &mut Option<WsPrompt>,
-    queue: &mut Vec<WsReq>,
-) {
-    let place = if folder.is_empty() {
-        "here".to_string()
-    } else {
-        format!("in {}", folder.rsplit('/').next().unwrap_or(folder))
-    };
-    if s.admin() && ui.button("New page").clicked() {
-        *prompt = Some(WsPrompt {
-            server: i,
-            op: "new_page",
-            page: None,
-            folder: folder.to_string(),
-            title: format!("Name of the new page {place}:"),
-            text: String::new(),
-        });
-        ui.close();
-    }
-    if ui.button("New folder").clicked() {
-        *prompt = Some(WsPrompt {
-            server: i,
-            op: "new_folder",
-            page: None,
-            folder: folder.to_string(),
-            title: format!("Name of the new folder {place}:"),
-            text: String::new(),
-        });
-        ui.close();
-    }
-    if s.admin()
-        && ui
-            .button("Upload this page")
-            .on_hover_text("Put the page open now into the workspace, and keep working on it there")
-            .clicked()
-    {
-        queue.push(WsReq {
-            server: i,
-            op: "upload",
-            page: None,
-            name: String::new(),
-            folder: folder.to_string(),
-        });
-        ui.close();
-    }
 }
 
 /// Under an open fan: shade and frost the ground behind the rings only

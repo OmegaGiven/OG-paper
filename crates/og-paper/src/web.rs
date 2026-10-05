@@ -352,6 +352,7 @@ pub fn og_set_menu(items: &str) {
                 "folder" => AppItem::Folder,
                 "live" => AppItem::Live,
                 "pages" => AppItem::Pages,
+                "connect" => AppItem::Connect,
                 "plugins" => AppItem::Plugins,
                 "dark" => AppItem::Dark,
                 "showtools" => AppItem::ShowTools,

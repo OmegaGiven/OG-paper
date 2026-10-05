@@ -402,6 +402,32 @@ export class T {
     await this.beat(250);
   }
 
+  // ---- app helpers (one place to change when the app's layout moves) ----
+  /** Pages, opened if it isn't. */
+  async pages() {
+    if (!(await this.maybe('This device', 900))) { await this.tap('Menu'); await this.tap('Pages'); }
+  }
+  /** Menu › Connect to server: an address or link, and an account. */
+  async connect(addr, user = 'admin', password = 'password') {
+    await this.tap('Menu');
+    await this.tap('Connect to server');
+    await this.tap(await this.find('Server address or link'));
+    await this.paste(addr);
+    if (user) {
+      await this.tap(await this.find('User name'));
+      await this.type(user);
+      await this.tap(await this.find('Password'));
+      await this.type(password);
+    }
+    await this.tap('Connect');
+    await this.find('This device', { ms: 10000 });
+  }
+  /** Select a row in Pages, then press a button on the bar. */
+  async rowAction(row, button) {
+    await this.tap(row);
+    await this.tap(button);
+  }
+
   /** Paste text the way a browser does (Ctrl+V into what has focus). */
   async paste(text) {
     await this.b.eval(`(() => { const dt = new DataTransfer(); dt.setData('text/plain', ${JSON.stringify(text)});

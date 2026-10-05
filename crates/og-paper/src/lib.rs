@@ -170,6 +170,8 @@ pub struct App {
     servers: Vec<pages::ServerConn>,
     /// The open page on its way into a workspace.
     upload: Option<pages::Upload>,
+    /// Connecting to a server known by its address alone.
+    probe: Option<pages::Probe>,
     /// A page from this device to upload once it opens (web): the
     /// workspace, and whether it has opened.
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
@@ -294,6 +296,7 @@ impl App {
             plugins: Vec::new(),
             servers: Vec::new(),
             upload: None,
+            probe: None,
             upload_local: None,
             #[cfg(not(target_arch = "wasm32"))]
             local_paths: Vec::new(),
@@ -1495,10 +1498,6 @@ impl App {
                 prefs::save(&p);
                 self.redraw();
             }
-            Action::AddServer => {
-                let t = self.ui.add_server_text.clone();
-                self.add_server(&t);
-            }
             Action::RemoveServer(i) => self.remove_server(i),
             Action::RefreshServer(i) => self.server_request(i, wire::Msg::ListPages),
             Action::OpenServerPage(i, p) => self.open_server_page(i, p),
@@ -1601,6 +1600,16 @@ impl App {
                 self.server_account_in(i, user.trim(), &pw);
             }
             Action::ServerLogout(i) => self.server_account_out(i),
+            Action::ConnectPanel => {
+                self.ui.connect_open = true;
+                self.ui.close_menus();
+            }
+            Action::ConnectServer => {
+                let addr = self.ui.connect_addr.trim().to_string();
+                let (user, pw) = std::mem::take(&mut self.ui.sign_in);
+                self.ui.sign_in.0 = user.clone();
+                self.connect_server(&addr, &user, &pw);
+            }
             Action::WsApply => {
                 for r in std::mem::take(&mut self.ui.ws_queue) {
                     if r.op == "upload" {

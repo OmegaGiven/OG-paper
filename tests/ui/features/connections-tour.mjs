@@ -10,33 +10,14 @@ export default {
   title: 'OG Paper: drawing together',
   async run(t) {
     const hub = await startHub();
-    const signIn = async u => {
-      await u.tap('Sign in');
-      await u.tap(await u.find('User name'));
-      await u.type('admin');
-      await u.tap(await u.find('Password'));
-      await u.type('password');
-      await u.tap('Sign in');
-      await u.find(/^Signed in as admin/, { ms: 8000 });
-    };
-    const openPages = async u => {
-      if (!(await u.maybe('Workspaces', 1200))) { await u.tap('Menu'); await u.tap('Pages'); }
-    };
-
     await t.open();
-    await t.caption('A workspace is a shared home for pages');
-    await openPages(t);
-    await t.tap(await t.find(/^Workspace link/));
-    await t.paste(hub.view);
-    await t.tap('Add');
+    await t.caption('Menu › Connect to server: its address and your account');
+    await t.connect(hub.view);
     await t.find('First page', { ms: 8000 });
-    t.check(true, 'the workspace lists its pages');
-
-    await t.caption('Sign in with your account to draw');
-    await signIn(t);
+    t.check(true, 'connected: Pages shows its pages');
 
     await t.caption('Open a page: you keep a copy, it syncs');
-    await t.tap('Open', { row: 'First page' });
+    await t.rowAction('First page', 'Open');
     await t.find(/^Live with First page$/, { ms: 10000 }).catch(() => {});
     const x0 = t.phone ? t.w * 0.33 : t.w * 0.3;
     await t.scribble((x0 + t.w) / 2, t.h * 0.3, (t.w - x0) * 0.6);
@@ -46,11 +27,10 @@ export default {
     const b2 = await launch(t.size === 'phone' ? 'phone' : 'desktop');
     const friend = new T(b2, { name: `${t.name}-friend`, demo: false, out: t.out });
     friend.log = () => {};
-    await friend.open('/app/', { hash: `server=${encodeURIComponent(hub.view)}` });
-    await openPages(friend);
+    await friend.open();
+    await friend.connect(hub.view);
     await friend.find('First page', { ms: 8000 });
-    await signIn(friend);
-    await friend.tap('Open', { row: 'First page' });
+    await friend.rowAction('First page', 'Open');
     await friend.wait(async () => (await friend.state()).strokes >= mine, 'the friend gets my drawing', 10000);
     t.check(true, 'the friend sees what I drew');
     await t.caption('...and draws with you, live');
@@ -77,8 +57,8 @@ export default {
     await t.tap(await t.find(/^Paste a link/));
     await t.paste(hub.view);
     await t.tap('Join');
-    await t.find('Workspaces', { ms: 8000 });
-    t.check(true, 'the server link opened the workspace');
+    await t.find('First page', { ms: 8000 });
+    t.check(true, 'the server link opened its pages');
     await t.shot('workspace');
     hub.stop();
   },

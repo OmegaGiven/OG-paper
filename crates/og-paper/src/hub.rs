@@ -311,6 +311,11 @@ pub fn run(dir: PathBuf, port: u16, public: Option<String>) {
                             p.app.net_event(Ev::Data(id, b));
                         }
                     }
+                    // An app with only the address: the view key (the same
+                    // the server's home page shows anyone).
+                    Some(Conn::Dir(_)) if b == b"OG-PAPER:VIEW?" => {
+                        server.send(id, format!("OG-PAPER:VIEW {view_token}").into_bytes());
+                    }
                     Some(Conn::Dir(account)) => {
                         directory(&dir, &keys, &server, &console, account, id, &b)
                     }

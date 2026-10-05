@@ -35,6 +35,47 @@ pub struct Upload {
 
 /// Connection ids for directory requests (server i uses DIR_CONN + i).
 pub const DIR_CONN: u64 = 1000;
+/// The connection that asks a server, known only by its address, for its
+/// view key (see `connect_server`).
+pub const PROBE_CONN: u64 = DIR_CONN + 900;
+
+/// Connecting to a server known only by its address.
+pub struct Probe {
+    url: String,
+    /// Tried next if this one can't be reached (wss://, then ws://).
+    fallback: Option<String>,
+    user: String,
+    password: String,
+    answered: bool,
+    #[cfg(not(target_arch = "wasm32"))]
+    client: Option<crate::net::native::Client>,
+}
+
+/// An address as typed (`paper.example.com`, `https://…`, `go:8991`) as
+/// WebSocket addresses to try, secure first.
+fn ws_urls(addr: &str) -> Vec<String> {
+    let a = addr.trim().trim_end_matches('/');
+    let a = a
+        .split(['?', '#'])
+        .next()
+        .unwrap_or(a)
+        .trim_end_matches('/');
+    for (from, to) in [
+        ("https://", "wss://"),
+        ("http://", "ws://"),
+        ("wss://", "wss://"),
+        ("ws://", "ws://"),
+    ] {
+        if let Some(rest) = a.strip_prefix(from) {
+            return vec![format!("{to}{}", rest.split('/').next().unwrap_or(rest))];
+        }
+    }
+    let host = a.split('/').next().unwrap_or(a);
+    if host.is_empty() {
+        return vec![];
+    }
+    vec![format!("wss://{host}"), format!("ws://{host}")]
+}
 
 pub struct ServerConn {
     pub link: Link,
@@ -359,6 +400,124 @@ impl App {
         self.dir_connect(i);
     }
 
+    /// Connect to server: by its link, or by its address alone (the
+    /// server is asked for its view key), and sign in if a user name is
+    /// given; then Pages opens on it. A page's link joins that page.
+    pub(crate) fn connect_server(&mut self, addr: &str, user: &str, password: &str) {
+        let addr = addr.trim();
+        if let Some(l) = parse_link(addr).filter(|l| !l.key.is_empty()) {
+            if l.url.contains("/p/") {
+                self.join(addr);
+                self.ui.connect_open = false;
+                return;
+            }
+            self.connect_with_link(&format!("{}/?k={}", l.url, l.key), user, password);
+            return;
+        }
+        let mut urls = ws_urls(addr);
+        if urls.is_empty() {
+            self.say("Type the server's address, or paste its link");
+            return;
+        }
+        let url = urls.remove(0);
+        self.probe = Some(Probe {
+            url,
+            fallback: urls.into_iter().next(),
+            user: user.into(),
+            password: password.into(),
+            answered: false,
+            #[cfg(not(target_arch = "wasm32"))]
+            client: None,
+        });
+        self.probe_connect();
+        self.say("Connecting…");
+    }
+
+    fn probe_connect(&mut self) {
+        let Some(p) = self.probe.as_mut() else { return };
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            p.client = Some(crate::net::native::Client::connect(p.url.clone()));
+        }
+        #[cfg(target_arch = "wasm32")]
+        crate::web::dir_connect(PROBE_CONN, &p.url);
+    }
+
+    fn connect_with_link(&mut self, link: &str, user: &str, password: &str) {
+        let Some(l) = parse_link(link) else { return };
+        let i = match self.servers.iter().position(|s| s.link.url == l.url) {
+            Some(i) => i,
+            None => {
+                self.add_server(link);
+                match self.servers.iter().position(|s| s.link.url == l.url) {
+                    Some(i) => i,
+                    None => return,
+                }
+            }
+        };
+        if user.trim().is_empty() {
+            self.server_request(i, Msg::ListPages);
+        } else {
+            self.server_account_in(i, user.trim(), password);
+        }
+        self.ui.connect_open = false;
+        self.ui.pages_open = true;
+        self.ui.pages_sel = Some(crate::ui::PagesSel::Server(i));
+        self.ui.tree_closed.remove(&format!("s{i}"));
+    }
+
+    /// An event on the probe connection.
+    fn probe_event(&mut self, e: Ev) {
+        let Some(p) = self.probe.as_mut() else { return };
+        match e {
+            Ev::Open(_) => {
+                #[cfg(not(target_arch = "wasm32"))]
+                if let Some(c) = &p.client {
+                    c.send(b"OG-PAPER:VIEW?".to_vec());
+                }
+                #[cfg(target_arch = "wasm32")]
+                crate::web::net_send(PROBE_CONN, b"OG-PAPER:VIEW?".to_vec());
+            }
+            Ev::Data(_, b) => {
+                p.answered = true;
+                let text = String::from_utf8_lossy(&b).to_string();
+                let p = self.probe.take().expect("probe");
+                self.probe_close();
+                match text.strip_prefix("OG-PAPER:VIEW ") {
+                    Some(key) => {
+                        let link = format!("{}/?k={}", p.url, key.trim());
+                        self.connect_with_link(&link, &p.user, &p.password);
+                    }
+                    None => {
+                        self.say("That server is older: paste its full link (it has ?k= in it)")
+                    }
+                }
+            }
+            Ev::Closed(_, why) => {
+                if p.answered {
+                    return;
+                }
+                let p = self.probe.take().expect("probe");
+                if let Some(next) = p.fallback.clone() {
+                    self.probe = Some(Probe {
+                        url: next,
+                        fallback: None,
+                        ..p
+                    });
+                    self.probe_connect();
+                } else {
+                    self.say(format!("Could not reach that server ({why})"));
+                }
+            }
+        }
+        self.redraw();
+    }
+
+    fn probe_close(&mut self) {
+        #[cfg(target_arch = "wasm32")]
+        crate::web::dir_close(PROBE_CONN);
+    }
+
     /// Change workspace `i`'s pages or folders (see `Msg::Change`); page
     /// `p` is an index into its page list, when the change is to a page.
     pub(crate) fn workspace_change(
@@ -452,6 +611,22 @@ impl App {
     /// web page's events come through `dir_event`).
     pub(crate) fn pages_tick(&mut self) {
         #[cfg(not(target_arch = "wasm32"))]
+        {
+            let evs = self
+                .probe
+                .as_ref()
+                .and_then(|p| p.client.as_ref())
+                .map(|c| c.poll())
+                .unwrap_or_default();
+            for e in evs {
+                self.probe_event(match e {
+                    Ev::Open(_) => Ev::Open(PROBE_CONN),
+                    Ev::Data(_, b) => Ev::Data(PROBE_CONN, b),
+                    Ev::Closed(_, w) => Ev::Closed(PROBE_CONN, w),
+                });
+            }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
         for i in 0..self.servers.len() {
             let evs = self.servers[i]
                 .client
@@ -474,6 +649,10 @@ impl App {
         let conn = match &e {
             Ev::Open(c) | Ev::Data(c, _) | Ev::Closed(c, _) => *c,
         };
+        if conn == PROBE_CONN {
+            self.probe_event(e);
+            return;
+        }
         let i = (conn - DIR_CONN) as usize;
         let Some(s) = self.servers.get_mut(i) else {
             return;

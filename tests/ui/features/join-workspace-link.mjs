@@ -17,7 +17,7 @@ export default {
     await t.paste(hub.view);
     await t.tap('Join');
     await t.caption('It is a workspace: it opens under Pages');
-    await t.find('Workspaces', { ms: 8000 });
+    await t.find(`127.0.0.1:${hub.port}`, { ms: 8000 });
     await t.find('First page', { ms: 8000 });
     t.check(true, 'the server is added as a workspace, with its pages');
     t.check(!(await t.state()).net || !/Connecting/.test(JSON.stringify((await t.state()).net)), 'not left connecting');
