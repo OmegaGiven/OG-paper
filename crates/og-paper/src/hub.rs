@@ -195,6 +195,17 @@ pub fn run(dir: PathBuf, port: u16, public: Option<String>) {
         );
         let name = std::env::var("OGP_SERVER_NAME").unwrap_or_else(|_| "OG Paper server".into());
         let console = console.clone();
+        // The web app, served from here too (OGP_WEB_APP: the built
+        // web/app folder; the Docker image has it at /srv/web/app).
+        let web_app = std::env::var("OGP_WEB_APP")
+            .ok()
+            .or_else(|| Some("/srv/web/app".to_string()))
+            .map(PathBuf::from)
+            .filter(|p| p.join("index.html").is_file() && p.join("pkg").is_dir());
+        if let Some(p) = &web_app {
+            println!("Web app: served at /app/ (from {})", p.display());
+        }
+        let has_web_app = web_app.is_some();
         server.set_web(move |req| {
             let path = req.target.split('?').next().unwrap_or("/");
             if path == "/login"
@@ -219,12 +230,18 @@ pub fn run(dir: PathBuf, port: u16, public: Option<String>) {
                 view_key: view.clone(),
                 public: public.clone(),
                 pages,
+                web_app: has_web_app,
             };
             let nav = console
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .home_nav(req);
             let (status, ctype, body) = crate::hubpage::page(target, base, &info, &nav);
+            if status == 404 {
+                if let Some(r) = web_app.as_deref().and_then(|root| web_app_file(root, path)) {
+                    return r;
+                }
+            }
             WebResp {
                 status,
                 ctype,
@@ -351,6 +368,49 @@ pub fn run(dir: PathBuf, port: u16, public: Option<String>) {
         }
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
+}
+
+/// A file of the web app, for `/app/...` (`/app` itself goes to `/app/`).
+fn web_app_file(root: &Path, path: &str) -> Option<WebResp> {
+    if path == "/app" {
+        return Some(WebResp {
+            status: 303,
+            ctype: "text/plain; charset=utf-8",
+            headers: vec![("Location".into(), "/app/".into())],
+            body: vec![],
+        });
+    }
+    let rel = path.strip_prefix("/app/")?;
+    let rel = if rel.is_empty() { "index.html" } else { rel };
+    // Plain names only: no "..", no hidden files, no absolute paths.
+    if rel
+        .split('/')
+        .any(|s| s.is_empty() || s.starts_with('.') || s.contains('\\'))
+    {
+        return None;
+    }
+    let file = root.join(rel);
+    let body = std::fs::read(&file).ok()?;
+    let ctype = match file.extension().and_then(|e| e.to_str()).unwrap_or("") {
+        "html" => "text/html; charset=utf-8",
+        "js" | "mjs" => "text/javascript; charset=utf-8",
+        "wasm" => "application/wasm",
+        "json" => "application/json",
+        "webmanifest" => "application/manifest+json",
+        "css" => "text/css; charset=utf-8",
+        "png" => "image/png",
+        "svg" => "image/svg+xml",
+        "ttf" => "font/ttf",
+        "woff2" => "font/woff2",
+        "txt" | "md" => "text/plain; charset=utf-8",
+        _ => "application/octet-stream",
+    };
+    Some(WebResp {
+        status: 200,
+        ctype,
+        headers: vec![],
+        body,
+    })
 }
 
 /// A guest on a page signing in with a console account: answer with the
@@ -937,5 +997,31 @@ mod tests {
         assert!(matches!(&r[0], Msg::Account { token, .. } if token.is_empty()));
         server.stop();
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_web_app_is_served_from_its_folder_and_nothing_else() {
+        let root = std::env::temp_dir().join(format!("ogp-webapp-{}", crate::uid::new()));
+        std::fs::create_dir_all(root.join("pkg")).unwrap();
+        std::fs::write(root.join("index.html"), "<!doctype html>app").unwrap();
+        std::fs::write(root.join("pkg/a.wasm"), [0u8, 97, 115, 109]).unwrap();
+        std::fs::write(root.parent().unwrap().join("secret.txt"), "no").unwrap();
+        assert_eq!(web_app_file(&root, "/app").unwrap().status, 303);
+        let index = web_app_file(&root, "/app/").unwrap();
+        assert!(index.ctype.starts_with("text/html") && index.body.ends_with(b"app"));
+        assert_eq!(
+            web_app_file(&root, "/app/pkg/a.wasm").unwrap().ctype,
+            "application/wasm"
+        );
+        for bad in [
+            "/app/../secret.txt",
+            "/app/pkg/../../secret.txt",
+            "/app/.hidden",
+            "/app//etc/passwd",
+            "/other/index.html",
+        ] {
+            assert!(web_app_file(&root, bad).is_none(), "{bad}");
+        }
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

@@ -10,10 +10,25 @@ WORKDIR /src
 COPY . .
 RUN cargo build --release -p og-paper
 
+# The web app too, served by the server at /app/: browsers let a page
+# reach the server it came from, but not a public site reach a private
+# address (a tailnet or home network), so the server's own copy works where
+# the public web app can't. Keep the version in step with Cargo.lock.
+FROM rust:1-bookworm AS web
+ARG WASM_BINDGEN=0.2.129
+RUN rustup target add wasm32-unknown-unknown \
+    && cargo install wasm-bindgen-cli --version ${WASM_BINDGEN} --locked
+WORKDIR /src
+COPY . .
+RUN cargo build --release -p og-paper --lib --target wasm32-unknown-unknown \
+    && wasm-bindgen --target web --no-typescript --out-dir web/app/pkg \
+       target/wasm32-unknown-unknown/release/og_paper.wasm
+
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=build /src/target/release/og-paper /usr/local/bin/og-paper
+COPY --from=web /src/web/app /srv/web/app
 ENV HOME=/data
 VOLUME /data
 EXPOSE 8991

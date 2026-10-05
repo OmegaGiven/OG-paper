@@ -19,6 +19,9 @@ pub struct Info {
     pub public: Option<String>,
     /// Page names and when they last changed (ms since the Unix epoch).
     pub pages: Vec<(String, u64)>,
+    /// This server hands out the web app itself, at /app/ (see
+    /// `hub::web_app_file`).
+    pub web_app: bool,
 }
 
 /// Where the web app lives (it adds a server from `#server=<link>`).
@@ -78,14 +81,26 @@ pub fn page(target: &str, base: &str, info: &Info, nav: &str) -> (u16, &'static 
     }
 }
 
-fn link_row(label: &str, note: &str, link: &str, open: bool) -> String {
-    let web = if open && link.starts_with("wss://") {
-        format!(
-            r#"<a class="btn primary" href="{WEB_APP}#server={}" target="_blank" rel="noopener">Open in the web app</a>"#,
-            esc(&url_encode(link))
-        )
-    } else {
-        String::new()
+/// "Open in the web app" for a wss:// link: this server's own copy of the
+/// web app when it has one (same address, so browsers let it connect: a
+/// public site may not reach a private one, like a tailnet address), else
+/// the public web app.
+fn link_row(label: &str, note: &str, link: &str, open: bool, own_app: bool) -> String {
+    let web = match link.strip_prefix("wss://") {
+        Some(rest) if open => {
+            let app = if own_app {
+                let host = rest.split('/').next().unwrap_or(rest);
+                format!("https://{host}/app/")
+            } else {
+                WEB_APP.to_string()
+            };
+            format!(
+                r#"<a class="btn primary" href="{}#server={}" target="_blank" rel="noopener">Open in the web app</a>"#,
+                esc(&app),
+                esc(&url_encode(link))
+            )
+        }
+        _ => String::new(),
     };
     format!(
         r#"<div class="link"><div class="label">{label}<small>{note}</small></div>
@@ -127,6 +142,7 @@ fn html(target: &str, base: &str, info: &Info, nav: &str) -> String {
             via,
             &format!("{b}/?k={}", info.view_key),
             true,
+            info.web_app,
         );
         if admin {
             links += &link_row(
@@ -134,6 +150,7 @@ fn html(target: &str, base: &str, info: &Info, nav: &str) -> String {
                 "Only for people you trust: it opens and changes every page.",
                 &format!("{b}/?k={}", info.edit_key),
                 true,
+                info.web_app,
             );
         }
     }
@@ -241,6 +258,7 @@ mod tests {
             view_key: "vVIEW".into(),
             public: Some("wss://paper.example.ts.net:8992".into()),
             pages: vec![("First page".into(), 0)],
+            web_app: false,
         }
     }
 

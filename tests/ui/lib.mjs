@@ -15,7 +15,10 @@ import { fileURLToPath } from 'url';
 import net from 'net';
 
 export const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
-export const WEB = 'http://127.0.0.1:8990';
+// The web app under test: the local build (scripts/serve-web.py), or the
+// published one with UI_WEB=https://omegagiven.github.io/OG-paper.
+export const WEB = (process.env.UI_WEB || 'http://127.0.0.1:8990').replace(/\/$/, '');
+const PKG = `${new URL(WEB).pathname.replace(/\/$/, '')}/app/pkg/og_paper.js`;
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 export const SIZES = {
@@ -43,6 +46,7 @@ process.on('exit', () => { for (const c of children) try { c.kill(); } catch (e)
 
 /** The web app on :8990 (scripts/serve-web.py), started if not running. */
 export async function ensureWeb() {
+  if (process.env.UI_WEB) return;
   const up = () => fetch(`${WEB}/app/`).then(r => r.ok, () => false);
   if (await up()) return;
   const c = spawn('python3', [join(ROOT, 'scripts/serve-web.py'), '8990'], { stdio: 'ignore' });
@@ -99,7 +103,7 @@ export async function launch(size, { demo = false } = {}) {
   const c = spawn(findBrowser(), [
     '--headless=new', '--no-sandbox', `--remote-debugging-port=${port}`, `--user-data-dir=${prof}`,
     `--window-size=${s.width},${s.height}`, '--enable-unsafe-webgpu', '--enable-features=Vulkan',
-    '--use-angle=vulkan', '--ignore-gpu-blocklist', '--hide-scrollbars', '--mute-audio', 'about:blank',
+    '--use-angle=vulkan', '--ignore-gpu-blocklist', ...(process.env.UI_NO_LNA ? ['--disable-features=LocalNetworkAccessChecks,PrivateNetworkAccessSendPreflights,PrivateNetworkAccessRespectPreflightResults,BlockInsecurePrivateNetworkRequests'] : []), '--hide-scrollbars', '--mute-audio', 'about:blank',
   ], { stdio: 'ignore' });
   children.push(c);
   let targets;
@@ -187,7 +191,7 @@ export class T {
     }
     await this.b.send('Page.navigate', { url: `${WEB}${path}${hash ? '#' + hash : ''}` });
     await this.wait(async () => (await this.stateOrNull())?.ready, 'the app starts', 30000);
-    await this.b.eval(`import('/app/pkg/og_paper.js').then(m => m.og_test_mode(true))`);
+    await this.b.eval(`import('${PKG}').then(m => m.og_test_mode(true))`);
     await this.wait(async () => (await this.nodes()).length > 0, 'the app lists its widgets', 5000);
     const z = sizeOf(this.size).zoom;
     if (z) await this.b.eval(`(() => { const st = document.createElement('style'); st.textContent = '.og-ui { zoom: ${z}; }'; document.head.append(st); })()`);
@@ -198,12 +202,12 @@ export class T {
   }
 
   async stateOrNull() {
-    try { return JSON.parse(await this.b.eval(`import('/app/pkg/og_paper.js').then(m => m.og_status())`)); } catch (e) { return null; }
+    try { return JSON.parse(await this.b.eval(`import('${PKG}').then(m => m.og_status())`)); } catch (e) { return null; }
   }
   /** The app's status: zoom, strokes, undos, bookmarks, net, name, ... */
   async state() { const s = await this.stateOrNull(); if (!s) this.fail('the app gave no status'); return s; }
   async nodes() {
-    try { return JSON.parse(await this.b.eval(`import('/app/pkg/og_paper.js').then(m => m.og_ui_nodes())`)); } catch (e) { return []; }
+    try { return JSON.parse(await this.b.eval(`import('${PKG}').then(m => m.og_ui_nodes())`)); } catch (e) { return []; }
   }
 
   /** Wait until `fn` is truthy (polling); fail with `what` if it never is. */
