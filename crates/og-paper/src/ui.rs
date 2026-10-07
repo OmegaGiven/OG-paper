@@ -206,6 +206,8 @@ pub struct Overlay {
     pub lasso: Option<Vec<Pos2>>,
     /// A selected line or arrow: its points, and the + between them.
     pub joints: Option<(Vec<Pos2>, Vec<Pos2>)>,
+    /// The selection's delete button (see `delete_knob`).
+    pub del_knob: Option<Pos2>,
     /// People on a live canvas: where, their name, their color, and the
     /// direction they are in when they are off screen.
     pub labels: Vec<(Pos2, String, Color32, Option<Vec2>)>,
@@ -4511,6 +4513,30 @@ fn paint_overlay(ctx: &egui::Context, ov: &Overlay, touch: bool) {
             p.circle_stroke(knob, hs + 1.0, Stroke::new(1.2, blue));
         }
     }
+    if let Some(k) = ov.del_knob {
+        // Delete: a red ✕ off the top right corner.
+        let r = if touch { 13.0 } else { 10.0 };
+        p.circle_filled(k + vec2(0.0, 1.0), r + 1.0, Color32::from_black_alpha(40));
+        p.circle_filled(k, r, Color32::from_rgb(214, 48, 64));
+        p.circle_stroke(k, r, Stroke::new(1.5, Color32::WHITE));
+        let a = r * 0.42;
+        for d in [vec2(a, a), vec2(a, -a)] {
+            p.line_segment([k - d, k + d], Stroke::new(2.0, Color32::WHITE));
+        }
+    }
+}
+
+/// Where a selection's delete button goes: out from the top right corner
+/// along the box's diagonal, well clear of that corner's resize handle and
+/// of the rotate knob above the top edge (even on a tiny or turned box).
+pub fn delete_knob(c: &[Pos2; 4], touch: bool) -> Pos2 {
+    let out = (c[1] - c[3]).normalized();
+    let out = if out.is_finite() {
+        out
+    } else {
+        vec2(0.7071, -0.7071)
+    };
+    c[1] + out * if touch { 40.0 } else { 30.0 }
 }
 
 /// Middle of a selection box's top edge and its rotate knob above it.

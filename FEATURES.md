@@ -39,6 +39,7 @@ reports features without tests and tests named here that don't exist.
 | EDIT-05 | Insert a picture or PDF | Menu › Insert picture / PDF | W D M | rust:images::tests::prepares_and_mips_pictures, rust:pdf::tests::renders_a_page, rust:images::svg_tests::svg_becomes_a_picture |
 | EDIT-06 | Crop pictures | Select a picture › Crop | W D M | rust:crop::tests::crop_round_trips_through_the_full_box |
 | EDIT-07 | Sticker library (save a selection, place it again) | Menu › Library; Selection panel › Add to library | W D M | rust:library::tests::stickers_round_trip, todo |
+| EDIT-08 | Delete button on a selection (a ✕ off its top right corner, clear of the handles) | Select › ✕ | W D M | ui:delete-button |
 
 ## Navigating the endless canvas
 

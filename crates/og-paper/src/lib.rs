@@ -2862,7 +2862,7 @@ impl App {
             -99.0
         };
         web::set_status(format!(
-            "{{\"ready\":true,\"zoom\":{:.3},\"strokes\":{},\"drawn\":{},\"erased\":{},\"undos\":{},\"deepDraw\":{:.2},\"flying\":{},\"dirty\":{},\"bookmarks\":[{}],\"timeline\":{},\"dark\":{},\"canvas\":\"{:032x}\",\"peer\":\"{:016x}\",\"net\":{},\"name\":{},\"passes\":{},\"hints\":{},\"tool\":{},\"hold\":{},\"viewOnly\":{},\"shared\":[{}]}}",
+            "{{\"ready\":true,\"zoom\":{:.3},\"strokes\":{},\"drawn\":{},\"erased\":{},\"undos\":{},\"deepDraw\":{:.2},\"flying\":{},\"dirty\":{},\"bookmarks\":[{}],\"timeline\":{},\"dark\":{},\"canvas\":\"{:032x}\",\"peer\":\"{:016x}\",\"net\":{},\"name\":{},\"passes\":{},\"hints\":{},\"tool\":{},\"hold\":{},\"viewOnly\":{},\"shared\":[{}],\"delKnob\":{},\"selected\":{}}}",
             self.cam.log10_zoom(),
             self.scene.strokes.iter().filter(|s| !s.deleted).count(),
             st.drawn,
@@ -2894,6 +2894,12 @@ impl App {
                 ))
                 .collect::<Vec<_>>()
                 .join(","),
+            // The selection's delete button, as screen fractions.
+            self.del_knob_px().map_or("null".to_string(), |k| {
+                let [w, h] = self.size();
+                format!("[{:.4},{:.4}]", k[0] / w.max(1.0), k[1] / h.max(1.0))
+            }),
+            self.edit.selection.len(),
         ));
         if self.fly.is_some() {
             self.redraw();

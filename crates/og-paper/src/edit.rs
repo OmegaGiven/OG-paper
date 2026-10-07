@@ -616,9 +616,36 @@ impl App {
         Some((c.map(|q| rot2(q, rot)), rot))
     }
 
+    /// The selection's delete button on screen (px), when it shows.
+    pub(crate) fn del_knob_px(&self) -> Option<[f64; 2]> {
+        if !self.ui.tool.selects()
+            || self.edit.sel_drag.is_some()
+            || self.edit.text.is_some()
+            || self.edit.crop.is_some()
+            || self.edit.joint.is_some()
+        {
+            return None;
+        }
+        let (c, _) = self.sel_box()?;
+        let k = self.uipp();
+        let pts = c.map(|q| pos2((q[0] / k) as f32, (q[1] / k) as f32));
+        let d = ui::delete_knob(&pts, self.ui.touch_ui);
+        Some([d.x as f64 * k, d.y as f64 * k])
+    }
+
     pub(crate) fn select_begin(&mut self, p: [f64; 2]) {
         if self.edit.crop.is_some() && self.crop_begin(p) {
             return;
+        }
+        // The selection's delete button.
+        if let Some(k) = self.del_knob_px() {
+            let reach = HANDLE_PT * self.uipp() * if self.ui.touch_ui { 1.5 } else { 1.0 };
+            if crate::dist(k, p) < reach {
+                self.sel_action(Action::Delete);
+                self.gesture = Gesture::None;
+                self.redraw();
+                return;
+            }
         }
         // A selected line or arrow: its points and the + between them.
         if self.joint_begin(p) {
@@ -1608,6 +1635,11 @@ impl App {
                 let handles = self.edit.sel_drag.is_none();
                 ov.sel_box = Some((c.map(to_pt), handles));
             }
+        }
+        // The delete button, while a selection sits still (lines and
+        // arrows too).
+        if let Some(k) = self.del_knob_px() {
+            ov.del_knob = Some(to_pt(k));
         }
         // A searched-for text, outlined for a moment.
         if let Some(c) = self.flash_corners() {
