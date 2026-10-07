@@ -476,14 +476,14 @@ impl AppItem {
             AppItem::Live => "Share live",
             AppItem::Pages => "Pages",
             AppItem::Connect => "Connect to server",
-            AppItem::LayoutMenu => "UI",
+            AppItem::LayoutMenu => "UI settings",
             AppItem::Plugins => "Plugins",
             AppItem::New => "New canvas",
             AppItem::Open => "Open",
             AppItem::Save => "Save copy",
             AppItem::Home => "Home",
             AppItem::Picture => "Insert picture / PDF",
-            AppItem::Bookmarks => "Bookmarks",
+            AppItem::Bookmarks => "Views",
             AppItem::Timeline => "Timeline",
             AppItem::FullScreen => "Full screen",
             AppItem::Tour => "Tour",
@@ -731,6 +731,8 @@ pub struct UiState {
     pub bag_open: bool,
     /// A saved tool picked up in the inventory, to put in another slot.
     pub held: Option<Preset>,
+    /// The basic tools row's slots, refilled every frame (see `Slots::Basic`).
+    basic: Vec<Option<Preset>>,
     /// The hold tool: what a right click, or a press and hold, uses.
     pub hold: Option<Preset>,
     /// Where the tool being dragged came from (it goes back there if
@@ -753,7 +755,8 @@ impl Default for UiState {
                 pressure: true,
                 dash: Dash::Solid,
                 opacity: 255,
-                advanced: false,
+                // The brush engine (its "Ink" look draws the plain line).
+                advanced: true,
                 params: Default::default(),
             },
             texture: {
@@ -902,6 +905,7 @@ impl Default for UiState {
             held: None,
             hold: None,
             drag_src: None,
+            basic: Vec::new(),
             presets_dirty: false,
         }
     }
@@ -1163,8 +1167,6 @@ pub enum Action {
     /// Save the toolbars and inventory as a pack.
     PackExport,
     OpenLocal(usize),
-    /// Upload page `.0` on this device to workspace `.1` (a new page there).
-    UploadLocal(usize, usize),
     /// Make a page here named `page_new`.
     NewLocalNamed,
     DeleteLocal(usize),
@@ -1699,6 +1701,25 @@ enum Slots {
     /// Toolbar k's hold tool (right click / press and hold; the active
     /// one's is `hold`).
     Hold(usize),
+    /// The inventory's basic tools: every tool at its defaults, always
+    /// there to assign from; never used up or replaced.
+    Basic,
+}
+
+/// Every tool with its default settings (the basic tools row).
+fn basic_presets() -> &'static [Preset] {
+    static P: std::sync::OnceLock<Vec<Preset>> = std::sync::OnceLock::new();
+    P.get_or_init(|| {
+        let mut d = UiState::default();
+        TOOLS
+            .iter()
+            .chain([Tool::Picker].iter())
+            .map(|&t| {
+                d.tool = t;
+                d.preset()
+            })
+            .collect()
+    })
 }
 
 /// The quick bar (bottom middle) and, when its bag button is on, the
@@ -1957,6 +1978,7 @@ fn number_button(
     active: bool,
 ) -> bool {
     let resp = ui.interact(r, Id::new(("bar_num", k)), Sense::click());
+    named(&resp, format!("Toolbar {}", k + 1));
     let p = ui.painter();
     rect_shadow(p, r, 8.0);
     p.rect_filled(
@@ -2121,8 +2143,15 @@ fn inventory_at(
     }
     let inner = area.width() - 24.0;
     let cols = ((inner + gap) / (s + gap)).floor().max(2.0) as usize;
+    // Phones: a fixed row of the basic tools along the bottom, to assign
+    // from even with an empty inventory.
+    let basics = st.touch_ui;
+    let footer = if basics { s + 26.0 } else { 0.0 };
+    if basics {
+        st.basic = basic_presets().iter().map(|p| Some(*p)).collect();
+    }
     // Fill the panel with empty slots, like a game's inventory grid.
-    let fit = (((area.height() - 90.0) + gap) / (s + gap))
+    let fit = (((area.height() - 90.0 - footer) + gap) / (s + gap))
         .floor()
         .max(1.0) as usize;
     let want = (cols * fit).max(st.inventory.len().div_ceil(cols) * cols);
@@ -2198,7 +2227,11 @@ fn inventory_at(
                     });
                     help(ui, "Drag a tool to a slot — here or in a toolbar — or onto 🗑 to throw it away. Tap one to use it.");
                     ui.add_space(6.0);
-                    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                    let grid_h = (ui.available_height() - footer).max(s);
+                    egui::ScrollArea::vertical()
+                        .max_height(grid_h)
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
                         let (all, _) = ui.allocate_exact_size(vec2(inner, rows as f32 * (s + gap) - gap), Sense::hover());
                         for i in 0..st.inventory.len() {
                             let r = Rect::from_min_size(
@@ -2208,6 +2241,24 @@ fn inventory_at(
                             slot(ui, st, r, Slots::Inventory, i, fx);
                         }
                     });
+                    if basics {
+                        ui.add_space(4.0);
+                        ui.label(egui::RichText::new("Basic tools — tap one, then a slot").small().weak());
+                        egui::ScrollArea::horizontal()
+                            .id_salt("basic_tools")
+                            .auto_shrink([false, true])
+                            .show(ui, |ui| {
+                                let n = st.basic.len();
+                                let (all, _) = ui.allocate_exact_size(
+                                    vec2(n as f32 * (s + gap) - gap, s),
+                                    Sense::hover(),
+                                );
+                                for i in 0..n {
+                                    let r = Rect::from_min_size(all.min + vec2(i as f32 * (s + gap), 0.0), Vec2::splat(s));
+                                    slot(ui, st, r, Slots::Basic, i, fx);
+                                }
+                            });
+                    }
                 });
         });
 }
@@ -2400,14 +2451,13 @@ fn toolbar_menu(
                                 );
                                 slot(ui, st, r, Slots::Row(k), i, fx);
                             }
-                            // The one hold slot, on the active toolbar's row.
-                            if active {
-                                let hr = Rect::from_min_size(
-                                    at(x0 + (n + 1) as f32 * (s + gap)),
-                                    Vec2::splat(s),
-                                );
-                                slot(ui, st, hr, Slots::Hold(k), 0, fx);
-                            }
+                            // The hold slot, on every row: there is one hold
+                            // tool, so each shows (and sets) the same one.
+                            let hr = Rect::from_min_size(
+                                at(x0 + (n + 1) as f32 * (s + gap)),
+                                Vec2::splat(s),
+                            );
+                            slot(ui, st, hr, Slots::Hold(k), 0, fx);
                             // Delete.
                             let dr = Rect::from_min_size(
                                 at(x0 + (n + 2) as f32 * (s + gap)),
@@ -2549,12 +2599,25 @@ struct SlotFx {
     say: Option<String>,
 }
 
+/// Put a tool in the first free inventory slot (it grows when full).
+fn stash_in_inventory(st: &mut UiState, it: Option<Preset>, fx: &mut SlotFx) {
+    if it.is_none() {
+        return;
+    }
+    match st.inventory.iter().position(|x| x.is_none()) {
+        Some(k) => st.inventory[k] = it,
+        None => st.inventory.push(it),
+    }
+    fx.say = Some("What was there went to the inventory".into());
+}
+
 fn slot_mut(st: &mut UiState, which: Slots, i: usize) -> &mut Option<Preset> {
     match which {
         Slots::Row(k) if k == st.active_bar => &mut st.hotbar[i],
         Slots::Row(k) => &mut st.toolbars[k].slots[i],
         Slots::Inventory => &mut st.inventory[i],
         Slots::Hold(_) => &mut st.hold,
+        Slots::Basic => &mut st.basic[i],
     }
 }
 
@@ -2567,11 +2630,15 @@ fn slot(ui: &mut egui::Ui, st: &mut UiState, rect: Rect, which: Slots, i: usize,
     } else {
         Sense::click()
     };
-    let resp = ui.interact(rect, Id::new(("slot", which, i)), sense);
+    // Per panel: the main toolbar's slots show in the quick bar and in the
+    // toolbar list at once, and the same id twice mixed up their taps.
+    let resp = ui.interact(rect, ui.id().with(("slot", which, i)), sense);
     named(
         &resp,
         match which {
             Slots::Hold(_) => "Hold slot".to_string(),
+            Slots::Basic => format!("Basic {}", basic_presets()[i].tool.name()),
+            Slots::Inventory => format!("Inventory {}", i + 1),
             _ => format!("Slot {}", i + 1),
         },
     );
@@ -2590,9 +2657,23 @@ fn slot(ui: &mut egui::Ui, st: &mut UiState, rect: Rect, which: Slots, i: usize,
     if released && over {
         if let Some((w, j)) = st.drag_src.take() {
             let held = st.held.take();
-            let prev = std::mem::replace(slot_mut(st, which, i), held);
-            if prev.is_some() {
-                *slot_mut(st, w, j) = prev;
+            if which == Slots::Basic {
+                // The basic tools stay as they are: it goes back.
+                *slot_mut(st, w, j) = held;
+                if w != Slots::Basic {
+                    fx.say = Some("The basic tools always stay — drop it on another slot".into());
+                }
+            } else {
+                let prev = std::mem::replace(slot_mut(st, which, i), held);
+                if prev.is_some() {
+                    if w == Slots::Basic {
+                        // A copy of a basic tool took its place: keep what
+                        // was there in the inventory.
+                        stash_in_inventory(st, prev, fx);
+                    } else {
+                        *slot_mut(st, w, j) = prev;
+                    }
+                }
             }
             fx.changed = true;
         }
@@ -2661,7 +2742,23 @@ fn slot(ui: &mut egui::Ui, st: &mut UiState, rect: Rect, which: Slots, i: usize,
     // The hold slot is like any other: tapped, its tool becomes the main
     // one. It changes only when empty (a tap saves the current tool) or by
     // putting a tool down on it from the inventory.
-    if resp.clicked() {
+    if resp.clicked() && which == Slots::Basic {
+        // Tap: a copy in hand, to tap onto a slot (or use it straight away
+        // with the inventory closed).
+        if st.bag_open {
+            if st.held.is_none() {
+                st.held = item;
+                fx.say = Some(format!(
+                    "{}: tap a slot to put it there",
+                    item.map_or(String::new(), |it| describe(&it))
+                ));
+            } else {
+                fx.say = Some("The basic tools always stay — tap another slot".into());
+            }
+        } else if let Some(it) = item {
+            st.apply(&it);
+        }
+    } else if resp.clicked() {
         if st.bag_open && st.held.is_some() {
             // Put down (or swap with what is here) what is in hand.
             let held = st.held.take();
@@ -3112,6 +3209,19 @@ fn segmented(ui: &mut egui::Ui, items: &[&str], cur: usize, touch: bool) -> Opti
     hit
 }
 
+/// The phone settings sheet's height: smallest, largest, and "tall" (a tap
+/// on its handle), as screen fractions.
+const SHEET_MIN: f32 = 0.25;
+const SHEET_MAX: f32 = 0.92;
+const SHEET_TALL: f32 = 0.85;
+
+/// Keep the layout (buttons, panel size) for next time.
+fn save_layout(l: &crate::layout::Layout) {
+    let mut p = crate::prefs::load();
+    p.insert("layout".into(), l.encode());
+    crate::prefs::save(&p);
+}
+
 fn tool_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) {
     let tool = st.tool;
     if st.hide_panel || !tool.has_panel() || (tool.selects() && st.sel.count == 0) {
@@ -3293,6 +3403,36 @@ fn tool_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) 
     };
     let mut dial_hue = st.dial_hue;
     let mut pick = false;
+    // The window's size: as the person last left it (resized by its
+    // corner grip), within the screen. Its top left stays put while
+    // resizing, so it is the pivot; it starts in the Edit layout corner.
+    let max_size = vec2(
+        (screen.width() - 2.0 * m).max(280.0),
+        (screen.height() - 2.0 * m).max(260.0),
+    );
+    let def_size = vec2(
+        if touch { 360.0 } else { 330.0 },
+        (screen.height() - 2.0 * m - 40.0).min(640.0),
+    );
+    let size = st
+        .layout
+        .panel_size
+        .map_or(def_size, |[w, h]| vec2(w, h))
+        .clamp(vec2(280.0, 260.0), max_size);
+    let start = pos2(
+        if pc.is_right() {
+            corner.x - size.x
+        } else {
+            corner.x
+        },
+        if align.y() == egui::Align::Max {
+            corner.y - size.y
+        } else {
+            corner.y
+        },
+    );
+    // The sheet's height (a screen fraction), dragged by its handle.
+    let sheet_frac = st.layout.sheet.unwrap_or(0.5).clamp(SHEET_MIN, SHEET_MAX);
     let area = if sheet {
         egui::Area::new(Id::new("tool_panel"))
             .order(Order::Foreground)
@@ -3302,18 +3442,16 @@ fn tool_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) 
             .order(Order::Foreground)
             .movable(true)
             .constrain(true)
-            .pivot(align)
-            .default_pos(corner)
+            .pivot(Align2::LEFT_TOP)
+            .default_pos(start)
     };
     let shown = area.show(ctx, |ui| {
         // Light like the rest of the controls, whatever the system theme.
         ui.style_mut().visuals = egui::Visuals::light();
         let w = if sheet {
             screen.width() - 30.0
-        } else if touch {
-            330.0
         } else {
-            300.0
+            size.x - 30.0
         };
         let frame = egui::Frame::new()
             .fill(FACE)
@@ -3340,7 +3478,7 @@ fn tool_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) 
                 spread: 0,
                 color: Color32::from_black_alpha(45),
             });
-        frame.show(ui, |ui| {
+        let framed = frame.show(ui, |ui| {
             ui.set_width(w);
             ui.set_max_width(w);
             if touch {
@@ -3364,16 +3502,32 @@ fn tool_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) 
                 Color32::from_rgb(207, 201, 189),
             );
             if sheet {
+                // Drag up for more room, down for less; all the way down
+                // tucks it away. A tap switches between half and tall.
                 if hresp.dragged() {
-                    st.sheet_drag += hresp.drag_delta().y;
+                    let dy = hresp.drag_delta().y;
+                    st.sheet_drag += dy;
+                    let f = (sheet_frac - dy / screen.height()).clamp(SHEET_MIN, SHEET_MAX);
+                    st.layout.sheet = Some(f);
                 }
-                if hresp.clicked() || (hresp.drag_stopped() && st.sheet_drag > 24.0) {
-                    st.panel_open = Some(false);
-                }
-                if !hresp.dragged() {
+                if hresp.drag_stopped() {
+                    if st.sheet_drag > 0.0 && sheet_frac <= SHEET_MIN + 0.01 {
+                        st.panel_open = Some(false);
+                        st.layout.sheet = Some(0.5);
+                    }
                     st.sheet_drag = 0.0;
+                    save_layout(&st.layout);
                 }
-                hresp.on_hover_text("Swipe down to tuck the settings away");
+                if hresp.clicked() {
+                    st.layout.sheet = Some(if sheet_frac < 0.7 { SHEET_TALL } else { 0.5 });
+                    save_layout(&st.layout);
+                }
+                hresp.widget_info(|| {
+                    egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Sheet handle")
+                });
+                hresp.on_hover_text(
+                    "Drag up for more room, down to tuck away; tap for half or tall",
+                );
             }
             let title = if tool.selects() {
                 format!("Selection ({})", st.sel.count)
@@ -3418,55 +3572,146 @@ fn tool_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) 
             if quick_strip(ui, st, touch) && tabs.contains(&PanelTab::Color) {
                 st.panel_tab.insert(key, PanelTab::Color);
             }
-            if tabs.len() > 1 {
-                egui::ScrollArea::horizontal()
-                    .id_salt("panel_tabs")
-                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
-                    .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = 4.0;
-                            for &t in tabs {
-                                if pill(ui, t.name(), t == cur, touch).clicked() {
-                                    st.panel_tab.insert(key, t);
-                                }
-                            }
-                        });
-                    });
-            }
-            // The tab's settings, scrolling when they don't fit: the sheet
-            // keeps about half the screen, the window most of it.
-            let used = ui.min_rect().height();
-            let total = if sheet {
-                screen.height() * 0.5
+            // Wide enough (a resized window, a tablet): the color in a
+            // column of its own, the other tabs beside it.
+            let wide = w >= 520.0 && tabs.contains(&PanelTab::Color);
+            let side_tabs: Vec<PanelTab> = if wide {
+                tabs.iter()
+                    .copied()
+                    .filter(|t| *t != PanelTab::Color)
+                    .collect()
             } else {
-                screen.height() - 2.0 * m - 40.0
+                tabs.to_vec()
             };
-            let body_h = (total - used - 20.0).max(120.0);
-            PANEL_TAB.with(|c| c.set(cur));
-            egui::ScrollArea::vertical()
-                .id_salt(("panel_body", key))
-                .max_height(body_h)
-                .min_scrolled_height(body_h)
-                .auto_shrink([false, !(sheet && tabs.len() > 1)])
-                .show(ui, |ui| {
-                    // The color dial is as wide as it is given: keep it
-                    // to a size that leaves room for the rest.
-                    if cur == PanelTab::Color || tool == Tool::Highlighter {
-                        let dw = ui.available_width().min(if sheet { 230.0 } else { 260.0 });
-                        let pad = (ui.available_width() - dw) * 0.5;
-                        ui.horizontal(|ui| {
-                            ui.add_space(pad);
-                            ui.vertical(|ui| {
-                                ui.set_width(dw);
-                                pick = panel_body(ui, st, tool, touch, &mut dial_hue, actions);
+            let side_cur = if wide && cur == PanelTab::Color {
+                side_tabs.first().copied().unwrap_or(PanelTab::All)
+            } else {
+                cur
+            };
+            // The settings scroll when they don't fit: the sheet keeps its
+            // dragged share of the screen, the window its size.
+            let total = if sheet {
+                screen.height() * sheet_frac
+            } else {
+                size.y
+            };
+            let fixed = !(sheet && tabs.len() <= 1);
+            let tab_row = |ui: &mut egui::Ui, st: &mut UiState| {
+                if side_tabs.len() > 1 {
+                    egui::ScrollArea::horizontal()
+                        .id_salt("panel_tabs")
+                        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 4.0;
+                                for &t in &side_tabs {
+                                    if pill(ui, t.name(), t == side_cur, touch).clicked() {
+                                        st.panel_tab.insert(key, t);
+                                    }
+                                }
                             });
                         });
-                    } else {
-                        pick = panel_body(ui, st, tool, touch, &mut dial_hue, actions);
-                    }
+                }
+            };
+            if wide {
+                let top = ui.min_rect().height();
+                let body_h = (total - top - 30.0).max(120.0);
+                let dw = (w * 0.42).min(300.0);
+                ui.horizontal_top(|ui| {
+                    ui.vertical(|ui| {
+                        ui.set_width(dw);
+                        PANEL_TAB.with(|c| c.set(PanelTab::Color));
+                        egui::ScrollArea::vertical()
+                            .id_salt(("panel_color", key))
+                            .max_height(body_h)
+                            .min_scrolled_height(body_h)
+                            .auto_shrink([false, !fixed])
+                            .show(ui, |ui| {
+                                pick |= panel_body(ui, st, tool, touch, &mut dial_hue, actions);
+                            });
+                    });
+                    ui.separator();
+                    ui.vertical(|ui| {
+                        let rw = ui.available_width();
+                        ui.set_width(rw);
+                        ui.style_mut().spacing.slider_width = (rw - 170.0).clamp(90.0, 320.0);
+                        tab_row(ui, st);
+                        let used = ui.min_rect().height();
+                        PANEL_TAB.with(|c| c.set(side_cur));
+                        egui::ScrollArea::vertical()
+                            .id_salt(("panel_body", key))
+                            .max_height((body_h - used).max(80.0))
+                            .min_scrolled_height((body_h - used).max(80.0))
+                            .auto_shrink([false, !fixed])
+                            .show(ui, |ui| {
+                                pick |= panel_body(ui, st, tool, touch, &mut dial_hue, actions);
+                            });
+                    });
                 });
+            } else {
+                tab_row(ui, st);
+                let used = ui.min_rect().height();
+                let body_h = (total - used - 30.0).max(120.0);
+                PANEL_TAB.with(|c| c.set(cur));
+                egui::ScrollArea::vertical()
+                    .id_salt(("panel_body", key))
+                    .max_height(body_h)
+                    .min_scrolled_height(body_h)
+                    .auto_shrink([false, !fixed])
+                    .show(ui, |ui| {
+                        // The color dial is as wide as it is given: keep it
+                        // to a size that leaves room for the rest.
+                        if cur == PanelTab::Color || tool == Tool::Highlighter {
+                            let dw = ui.available_width().min(if sheet { 260.0 } else { 300.0 });
+                            let pad = (ui.available_width() - dw) * 0.5;
+                            ui.horizontal(|ui| {
+                                ui.add_space(pad);
+                                ui.vertical(|ui| {
+                                    ui.set_width(dw);
+                                    pick = panel_body(ui, st, tool, touch, &mut dial_hue, actions);
+                                });
+                            });
+                        } else {
+                            pick = panel_body(ui, st, tool, touch, &mut dial_hue, actions);
+                        }
+                    });
+            }
             PANEL_TAB.with(|c| c.set(PanelTab::All));
         });
+        if !sheet {
+            // The corner grip: drag to resize the window.
+            let r = framed.response.rect;
+            let g = Rect::from_min_max(r.max - Vec2::splat(if touch { 26.0 } else { 18.0 }), r.max);
+            let resp = ui.interact(g, Id::new("panel_resize"), Sense::drag());
+            resp.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Resize settings")
+            });
+            if resp.hovered() || resp.dragged() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeNwSe);
+            }
+            let p = ui.painter();
+            let col = if resp.hovered() || resp.dragged() {
+                INKY
+            } else {
+                Color32::from_gray(170)
+            };
+            for k in [4.0, 8.0, 12.0] {
+                p.line_segment(
+                    [
+                        pos2(r.max.x - 4.0 - k, r.max.y - 4.0),
+                        pos2(r.max.x - 4.0, r.max.y - 4.0 - k),
+                    ],
+                    Stroke::new(1.5, col),
+                );
+            }
+            if resp.dragged() {
+                let n = (size + resp.drag_delta()).clamp(vec2(280.0, 260.0), max_size);
+                st.layout.panel_size = Some([n.x, n.y]);
+            }
+            if resp.drag_stopped() {
+                save_layout(&st.layout);
+            }
+        }
     });
     // The sheet's height, so the corner buttons ride above it.
     let h = if sheet {
@@ -4053,11 +4298,7 @@ fn portal_section(
             actions.push(Action::PortalHere);
         }
         for (i, name) in st.bookmark_names.iter().enumerate() {
-            if ui
-                .button(name)
-                .on_hover_text("Show this bookmark")
-                .clicked()
-            {
+            if ui.button(name).on_hover_text("Show this view").clicked() {
                 actions.push(Action::PortalBookmark(i));
             }
         }
@@ -6484,7 +6725,7 @@ fn layout_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>
                 .show(ui, |ui| {
                     ui.set_width(w);
                     ui.horizontal(|ui| {
-                        ui.strong("UI");
+                        ui.strong("UI settings");
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui.button("×").on_hover_text("Close").clicked() {
                                 st.layout_open = false;
@@ -6981,34 +7222,54 @@ fn pages_toolbar(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>)
                 st.page_new = None;
                 st.ws_prompt = None;
             }
-            let targets: Vec<(usize, String)> = st
-                .servers
-                .iter()
-                .enumerate()
-                .filter(|(_, s)| s.admin())
-                .map(|(k, s)| (k, s.name.clone()))
-                .collect();
-            match targets.as_slice() {
-                [] => {}
-                [(k, name)] => {
-                    if ui
-                        .button("Upload")
-                        .on_hover_text(format!("Put a copy of this page on {name}"))
-                        .clicked()
-                    {
-                        actions.push(Action::UploadLocal(i, *k));
-                    }
-                }
-                many => {
-                    ui.menu_button("Upload", |ui| {
-                        for (k, name) in many {
-                            if ui.button(format!("To {name}")).clicked() {
-                                actions.push(Action::UploadLocal(i, *k));
-                                ui.close();
-                            }
+            // Upload to… any connected workspace (and one of its folders);
+            // where you can't, it says why.
+            if !st.servers.is_empty() {
+                ui.menu_button("Upload to…", |ui| {
+                    let servers = st.servers.clone();
+                    for (k, sv) in servers.iter().enumerate() {
+                        if !sv.admin() {
+                            ui.add_enabled(false, egui::Button::new(&sv.name))
+                                .on_disabled_hover_text(if sv.account.is_some() {
+                                    "Your account there can't add pages (an admin can)"
+                                } else {
+                                    "Sign in there as an admin to add pages"
+                                });
+                            continue;
                         }
-                    });
-                }
+                        let mut go = |ui: &mut egui::Ui, folder: String| {
+                            st.ws_queue.push(WsReq {
+                                server: k,
+                                op: "upload_local",
+                                page: Some(i),
+                                name: String::new(),
+                                folder,
+                            });
+                            actions.push(Action::WsApply);
+                            ui.close();
+                        };
+                        if sv.folders.is_empty() {
+                            if ui
+                                .button(&sv.name)
+                                .on_hover_text(format!("Put a copy of this page on {}", sv.name))
+                                .clicked()
+                            {
+                                go(ui, String::new());
+                            }
+                        } else {
+                            ui.menu_button(&sv.name, |ui| {
+                                if ui.button("Top level").clicked() {
+                                    go(ui, String::new());
+                                }
+                                for f in &sv.folders {
+                                    if ui.button(format!("📁 {f}")).clicked() {
+                                        go(ui, f.clone());
+                                    }
+                                }
+                            });
+                        }
+                    }
+                });
             }
             if !p.current && ui.button("Delete").clicked() {
                 actions.push(Action::DeleteLocal(i));

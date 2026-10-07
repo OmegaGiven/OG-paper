@@ -87,6 +87,9 @@ struct Session {
     user: String,
     csrf: String,
     last: Instant,
+    /// An account token for apps opened from this session (see
+    /// `app_account`), made the first time one is needed.
+    app_token: Option<String>,
 }
 
 /// Folders and which folder each page is in ("" is the top).
@@ -126,6 +129,9 @@ pub struct Console {
     /// Failed sign-ins per user name: count, since.
     fails: HashMap<String, (u32, Instant)>,
     pub ops: Vec<HubOp>,
+    /// The server hands out the web app at /app/: its links use that (a
+    /// public web app may not reach a private server).
+    pub web_app: bool,
 }
 
 const ITERATIONS: u32 = 120_000;
@@ -235,6 +241,7 @@ impl Console {
             folders: Folders::default(),
             fails: HashMap::new(),
             ops: vec![],
+            web_app: false,
         };
         if let Some(v) = std::fs::read_to_string(dir.join("users.json"))
             .ok()
@@ -343,6 +350,34 @@ impl Console {
         let (name, csrf) = (s.user.clone(), s.csrf.clone());
         let user = self.users.iter().find(|u| u.name == name)?.clone();
         Some((user, csrf))
+    }
+
+    /// The signed-in browser's account for an app it opens (user name and
+    /// an account token, as an app signing in with a password gets), so
+    /// "Open in the web app" opens with that account's rights.
+    pub fn app_account(&mut self, req: &WebReq) -> Option<(String, String)> {
+        use sha2::Digest;
+        let (user, _) = self.session(req)?;
+        let cookie = req
+            .header("cookie")?
+            .split(';')
+            .find_map(|c| c.trim().strip_prefix(&format!("{COOKIE}=")))?
+            .to_string();
+        if let Some(t) = self.sessions.get(&cookie).and_then(|s| s.app_token.clone()) {
+            return Some((user.name, t));
+        }
+        let token = hex(&crate::seal::random_secret());
+        let d = hex(&sha2::Sha256::digest(token.as_bytes()));
+        if let Some(u) = self.users.iter_mut().find(|u| u.name == user.name) {
+            u.tokens.push(d);
+            let extra = u.tokens.len().saturating_sub(20);
+            u.tokens.drain(..extra);
+        }
+        self.save_users();
+        if let Some(s) = self.sessions.get_mut(&cookie) {
+            s.app_token = Some(token.clone());
+        }
+        Some((user.name, token))
     }
 
     /// The tab bar for the home page: live when signed in, greyed (each tab
@@ -509,6 +544,7 @@ impl Console {
                 user: name,
                 csrf,
                 last: Instant::now(),
+                app_token: None,
             },
         );
         let mut r = redirect(&next);
@@ -1075,7 +1111,18 @@ document.querySelectorAll('time[data-t]').forEach(e => e.textContent = ago(+e.da
                 keys.view_token()
             };
             let app_link = format!("{base}/p/{id}?k={edit}");
-            let web_link = format!("{WEB_APP}#join={base}/p/{id}&k={edit}");
+            // The server's own web app when it has one (same address, so
+            // browsers let it connect), else the public one.
+            let app = if self.web_app {
+                format!(
+                    "{}/app/",
+                    base.replacen("wss://", "https://", 1)
+                        .replacen("ws://", "http://", 1)
+                )
+            } else {
+                WEB_APP.to_string()
+            };
+            let web_link = format!("{app}#join={base}/p/{id}&k={edit}");
             let mut tools = String::new();
             if role.organizes() {
                 tools += &format!(

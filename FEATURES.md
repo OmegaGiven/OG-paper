@@ -46,13 +46,13 @@ reports features without tests and tests named here that don't exist.
 |---|---|---|---|---|
 | NAV-01 | Endless zoom in and out (exact at any depth) | Mouse wheel, pinch, trackpad | W D M | ui:tools-tour, ui:zoom-home, rust:camera::tests::zoom_in_and_out_1e30_is_lossless, rust:addr::tests::origin_is_exact_at_huge_depth |
 | NAV-02 | Pan | Right-drag, two fingers, Tool button › Pan | W D M | rust:camera::tests::point_stays_put_under_cursor_at_depth, todo |
-| NAV-03 | Home: fly back to where the canvas starts | Menu › Home; Menu › Bookmarks › Home; ⌂ on the folded bookmarks bar | W D M | ui:tools-tour, ui:zoom-home |
-| NAV-04 | Bookmarks: save a view, fly back to it, rename, delete | Menu › Bookmarks | W D M | ui:bookmarks, rust:snapshot::tests::roundtrip_keeps_strokes_timeline_bookmarks_and_view |
-| NAV-05 | Bookmarks folded into a bar (Home first, initials, + to save) | Menu › Bookmarks › fold (⌃) | W | ui:bookmarks |
+| NAV-03 | Home: fly back to where the canvas starts | Menu › Home; Menu › Views › Home; ⌂ on the folded bookmarks bar | W D M | ui:tools-tour, ui:zoom-home |
+| NAV-04 | Views: save a view, fly back to it, rename, delete | Menu › Views | W D M | ui:bookmarks, rust:snapshot::tests::roundtrip_keeps_strokes_timeline_bookmarks_and_view |
+| NAV-05 | Views folded into a bar (Home first, initials, + to save) | Menu › Views › fold (⌃) | W | ui:bookmarks |
 | NAV-06 | Search text and fly to it | Menu › Search text | W D M | rust:search::tests::finds_case_insensitively_with_excerpt, todo |
-| NAV-07 | Timeline: scrub and replay the drawing, restore an older state, bookmark a moment | Menu › Timeline (its Bookmark button keeps the moment); Menu › Bookmarks flies back to it | W D M | ui:timeline-bookmark, ui:tools-tour, rust:timeline::tests::replays_draws_and_erases, rust:timeline::tests::window_leaves_out_older_ink |
+| NAV-07 | Timeline: scrub and replay the drawing, restore an older state, bookmark a moment | Menu › Timeline (its Bookmark button keeps the moment); Menu › Views flies back to it | W D M | ui:timeline-bookmark, ui:tools-tour, rust:timeline::tests::replays_draws_and_erases, rust:timeline::tests::window_leaves_out_older_ink |
 | NAV-08 | Portals: a shape or outline that shows a saved view; zoom through it | Tool button › Portal | W D M | rust:portal::tests::a_portal_shows_its_view_at_every_zoom, rust:portal::tests::zooming_down_the_endless_street_goes_round, rust:portal::tests::portals_survive_saving_and_old_apps_see_a_shape |
-| NAV-09 | Endless street demo (infinite zoom loop through a portal) | Try mode › Menu › Bookmarks › Endless street | W | rust:portal::tests::zooming_down_the_endless_street_goes_round, todo |
+| NAV-09 | Endless street demo (infinite zoom loop through a portal) | Try mode › Menu › Views › Endless street | W | rust:portal::tests::zooming_down_the_endless_street_goes_round, todo |
 
 ## Pages and files
 
@@ -98,6 +98,7 @@ reports features without tests and tests named here that don't exist.
 | SRV-04 | Console pages as folders: make, rename, move, delete (tagged), restore | server › Pages | S | rust:hubconsole::tests::roles_decide_what_the_console_allows |
 | SRV-05 | Users and roles: admin, subadmin, user, viewer; reset and change passwords | server › Users; server › Password | S | rust:hubconsole::tests::roles_decide_what_the_console_allows |
 | SRV-06 | Automation API (JSON over WebSocket at /api; JS and Python clients) | `ws://server/api` | S | todo |
+| SRV-07 | Signed in, you get your account's rights: the app signs open pages in with a Pages sign-in (a view-only page can draw at once), and "Open in the web app" from a signed-in browser opens with that account | Pages › server › Sign in; the server's home page | W D M S | ui:sign-in-upgrade, rust:hub::tests::page_sign_in_gives_drawing_rights_but_not_to_viewers, rust:hubpage::tests::signed_in_the_web_app_link_carries_the_account |
 
 ## Layout and settings
 
@@ -105,20 +106,20 @@ reports features without tests and tests named here that don't exist.
 |---|---|---|---|---|
 | UI-01 | Menu (gear, top right) grouped in sections | gear button | W D M | ui:menu |
 | UI-02 | Tool fan (undo, redo, tools) | Tool button (bottom right) | W D M | ui:draw-undo |
-| UI-03 | Quick toolbar with numbered slots and one hold slot (tap it to use its tool; set it from the inventory) | Menu › UI › Quick toolbar | W D M | ui:tools-tour, ui:hold-slot, rust:hotbar::tests::slots_round_trip, rust:hotbar::tests::names_and_many_toolbars_survive |
-| UI-04 | Inventory: drag tools between slots; drag onto the trash to delete | Quick toolbar › bag | W D M | rust:hotbar::tests::inventory_keeps_a_free_row, todo |
-| UI-05 | Radial toolbar; page shaded only under an open fan | Menu › UI › Radial toolbar | W D M | rust:layout::tests::fans_open_toward_the_middle, todo |
-| UI-06 | Edit layout (move the buttons) | Menu › UI › Edit layout | W D M | rust:layout::tests::layouts_round_trip, todo |
-| UI-07 | UI size | Menu › UI › UI size | W D M | todo |
-| UI-08 | Hide helper text | Menu › UI › Hints | W D M | todo |
-| UI-09 | Dark mode and grid | Menu › UI | W D M | todo |
+| UI-03 | Quick toolbar with numbered slots and one hold slot (tap it to use its tool; set it from the inventory) | Menu › UI settings › Quick toolbar | W D M | ui:tools-tour, ui:hold-slot, rust:hotbar::tests::slots_round_trip, rust:hotbar::tests::names_and_many_toolbars_survive |
+| UI-04 | Inventory: drag tools between slots; drag onto the trash to delete; on phones a fixed row of basic tools to assign from | Quick toolbar › bag | W D M | rust:hotbar::tests::inventory_keeps_a_free_row, todo, ui:basic-tools |
+| UI-05 | Radial toolbar; page shaded only under an open fan | Menu › UI settings › Radial toolbar | W D M | rust:layout::tests::fans_open_toward_the_middle, todo |
+| UI-06 | Edit layout (move the buttons) | Menu › UI settings › Edit layout | W D M | rust:layout::tests::layouts_round_trip, todo |
+| UI-07 | UI size | Menu › UI settings › UI size | W D M | todo |
+| UI-08 | Hide helper text | Menu › UI settings › Hints | W D M | todo |
+| UI-09 | Dark mode and grid | Menu › UI settings | W D M | todo |
 | UI-10 | Hotkeys (view and change) | Menu › Hotkeys | W D | rust:hotkeys::tests::defaults_have_no_clashes, rust:hotkeys::tests::keymap_changes_round_trip_and_keys_move |
 | UI-11 | Full screen | Menu › Full screen | W | todo |
 | UI-12 | Movable cards (drag the title; double-tap to reset) | any card's title bar | W | ui:bookmarks |
 | UI-13 | Phone keyboard for the app's text boxes | tap any text box on a phone | W | ui:share-live |
 | UI-14 | Paste, copy and cut go to the focused text box | Ctrl+V in a text box | W D | ui:share-live |
 | UI-15 | Try mode tour | omegagiven.github.io/OG-paper/try/ › Tour | W | todo |
-| UI-16 | Tool panel: a sheet along the bottom on phones (tucks into a strip), a movable window on wider screens; width and opacity always in view, the rest in tabs | tap the strip / the panel button | W D M | ui:tool-panel |
+| UI-16 | Tool panel: a sheet along the bottom on phones (drag it taller or tuck it into a strip), a movable, resizable window on wider screens (wide: color in its own column); width and opacity always in view, the rest in tabs | tap the strip / the panel button | W D M | ui:tool-panel |
 
 ## Plugins
 

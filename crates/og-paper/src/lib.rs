@@ -1516,7 +1516,6 @@ impl App {
                     web::page_request("open-page", &key);
                 }
             }
-            Action::UploadLocal(i, server) => self.upload_local_page(i, server, String::new()),
             Action::NewLocalNamed => {
                 let name = page_name(&self.ui.page_new.take().unwrap_or_default());
                 self.net_stop();
@@ -2308,9 +2307,9 @@ impl App {
             format!("View {}", self.bookmarks.len() + 1)
         };
         self.say(if when.is_some() {
-            format!("Bookmarked the moment \"{name}\"")
+            format!("Saved the moment \"{name}\" as a view")
         } else {
-            format!("Bookmarked \"{name}\"")
+            format!("Saved the view \"{name}\"")
         });
         self.bookmarks.push(Bookmark {
             name,
@@ -2706,11 +2705,15 @@ impl App {
             Cmd::Pages(json) => self.web_pages(&json),
             Cmd::Plugin(bytes, quiet) => self.plugin_install(bytes, quiet),
             Cmd::Pack(bytes) => self.pack_install(&bytes),
-            Cmd::AddServer(link) => {
+            Cmd::AddServer(link, account) => {
                 if !self.ui.pages_open {
                     self.pages_toggle();
                 }
-                self.add_server(&link);
+                let account = account
+                    .rsplit_once(':')
+                    .filter(|(u, t)| !u.is_empty() && !t.is_empty())
+                    .map(|(u, t)| (u.to_string(), t.to_string()));
+                self.add_server(&link, account);
             }
             Cmd::Name(name) => {
                 if !name.trim().is_empty() {
@@ -2842,7 +2845,7 @@ impl App {
             -99.0
         };
         web::set_status(format!(
-            "{{\"ready\":true,\"zoom\":{:.3},\"strokes\":{},\"drawn\":{},\"erased\":{},\"undos\":{},\"deepDraw\":{:.2},\"flying\":{},\"dirty\":{},\"bookmarks\":[{}],\"timeline\":{},\"dark\":{},\"canvas\":\"{:032x}\",\"peer\":\"{:016x}\",\"net\":{},\"name\":{},\"passes\":{},\"hints\":{},\"tool\":{},\"hold\":{}}}",
+            "{{\"ready\":true,\"zoom\":{:.3},\"strokes\":{},\"drawn\":{},\"erased\":{},\"undos\":{},\"deepDraw\":{:.2},\"flying\":{},\"dirty\":{},\"bookmarks\":[{}],\"timeline\":{},\"dark\":{},\"canvas\":\"{:032x}\",\"peer\":\"{:016x}\",\"net\":{},\"name\":{},\"passes\":{},\"hints\":{},\"tool\":{},\"hold\":{},\"viewOnly\":{}}}",
             self.cam.log10_zoom(),
             self.scene.strokes.iter().filter(|s| !s.deleted).count(),
             st.drawn,
@@ -2862,6 +2865,7 @@ impl App {
             self.ui.hints,
             web::json_str(self.ui.tool.name()),
             web::json_str(self.ui.hold.map_or("", |h| h.tool.name())),
+            self.view_only,
         ));
         if self.fly.is_some() {
             self.redraw();

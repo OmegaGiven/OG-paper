@@ -32,10 +32,10 @@ export default {
     await t.wait(async () => !(await t.state()).timeline?.on, 'back to now');
     await t.scribble(cx, t.h * 0.55, span);
 
-    await t.caption('Later: Bookmarks › First line');
+    await t.caption('Later: Views › First line');
     await t.tap('Menu');
-    await t.tap('Bookmarks');
-    const card = '.og-card[data-name=Bookmarks]';
+    await t.tap('Views');
+    const card = '.og-card[data-name=Views]';
     const item = await t.el(`${card} .og-marks li:first-child .go`);
     t.check(/as it was on/.test(item.label), 'the list says it is a moment');
     await t.tap(item);

@@ -206,6 +206,7 @@ pub fn run(dir: PathBuf, port: u16, public: Option<String>) {
             println!("Web app: served at /app/ (from {})", p.display());
         }
         let has_web_app = web_app.is_some();
+        console.lock().unwrap_or_else(|e| e.into_inner()).web_app = has_web_app;
         server.set_web(move |req| {
             let path = req.target.split('?').next().unwrap_or("/");
             if path == "/login"
@@ -224,6 +225,10 @@ pub fn run(dir: PathBuf, port: u16, public: Option<String>) {
                 .into_iter()
                 .map(|(c, n)| (n, changed_ms(&page_path(&d, c))))
                 .collect();
+            let account = console
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .app_account(req);
             let info = crate::hubpage::Info {
                 name: name.clone(),
                 edit_key: edit.clone(),
@@ -231,6 +236,7 @@ pub fn run(dir: PathBuf, port: u16, public: Option<String>) {
                 public: public.clone(),
                 pages,
                 web_app: has_web_app,
+                account,
             };
             let nav = console
                 .lock()
@@ -471,10 +477,15 @@ fn sign_in(console: &Mutex<Console>, server: &Server, canvas: u128, id: u64, b: 
     let Ok(Msg::SignIn { user, password }) = Msg::decode(&plain) else {
         return false;
     };
-    let checked = console
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .check(&user, &password);
+    // A password, or an account token the app got before (an app that
+    // signed in to the server's page list, or opened from the console).
+    let checked = {
+        let mut c = console.lock().unwrap_or_else(|e| e.into_inner());
+        match password.strip_prefix(crate::net::TOKEN_PASSWORD) {
+            Some(token) => c.account(&user, "", token).map(|(r, _)| r),
+            None => c.check(&user, &password),
+        }
+    };
     let reply = match checked {
         Ok(role) if role.can_draw() => {
             println!("[{canvas:032x}] {user} signed in to draw");
@@ -873,6 +884,18 @@ mod tests {
         // A viewer and a wrong password get none.
         assert!(matches!(sign("val", "viewpass1"), Msg::SignedIn { edit: e, .. } if e.is_empty()));
         assert!(matches!(sign("admin", "nope"), Msg::SignedIn { edit: e, .. } if e.is_empty()));
+        // An account token (from signing in to the page list) works too; a
+        // made-up one doesn't.
+        let (_, token) = console
+            .lock()
+            .unwrap()
+            .account("admin", "password", "")
+            .unwrap();
+        let tok = |t: &str| format!("{}{t}", crate::net::TOKEN_PASSWORD);
+        assert!(matches!(sign("admin", &tok(&token)), Msg::SignedIn { edit: e, .. } if e == edit));
+        assert!(
+            matches!(sign("admin", &tok("feedface")), Msg::SignedIn { edit: e, .. } if e.is_empty())
+        );
         server.stop();
         let _ = std::fs::remove_dir_all(&dir);
     }

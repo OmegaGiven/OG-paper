@@ -170,6 +170,10 @@ pub const READY: &[u8] = b"READY";
 /// for the relay to keep instead of everything before.
 const CHECKPOINT_AFTER: usize = 1 << 20;
 
+/// Sent as a page sign-in's password: signing in with an account token
+/// (from signing in to the server's page list) instead of a password.
+pub const TOKEN_PASSWORD: &str = "\u{1}token:";
+
 /// Sent in the clear to a connection whose frames the host cannot open.
 const BAD_KEY: &[u8] = b"OG-PAPER:BAD-KEY";
 
@@ -345,6 +349,27 @@ impl App {
             _ => "Rival edits: the newest wins",
         });
         // Guests learn it when they next connect.
+    }
+
+    /// On a page of a server where an account is signed in (Pages): use it
+    /// for this page too, so a view-only join can draw when the account may.
+    pub(crate) fn sign_in_page_with_account(&mut self) {
+        let url = match self.net.as_ref().map(|n| &n.role) {
+            Some(Role::Guest(g)) if !g.relay && !g.edit && g.state == GuestState::Live => {
+                g.url.clone()
+            }
+            _ => return,
+        };
+        let Some((user, token)) = self.account_for(&url) else {
+            return;
+        };
+        self.send(
+            0,
+            &Msg::SignIn {
+                user,
+                password: format!("{TOKEN_PASSWORD}{token}"),
+            },
+        );
     }
 
     /// On a page server's page: sign in with an account there to draw.
@@ -859,6 +884,10 @@ impl App {
                             display_name(&name),
                             if edit { "" } else { " (view only)" }
                         ));
+                        // Signed in to this server (Pages): draw with it.
+                        if !edit {
+                            self.sign_in_page_with_account();
+                        }
                     } else {
                         self.say("Back online: synced");
                     }
@@ -922,7 +951,7 @@ impl App {
                     _ => return,
                 };
                 self.net_stop();
-                self.add_server(&link);
+                self.add_server(&link, None);
                 self.ui.live_open = false;
                 self.ui.pages_open = true;
                 self.say("That's a workspace link: it's added under Pages › Workspaces. Open a page there.");

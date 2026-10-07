@@ -334,7 +334,19 @@ impl App {
     }
 
     /// Add a server by its link and list its pages.
-    pub(crate) fn add_server(&mut self, link: &str) {
+    /// The account signed in on the server a page link `url` is on (user
+    /// name, token).
+    pub(crate) fn account_for(&self, url: &str) -> Option<(String, String)> {
+        let host = host_of(url);
+        self.servers.iter().find_map(|s| {
+            let (u, _, t) = s.account.as_ref()?;
+            (host_of(&s.link.url) == host && !t.is_empty()).then(|| (u.clone(), t.clone()))
+        })
+    }
+
+    /// With `account` (user name, token: opened from the server's page
+    /// while signed in there), sign in with it.
+    pub(crate) fn add_server(&mut self, link: &str, account: Option<(String, String)>) {
         let Some(l) = parse_link(link) else {
             self.say("That is not a server link (it starts with ws:// or wss://)");
             return;
@@ -343,8 +355,17 @@ impl App {
             self.say("That link's key is incomplete: copy the whole server link");
             return;
         };
-        if self.servers.iter().any(|s| s.link.url == l.url) {
-            self.say("That server is already in the list");
+        if let Some((user, token)) = &account {
+            save_account(&l.url, Some(&(user.clone(), String::new(), token.clone())));
+        }
+        if let Some(k) = self.servers.iter().position(|s| s.link.url == l.url) {
+            if account.is_some() {
+                // Known already: sign in with the account it came with.
+                self.servers[k].account = load_account(&l.url);
+                self.server_request(k, Msg::ListPages);
+            } else {
+                self.say("That server is already in the list");
+            }
             return;
         }
         let account = load_account(&l.url);
@@ -448,7 +469,7 @@ impl App {
         let i = match self.servers.iter().position(|s| s.link.url == l.url) {
             Some(i) => i,
             None => {
-                self.add_server(link);
+                self.add_server(link, None);
                 match self.servers.iter().position(|s| s.link.url == l.url) {
                     Some(i) => i,
                     None => return,
@@ -707,6 +728,8 @@ impl App {
                     if let Some(m) = say {
                         self.say(m);
                     }
+                    // A page of this server open view-only: the account may draw.
+                    self.sign_in_page_with_account();
                     self.redraw();
                     return;
                 }

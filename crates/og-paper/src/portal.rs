@@ -286,7 +286,9 @@ impl App {
 
     pub(crate) fn portal_begin(&mut self, p: [f64; 2]) {
         if self.portal_view.is_none() {
-            self.say("First choose what portals show: This view, or a bookmark, in the tool panel");
+            self.say(
+                "First choose what portals show: This view, or a saved view, in the tool panel",
+            );
             self.gesture = crate::Gesture::None;
             return;
         }

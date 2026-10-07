@@ -125,12 +125,12 @@ const TOUR = [
   { id: 'draw', text: 'Draw something', hint: 'Pick the pen (bottom right) and drag on the canvas.', done: s => s.drawn > 0 },
   { id: 'zoom', text: 'Zoom in 100×', hint: 'Mouse wheel, trackpad pinch, or two fingers.', done: s => s.zoom >= 2 },
   { id: 'dot', text: 'Find the world inside the dot', hint: 'Zoom into the yellow dot of the big “i”.', done: s => s.zoom >= 3 },
-  { id: 'deep', text: 'Go a trillion times deeper', hint: 'Keep zooming through the dots — or Gear → Bookmarks.', done: s => s.zoom >= 12 },
+  { id: 'deep', text: 'Go a trillion times deeper', hint: 'Keep zooming through the dots — or Gear → Views.', done: s => s.zoom >= 12 },
   { id: 'deepdraw', text: 'Write a note at 10^6 or deeper', hint: 'Ink is exact at any depth.', done: s => s.deepDraw >= 6 },
   { id: 'erase', text: 'Erase or undo something', hint: 'Eraser tool, Ctrl+Z, or a two-finger tap.', done: s => s.erased > 0 || s.undos > 0 },
-  { id: 'mark', text: 'Bookmark a view and fly back to it', hint: 'Gear (top right) → Bookmarks: save a view, then tap it.', done: (s, f) => f.flewToOwn },
+  { id: 'mark', text: 'Save a view and fly back to it', hint: 'Gear (top right) → Views: save a view, then tap it.', done: (s, f) => f.flewToOwn },
   { id: 'time', text: 'Scrub the timeline', hint: 'Gear → Timeline: press play to watch the canvas being drawn.', done: (s, f) => f.scrubbed },
-  { id: 'street', text: 'Walk the endless street', hint: 'Gear → Bookmarks → Endless street, then keep zooming into the far end: its portal shows the street again.', done: s => s.passes >= 2 },
+  { id: 'street', text: 'Walk the endless street', hint: 'Gear → Views → Endless street, then keep zooming into the far end: its portal shows the street again.', done: s => s.passes >= 2 },
   { id: 'out', text: 'Zoom out past the home page', hint: 'There is more up there too.', done: s => s.zoom <= -1 },
   { id: 'bottom', text: 'Reach 10^45', hint: 'The bottom of the demo (it is not the bottom of the canvas).', done: s => s.zoom >= 44 },
 ];
@@ -361,7 +361,7 @@ export async function start({ mode = 'app' } = {}) {
   if (isTry) {
     cards.tour = card('Try the endless canvas');
     cards.tour.append(
-      el('p', {}, 'Everything here is the real app. Check these off in any order — your canvas autosaves in this browser. The gear (top right) holds bookmarks, the timeline, offline copies and this tour.'),
+      el('p', {}, 'Everything here is the real app. Check these off in any order — your canvas autosaves in this browser. The gear (top right) holds saved views, the timeline, offline copies and this tour.'),
       el('div', { class: 'og-progress' }, '<div></div>'),
       el('ul', { class: 'og-list og-tour' }),
       el('button', { class: 'og-btn wide', 'data-act': 'demo' }, 'Reset the demo'),
@@ -370,9 +370,9 @@ export async function start({ mode = 'app' } = {}) {
       if (confirm('Reset the demo? Your drawings on it are replaced.')) { openTimeline(false); og_demo(); show(null); }
     };
   }
-  cards.bookmarks = card('Bookmarks');
+  cards.bookmarks = card('Views');
   cards.bookmarks.append(
-    el('p', {}, 'Save the current view, then tap a bookmark to fly back to it — across any zoom depth.'),
+    el('p', {}, 'Save the current view, then tap it to fly back — across any zoom depth.'),
     el('form', { class: 'og-row' }, '<input name="name" placeholder="Name this view" maxlength="60" autocomplete="off"><button class="og-btn primary">Save view</button>'),
     el('ul', { class: 'og-list og-home' }, '<li><button class="go" data-home>Home<small>where the canvas starts</small></button></li>'),
     el('ul', { class: 'og-list og-marks' }));
@@ -388,7 +388,7 @@ export async function start({ mode = 'app' } = {}) {
       bmCollapsed = on;
       cards.bookmarks.classList.toggle('og-collapsed', on);
       fold.innerHTML = svg(on ? 'unfold' : 'fold');
-      fold.title = fold.ariaLabel = on ? 'Open the full bookmarks' : 'Fold into a bar';
+      fold.title = fold.ariaLabel = on ? 'Open the full list of views' : 'Fold into a bar';
       try { localStorage.setItem('og-bm-collapsed', on ? '1' : '0'); } catch (e) {}
       if (on) { bmBar = true; if (open === 'bookmarks') open = null; }
       else if (bmBar) open = 'bookmarks';
@@ -623,7 +623,7 @@ export async function start({ mode = 'app' } = {}) {
       <input class="lo" type="range" min="0" max="0" value="0" aria-label="Window start">
       <input class="hi" type="range" min="0" max="0" value="0" aria-label="Window end">
     </div>
-    <button class="og-btn mark" title="Bookmark this moment: fly back to it, as it was then, any time">Bookmark</button>
+    <button class="og-btn mark" title="Save this moment as a view: fly back to it, as it was then, any time">Save view</button>
     <button class="og-btn restore" title="Make the moment at the right handle the current canvas (the left handle only narrows the view)">Restore</button>
     <button class="og-icon close" title="Back to now" aria-label="Close timeline">${svg('close')}</button>`;
   root.append(tl);
@@ -724,7 +724,7 @@ export async function start({ mode = 'app' } = {}) {
       if (matchMedia('(max-width: 700px)').matches) show(null);
     } else if (b.dataset.act === 'rename') {
       const cur = status().bookmarks[i]?.name || '';
-      const name = prompt('Rename bookmark', cur);
+      const name = prompt('Rename view', cur);
       if (name) og_bookmark_rename(i, name);
     } else if (b.dataset.act === 'remove') og_bookmark_remove(i);
     else if (b.dataset.act === 'bar') og_bookmark_to_bar(i);
@@ -1436,9 +1436,12 @@ export async function start({ mode = 'app' } = {}) {
   loadPlugins();
   // Opened from a server's page: add that server to Pages.
   if (!isTry && location.hash.startsWith('#server=')) {
-    const link = decodeURIComponent(location.hash.slice(8));
+    // #server=<link>[&acct=<user:token>] (opened from the server's page
+    // while signed in there: the app signs in with that account).
+    const [rawLink, rawAcct] = location.hash.slice(8).split('&acct=');
+    const link = decodeURIComponent(rawLink);
     history.replaceState(null, '', location.pathname + location.search);
-    og_add_server(link);
+    og_add_server(link, rawAcct ? decodeURIComponent(rawAcct) : '');
   }
   // Automation from the page (devtools, extensions): the same commands as
   // plugins and the server API (docs/PLUGINS.md).
@@ -1600,7 +1603,7 @@ export async function start({ mode = 'app' } = {}) {
         markList.innerHTML = s.bookmarks.length
           ? s.bookmarks.map((b, i) => `<li data-i="${i}"><button class="go">${fmt(b.name)}<small>${b.at != null ? `as it was on ${when(b.at)} · ` : ''}zoom ${zoomText(b.zoom)}</small></button>
               <button class="mini" data-act="bar" title="Put it in the quick toolbar">+ bar</button><button class="mini" data-act="rename" title="Rename">Rename</button><button class="mini" data-act="remove" title="Delete" aria-label="Delete">✕</button></li>`).join('')
-          : '<li class="og-empty">No bookmarks yet.</li>';
+          : '<li class="og-empty">No saved views yet.</li>';
         cards.bookmarks.renderChips(s.bookmarks);
       }
 

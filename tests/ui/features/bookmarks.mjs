@@ -3,14 +3,14 @@ export default {
   name: 'bookmarks',
   features: ['NAV-04', 'NAV-05', 'NAV-03', 'UI-12'],
   sizes: ['desktop', 'phone'],
-  title: 'Bookmarks: save a view, fly back',
+  title: 'Views: save a view, fly back',
   async run(t) {
     await t.open();
     await t.scribble(t.w * 0.55, t.h * 0.42, t.w * 0.4);
-    await t.caption('Menu › Bookmarks');
+    await t.caption('Menu › Views');
     await t.tap('Menu');
-    await t.tap('Bookmarks');
-    const card = '.og-card[data-name=Bookmarks]';
+    await t.tap('Views');
+    const card = '.og-card[data-name=Views]';
     const box = await t.el(`${card} input`);
     const r = await t.el(card);
     t.check(r.x >= 0 && r.x + r.w <= t.w + 1, 'the card fits on the screen');
@@ -32,7 +32,7 @@ export default {
     const zStart = (await t.state()).bookmarks[0].zoom;
     await t.wait(async () => { const s = await t.state(); return !s.flying && Math.abs(s.zoom - zStart) < 0.05; }, 'it flies to "Start"', 8000);
     // Small screens close the card after flying: open it again.
-    if (await t.b.eval(`document.querySelector('${card}').hidden`)) { await t.tap('Menu'); await t.tap('Bookmarks'); }
+    if (await t.b.eval(`document.querySelector('${card}').hidden`)) { await t.tap('Menu'); await t.tap('Views'); }
 
     await t.caption('Fold it into a bar: Home first, then each bookmark');
     await t.tap(await t.el(`${card} .fold`));
@@ -45,7 +45,7 @@ export default {
     await t.drag([[grip.x + grip.w / 2, grip.y + grip.h / 2], [t.w * 0.3, t.h * 0.75], [24, t.h * 0.8]], 700);
     const moved = await t.el(card);
     t.check(moved.y > t.h * 0.6 && moved.x >= 0, 'the bar moved and stays on screen');
-    const saved = await t.b.eval(`localStorage.getItem('og-card-pos:Bookmarks')`);
+    const saved = await t.b.eval(`localStorage.getItem('og-card-pos:Views')`);
     t.check(!!saved, 'its place is remembered');
 
     await t.caption('Zoom in, then ⌂ Home on the bar');

@@ -73,6 +73,10 @@ pub struct Layout {
     /// by the screen (a column in portrait, a row in landscape).
     pub bar_vertical: Option<bool>,
     pub panel: Corner,
+    /// The tool panel window's size (points), once resized; None = default.
+    pub panel_size: Option<[f32; 2]>,
+    /// The phone settings sheet's height as a screen fraction, once dragged.
+    pub sheet: Option<f32>,
 }
 
 impl Layout {
@@ -98,6 +102,12 @@ impl Layout {
         }
         if self.panel != Corner::BottomLeft {
             parts.push(format!("panel:{}", self.panel.key()));
+        }
+        if let Some([w, h]) = self.panel_size {
+            parts.push(format!("psize:{w:.0},{h:.0}"));
+        }
+        if let Some(f) = self.sheet {
+            parts.push(format!("sheet:{f:.3}"));
         }
         parts.join(";")
     }
@@ -126,6 +136,19 @@ impl Layout {
                     }
                 }
                 "panel" => l.panel = Corner::from_key(v.trim()).unwrap_or_default(),
+                "psize" => {
+                    l.panel_size = v.split_once(',').and_then(|(w, h)| {
+                        let s = [w.trim().parse::<f32>().ok()?, h.trim().parse::<f32>().ok()?];
+                        s.iter().all(|c| (100.0..=10000.0).contains(c)).then_some(s)
+                    })
+                }
+                "sheet" => {
+                    l.sheet = v
+                        .trim()
+                        .parse::<f32>()
+                        .ok()
+                        .filter(|f| (0.1..=1.0).contains(f))
+                }
                 _ => {}
             }
         }
@@ -178,6 +201,8 @@ mod tests {
             bar: Some([0.5, 0.02]),
             bar_vertical: Some(false),
             panel: Corner::TopRight,
+            panel_size: Some([420.0, 600.0]),
+            sheet: Some(0.75),
         };
         assert_eq!(Layout::decode(&l.encode()), l);
         // The bar's direction: by the screen unless set.

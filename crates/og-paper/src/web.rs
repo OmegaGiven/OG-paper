@@ -65,8 +65,9 @@ pub enum Cmd {
     Run(String),
     /// The open page's name (from the page's list).
     Name(String),
-    /// A server link to add to Pages (from `#server=` in the address).
-    AddServer(String),
+    /// A server link to add to Pages (from `#server=` in the address), and
+    /// an account to sign in with ("user:token", from `&acct=`; or "").
+    AddServer(String, String),
     /// Just wake up (a timer of the page's: the connection may retry).
     Poke,
     /// Export: format, only the selection, paper background.
@@ -557,8 +558,8 @@ pub fn og_run(json: String) {
 
 /// Add a page server by its link (the app was opened with `#server=`).
 #[wasm_bindgen]
-pub fn og_add_server(link: String) {
-    push(Cmd::AddServer(link));
+pub fn og_add_server(link: String, account: String) {
+    push(Cmd::AddServer(link, account));
 }
 
 /// The open page's name, as the page's list keeps it.

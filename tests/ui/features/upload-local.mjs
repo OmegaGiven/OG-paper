@@ -31,8 +31,14 @@ export default {
     await t.connect(`127.0.0.1:${hub.port}`);
     await t.find('First page', { ms: 8000 });
 
-    await t.caption('...Upload puts a copy there');
-    await t.rowAction('Sketch A', 'Upload');
+    await t.caption('...Upload to… picks the server, and puts a copy there');
+    await t.rowAction('Sketch A', 'Upload to…');
+    await t.beat(300);
+    const host = new RegExp(`127\\.0\\.0\\.1:${hub.port}`);
+    // The menu's button (not the server's row in the tree behind it).
+    const opts = (await t.nodes()).filter(n => n.w > 0 && n.role === 'Button' && host.test(n.label || n.value || ''));
+    t.check(opts.length >= 1, 'the server is offered');
+    await t.tap(opts[0]);
     const onServer = () => readFileSync(join(hub.dir, 'pages.txt'), 'utf8').includes('Sketch A');
     await t.wait(async () => onServer(), 'the page is made on the server', 10000);
     await t.wait(async () => /Merged: 2 new strokes/.test(hub.log()), 'its drawing reaches the server', 15000);

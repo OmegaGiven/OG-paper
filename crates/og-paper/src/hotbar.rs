@@ -146,8 +146,17 @@ impl Preset {
     }
 
     pub fn ink(tool: Tool, color: Color32, width: f32, pressure: bool, dash: Dash) -> Self {
+        let mut ink = InkSettings::new(color, width, pressure, dash, 255);
+        // Brushes start in Advanced (its "Ink" look draws the plain line);
+        // only Simple has dashes.
+        if tool == Tool::Pen && dash == Dash::Solid {
+            ink.advanced = true;
+            if !pressure {
+                ink.params.p_size = 0.0;
+            }
+        }
         Self {
-            ink: Some(InkSettings::new(color, width, pressure, dash, 255)),
+            ink: Some(ink),
             ..Self::tool(tool)
         }
     }

@@ -22,6 +22,9 @@ pub struct Info {
     /// This server hands out the web app itself, at /app/ (see
     /// `hub::web_app_file`).
     pub web_app: bool,
+    /// Signed in to the console in this browser: the account (name, token)
+    /// "Open in the web app" signs the app in with.
+    pub account: Option<(String, String)>,
 }
 
 /// Where the web app lives (it adds a server from `#server=<link>`).
@@ -85,7 +88,14 @@ pub fn page(target: &str, base: &str, info: &Info, nav: &str) -> (u16, &'static 
 /// web app when it has one (same address, so browsers let it connect: a
 /// public site may not reach a private one, like a tailnet address), else
 /// the public web app.
-fn link_row(label: &str, note: &str, link: &str, open: bool, own_app: bool) -> String {
+fn link_row(
+    label: &str,
+    note: &str,
+    link: &str,
+    open: bool,
+    own_app: bool,
+    account: Option<&(String, String)>,
+) -> String {
     let web = match link.strip_prefix("wss://") {
         Some(rest) if open => {
             let app = if own_app {
@@ -94,10 +104,20 @@ fn link_row(label: &str, note: &str, link: &str, open: bool, own_app: bool) -> S
             } else {
                 WEB_APP.to_string()
             };
+            // Signed in here: the app opens with that account's rights.
+            let acct = account.map_or(String::new(), |(u, t)| {
+                format!("&acct={}", url_encode(&format!("{u}:{t}")))
+            });
             format!(
-                r#"<a class="btn primary" href="{}#server={}" target="_blank" rel="noopener">Open in the web app</a>"#,
+                r#"<a class="btn primary" href="{}#server={}{}" target="_blank" rel="noopener">Open in the web app{}</a>"#,
                 esc(&app),
-                esc(&url_encode(link))
+                esc(&url_encode(link)),
+                esc(&acct),
+                if account.is_some() {
+                    " (signed in)"
+                } else {
+                    ""
+                }
             )
         }
         _ => String::new(),
@@ -143,6 +163,7 @@ fn html(target: &str, base: &str, info: &Info, nav: &str) -> String {
             &format!("{b}/?k={}", info.view_key),
             true,
             info.web_app,
+            info.account.as_ref(),
         );
         if admin {
             links += &link_row(
@@ -151,6 +172,7 @@ fn html(target: &str, base: &str, info: &Info, nav: &str) -> String {
                 &format!("{b}/?k={}", info.edit_key),
                 true,
                 info.web_app,
+                info.account.as_ref(),
             );
         }
     }
@@ -259,7 +281,24 @@ mod tests {
             public: Some("wss://paper.example.ts.net:8992".into()),
             pages: vec![("First page".into(), 0)],
             web_app: false,
+            account: None,
         }
+    }
+
+    #[test]
+    fn signed_in_the_web_app_link_carries_the_account() {
+        let mut i = info();
+        let (_, _, body) = page("/", "ws://10.0.0.5:8991", &i, "");
+        assert!(!String::from_utf8(body).unwrap().contains("acct="));
+        i.account = Some(("admin".into(), "t0ken".into()));
+        let (_, _, body) = page("/", "ws://10.0.0.5:8991", &i, "");
+        let html = String::from_utf8(body).unwrap();
+        assert!(
+            html.contains("&amp;acct=admin%3At0ken"),
+            "the account rides along"
+        );
+        // The link people copy stays the plain view link.
+        assert!(html.contains(r#"data-copy="wss://paper.example.ts.net:8992/?k=vVIEW""#));
     }
 
     #[test]
