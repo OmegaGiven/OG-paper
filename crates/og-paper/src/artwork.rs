@@ -277,6 +277,8 @@ pub fn bookmarks(origin: [f64; 2]) -> Vec<Bookmark> {
             cam: f.camera(700.0),
             view_px: 700.0,
             when: None,
+            public: false,
+            id: 0,
         })
         .collect()
 }

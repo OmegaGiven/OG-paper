@@ -53,6 +53,7 @@ reports features without tests and tests named here that don't exist.
 | NAV-07 | Timeline: scrub and replay the drawing, restore an older state, bookmark a moment | Menu › Timeline (its Bookmark button keeps the moment); Menu › Views flies back to it | W D M | ui:timeline-bookmark, ui:tools-tour, rust:timeline::tests::replays_draws_and_erases, rust:timeline::tests::window_leaves_out_older_ink |
 | NAV-08 | Portals: a shape or outline that shows a saved view; zoom through it | Tool button › Portal | W D M | rust:portal::tests::a_portal_shows_its_view_at_every_zoom, rust:portal::tests::zooming_down_the_endless_street_goes_round, rust:portal::tests::portals_survive_saving_and_old_apps_see_a_shape |
 | NAV-09 | Endless street demo (infinite zoom loop through a portal) | Try mode › Menu › Views › Endless street | W | rust:portal::tests::zooming_down_the_endless_street_goes_round, todo |
+| NAV-10 | Public views: make a saved view public and everyone on the page sees it (with its author), flies to it or keeps a copy; a page server keeps them | Menu › Views › ○ Public | W S | ui:public-views, rust:views::tests::views_merge_by_id |
 
 ## Pages and files
 
@@ -106,7 +107,7 @@ reports features without tests and tests named here that don't exist.
 |---|---|---|---|---|
 | UI-01 | Menu (gear, top right) grouped in sections | gear button | W D M | ui:menu |
 | UI-02 | Tool fan (undo, redo, tools) | Tool button (bottom right) | W D M | ui:draw-undo |
-| UI-03 | Quick toolbar with numbered slots and one hold slot (tap it to use its tool; set it from the inventory) | Menu › UI settings › Quick toolbar | W D M | ui:tools-tour, ui:hold-slot, rust:hotbar::tests::slots_round_trip, rust:hotbar::tests::names_and_many_toolbars_survive |
+| UI-03 | Quick toolbar with numbered slots and a hold slot per toolbar (the main toolbar’s is in use; tap it to use its tool; set it from the inventory) | Menu › UI settings › Quick toolbar | W D M | ui:tools-tour, ui:hold-slot, rust:hotbar::tests::slots_round_trip, rust:hotbar::tests::names_and_many_toolbars_survive |
 | UI-04 | Inventory: drag tools between slots; drag onto the trash to delete; on phones a fixed row of basic tools to assign from | Quick toolbar › bag | W D M | rust:hotbar::tests::inventory_keeps_a_free_row, todo, ui:basic-tools |
 | UI-05 | Radial toolbar; page shaded only under an open fan | Menu › UI settings › Radial toolbar | W D M | rust:layout::tests::fans_open_toward_the_middle, todo |
 | UI-06 | Edit layout (move the buttons) | Menu › UI settings › Edit layout | W D M | rust:layout::tests::layouts_round_trip, todo |

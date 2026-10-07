@@ -226,6 +226,8 @@ impl Demo {
             cam: frame_cell(&self.worlds[k], BASE_PX, BASE_PX),
             view_px: BASE_PX,
             when: None,
+            public: false,
+            id: 0,
         };
         let mut v = vec![
             at(0, "Home".into()),
@@ -245,6 +247,8 @@ impl Demo {
             cam,
             view_px,
             when: None,
+            public: false,
+            id: 0,
         });
         v
     }

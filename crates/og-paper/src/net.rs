@@ -495,7 +495,7 @@ impl App {
         self.peers.clear();
     }
 
-    fn send(&mut self, conn: u64, m: &Msg) {
+    pub(crate) fn send(&mut self, conn: u64, m: &Msg) {
         let Some(n) = self.net.as_mut() else { return };
         let changes = matches!(m, Msg::Changes(_) | Msg::Images(_));
         let mut b = n.keys.seal(&m.encode(), changes);
@@ -809,6 +809,8 @@ impl App {
                     display_name(&name),
                     if edit { "" } else { " (view only)" }
                 ));
+                // The page's public views.
+                self.views_for_newcomer(id);
                 // Who else is here.
                 let others: Vec<Msg> = self.peers.values().map(|p| p.presence_msg()).collect();
                 for m in others {
@@ -820,6 +822,15 @@ impl App {
                 // push_changes sends what it lacks.
                 if let Some(n) = self.net.as_mut() {
                     n.pushed = usize::MAX;
+                }
+            }
+            Msg::Views(b) => {
+                let joined = matches!(
+                    self.net.as_ref().map(|n| &n.role),
+                    Some(Role::Host(h)) if h.conns.get(&id).is_some_and(|c| c.their.is_some())
+                );
+                if joined {
+                    self.views_arrived(id, &b);
                 }
             }
             Msg::Changes(b) => {
@@ -888,6 +899,8 @@ impl App {
                         if !edit {
                             self.sign_in_page_with_account();
                         }
+                        // My public views, for everyone here.
+                        self.views_on_join();
                     } else {
                         self.say("Back online: synced");
                     }
@@ -897,6 +910,7 @@ impl App {
                     self.send(0, &m);
                 }
             }
+            Msg::Views(b) => self.views_arrived(0, &b),
             Msg::Changes(b) => {
                 if let Ok(s) = crate::snapshot::decode(&b, crate::BASE_PX) {
                     if let Some(v) = self.merge_quiet(s.scene, s.objs, s.share) {

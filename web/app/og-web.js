@@ -7,7 +7,7 @@
 import init, {
   og_load, og_demo, og_blank, og_status, og_requests, og_set_menu, og_text_request, og_text_done, og_font_add,
   og_copy, og_paste_own, og_wants_text, og_text_field, og_copied_take, og_field_at, og_paste_image, og_paste_text, og_pdf_page,
-  og_home, og_bookmark_add, og_bookmark_go, og_bookmark_remove, og_bookmark_rename, og_bookmark_to_bar,
+  og_home, og_bookmark_add, og_bookmark_go, og_view_public, og_shared_view_go, og_shared_view_copy, og_bookmark_remove, og_bookmark_rename, og_bookmark_to_bar,
   og_search, og_search_results, og_search_go, og_export, og_export_take, og_has_selection,
   og_sticker_take, og_sticker_svg, og_sticker_place, og_import, og_merge, og_changes_take, og_merge_quiet, og_set_folder, og_net_url, og_net_take, og_net_open, og_net_recv, og_net_closed, og_join, og_poke, og_rtc_host, og_rtc_closing, og_view_token, og_relay_share, og_dir_requests, og_page_arg, og_set_pages, og_plugin_install, og_pack_install, og_pack_sticker_take, og_run, og_set_name, og_add_server,
   og_timeline, og_timeline_range, og_timeline_restore, og_snapshot_request, og_snapshot_take,
@@ -67,6 +67,8 @@ const CSS = `
 .og-list .go { flex: 1; text-align: left; border: 0; background: none; padding: 9px 4px; min-width: 0; }
 .og-list .go small { color: var(--muted); display: block; font-size: 12px; }
 .og-list .mini { border: 0; background: none; color: var(--muted); padding: 6px; font-size: 13px; }
+.og-list .mini.pub[aria-pressed="true"] { color: var(--accent, #c8285a); font-weight: 600; }
+.og-shared-head { margin: 10px 0 2px; font-size: 13px; color: var(--muted); font-weight: 600; }
 .og-fmt { flex-wrap: wrap; gap: 6px; }
 .og-lib { display: grid; grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); gap: 8px; margin-top: 8px; max-height: 60vh; overflow: auto; }
 .og-sticker { position: relative; border: 1px solid var(--edge); border-radius: 10px; background: #fff; padding: 4px; cursor: pointer; display: flex; flex-direction: column; align-items: center; }
@@ -375,7 +377,9 @@ export async function start({ mode = 'app' } = {}) {
     el('p', {}, 'Save the current view, then tap it to fly back — across any zoom depth.'),
     el('form', { class: 'og-row' }, '<input name="name" placeholder="Name this view" maxlength="60" autocomplete="off"><button class="og-btn primary">Save view</button>'),
     el('ul', { class: 'og-list og-home' }, '<li><button class="go" data-home>Home<small>where the canvas starts</small></button></li>'),
-    el('ul', { class: 'og-list og-marks' }));
+    el('ul', { class: 'og-list og-marks' }),
+    el('h3', { class: 'og-shared-head', hidden: '' }, 'Public views on this page'),
+    el('ul', { class: 'og-list og-shared', hidden: '' }));
   // Folded: a bar of chips that scrolls sideways (Home first, then each
   // bookmark by its initials), with + to save the view here.
   {
@@ -728,7 +732,21 @@ export async function start({ mode = 'app' } = {}) {
       if (name) og_bookmark_rename(i, name);
     } else if (b.dataset.act === 'remove') og_bookmark_remove(i);
     else if (b.dataset.act === 'bar') og_bookmark_to_bar(i);
+    else if (b.dataset.act === 'public') og_view_public(i, b.getAttribute('aria-pressed') !== 'true');
   };
+  // Others' public views: fly there, or keep a copy.
+  const sharedList = cards.bookmarks.querySelector('.og-shared');
+  const sharedHead = cards.bookmarks.querySelector('.og-shared-head');
+  sharedList.onclick = e => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    const i = +b.closest('li').dataset.i;
+    if (b.classList.contains('go')) {
+      og_shared_view_go(i);
+      if (matchMedia('(max-width: 700px)').matches) show(null);
+    } else if (b.dataset.act === 'copy') og_shared_view_copy(i);
+  };
+  let sharedKey = '';
   let marksKey = '';
 
   // ---- files ----
@@ -1602,9 +1620,17 @@ export async function start({ mode = 'app' } = {}) {
         if (before !== null && s.bookmarks.length > before) ownMarksFrom = Math.min(ownMarksFrom, before);
         markList.innerHTML = s.bookmarks.length
           ? s.bookmarks.map((b, i) => `<li data-i="${i}"><button class="go">${fmt(b.name)}<small>${b.at != null ? `as it was on ${when(b.at)} · ` : ''}zoom ${zoomText(b.zoom)}</small></button>
-              <button class="mini" data-act="bar" title="Put it in the quick toolbar">+ bar</button><button class="mini" data-act="rename" title="Rename">Rename</button><button class="mini" data-act="remove" title="Delete" aria-label="Delete">✕</button></li>`).join('')
+              <button class="mini pub" data-act="public" aria-pressed="${!!b.public}" title="${b.public ? 'Public: everyone on this page can fly to it. Tap to make it private.' : 'Private. Tap to share it with everyone on this page.'}">${b.public ? '◉ Public' : '○ Public'}</button><button class="mini" data-act="bar" title="Put it in the quick toolbar">+ bar</button><button class="mini" data-act="rename" title="Rename">Rename</button><button class="mini" data-act="remove" title="Delete" aria-label="Delete">✕</button></li>`).join('')
           : '<li class="og-empty">No saved views yet.</li>';
         cards.bookmarks.renderChips(s.bookmarks);
+      }
+      const sk = JSON.stringify(s.shared || []);
+      if (sk !== sharedKey) {
+        sharedKey = sk;
+        const shared = s.shared || [];
+        sharedHead.hidden = sharedList.hidden = shared.length === 0;
+        sharedList.innerHTML = shared.map((v, i) => `<li data-i="${i}"><button class="go">${fmt(v.name)}<small>by ${fmt(v.author)} · ${v.at != null ? `as it was on ${when(v.at)} · ` : ''}zoom ${zoomText(v.zoom)}</small></button>
+            <button class="mini" data-act="copy" title="Keep a copy in your views">Save a copy</button></li>`).join('');
       }
 
       // Timeline (it opens itself when a bookmarked moment is shown).

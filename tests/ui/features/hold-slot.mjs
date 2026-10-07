@@ -1,4 +1,5 @@
-// The hold slot (what a right click or a press and hold uses): one, at the
+// The hold slot (what a right click or a press and hold uses): one per
+// toolbar, shown on the main screen only for the main toolbar, at the
 // end of the main toolbar. Tapping it makes its tool the main one; it only
 // changes when empty (a tap saves the current tool) or from the inventory.
 export default {

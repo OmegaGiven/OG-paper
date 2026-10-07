@@ -1001,10 +1001,6 @@ impl UiState {
         let mut bars = self.toolbars.clone();
         if let Some(b) = bars.get_mut(self.active_bar) {
             b.slots = self.hotbar.clone();
-        }
-        // One hold tool for all toolbars (kept on each, which older apps
-        // read as theirs).
-        for b in &mut bars {
             b.hold = self.hold;
         }
         // Only the views some slot still points at.
@@ -1067,13 +1063,8 @@ impl UiState {
         self.toolbars = s.bars;
         self.inventory = s.inv;
         self.views = s.views;
-        // One hold tool: the active toolbar's, else any toolbar's (files
-        // from when each toolbar had its own).
-        self.hold = self
-            .toolbars
-            .get(self.active_bar)
-            .and_then(|b| b.hold)
-            .or_else(|| self.toolbars.iter().find_map(|b| b.hold));
+        // Each toolbar has its own hold tool; the main one's is in use.
+        self.hold = self.toolbars.get(self.active_bar).and_then(|b| b.hold);
     }
 
     /// Show toolbar `k` in the quick bar.
@@ -1082,8 +1073,10 @@ impl UiState {
             return;
         }
         self.toolbars[self.active_bar].slots = std::mem::take(&mut self.hotbar);
+        self.toolbars[self.active_bar].hold = self.hold;
         self.active_bar = k;
         self.hotbar = self.toolbars[k].slots.clone();
+        self.hold = self.toolbars[k].hold;
         self.bar_rename = None;
         self.presets_dirty = true;
         self.message = Some(format!("Toolbar {}", k + 1));
@@ -2451,8 +2444,8 @@ fn toolbar_menu(
                                 );
                                 slot(ui, st, r, Slots::Row(k), i, fx);
                             }
-                            // The hold slot, on every row: there is one hold
-                            // tool, so each shows (and sets) the same one.
+                            // Each toolbar's own hold slot (the main
+                            // toolbar's is the one in use).
                             let hr = Rect::from_min_size(
                                 at(x0 + (n + 1) as f32 * (s + gap)),
                                 Vec2::splat(s),
@@ -2616,7 +2609,8 @@ fn slot_mut(st: &mut UiState, which: Slots, i: usize) -> &mut Option<Preset> {
         Slots::Row(k) if k == st.active_bar => &mut st.hotbar[i],
         Slots::Row(k) => &mut st.toolbars[k].slots[i],
         Slots::Inventory => &mut st.inventory[i],
-        Slots::Hold(_) => &mut st.hold,
+        Slots::Hold(k) if k == st.active_bar => &mut st.hold,
+        Slots::Hold(k) => &mut st.toolbars[k].hold,
         Slots::Basic => &mut st.basic[i],
     }
 }
@@ -3406,9 +3400,23 @@ fn tool_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) 
     // The window's size: as the person last left it (resized by its
     // corner grip), within the screen. Its top left stays put while
     // resizing, so it is the pivot; it starts in the Edit layout corner.
+    // Resizing stops at the screen's far edges (from where the window
+    // sits), so growing it never shoves it along.
+    let area_id = Id::new("tool_panel").with(format!("{pc:?}"));
+    let top_left = ctx
+        .memory(|mem| mem.area_rect(area_id))
+        .map(|r| r.min)
+        .filter(|_| !sheet);
+    let room = top_left.map_or(screen.max - vec2(m, m), |p| {
+        pos2(screen.right() - p.x - m, screen.bottom() - p.y - m)
+    });
     let max_size = vec2(
         (screen.width() - 2.0 * m).max(280.0),
         (screen.height() - 2.0 * m).max(260.0),
+    );
+    let resize_max = vec2(
+        room.x.min(max_size.x).max(280.0),
+        room.y.min(max_size.y).max(260.0),
     );
     let def_size = vec2(
         if touch { 360.0 } else { 330.0 },
@@ -3438,7 +3446,7 @@ fn tool_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) 
             .order(Order::Foreground)
             .anchor(Align2::CENTER_BOTTOM, vec2(0.0, 0.0))
     } else {
-        egui::Area::new(Id::new("tool_panel").with(format!("{pc:?}")))
+        egui::Area::new(area_id)
             .order(Order::Foreground)
             .movable(true)
             .constrain(true)
@@ -3630,7 +3638,12 @@ fn tool_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) 
                                 pick |= panel_body(ui, st, tool, touch, &mut dial_hue, actions);
                             });
                     });
-                    ui.separator();
+                    // A divider as tall as the columns (a separator here
+                    // would stretch to all the height there is and keep the
+                    // window from getting shorter).
+                    let (line, _) = ui.allocate_exact_size(vec2(9.0, body_h), Sense::hover());
+                    ui.painter()
+                        .vline(line.center().x, line.y_range(), Stroke::new(1.0, EDGE));
                     ui.vertical(|ui| {
                         let rw = ui.available_width();
                         ui.set_width(rw);
@@ -3705,7 +3718,7 @@ fn tool_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) 
                 );
             }
             if resp.dragged() {
-                let n = (size + resp.drag_delta()).clamp(vec2(280.0, 260.0), max_size);
+                let n = (size + resp.drag_delta()).clamp(vec2(280.0, 260.0), resize_max.max(size));
                 st.layout.panel_size = Some([n.x, n.y]);
             }
             if resp.drag_stopped() {
@@ -8523,28 +8536,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn one_hold_tool_for_all_toolbars() {
+    fn each_toolbar_has_its_own_hold_tool() {
         let mut st = UiState::default();
         st.toolbars.push(hotbar::empty_bar("Two"));
         st.hold = Some(Preset::tool(Tool::Eraser));
         st.switch_bar(1);
+        assert_eq!(st.hold, None, "toolbar two has none of its own");
+        st.hold = Some(Preset::tool(Tool::Text));
+        st.switch_bar(0);
         assert_eq!(
             st.hold,
             Some(Preset::tool(Tool::Eraser)),
-            "switching keeps it"
+            "back to the main one's"
         );
-        // Saved on every toolbar, and read back as the one.
+        // Saved per toolbar; the active one's is in use after loading.
         let saved = st.saved();
-        assert!(saved.bars.iter().all(|b| b.hold == st.hold));
+        assert_eq!(saved.bars[0].hold, Some(Preset::tool(Tool::Eraser)));
+        assert_eq!(saved.bars[1].hold, Some(Preset::tool(Tool::Text)));
+        let mut s2 = saved.clone();
+        s2.active = 1;
         let mut back = UiState::default();
-        back.load_saved(saved);
-        assert_eq!(back.hold, Some(Preset::tool(Tool::Eraser)));
-        // A file from when each toolbar had its own: the active one's, else any.
-        let mut old = st.saved();
-        old.bars[0].hold = Some(Preset::tool(Tool::Text));
-        old.bars[1].hold = None;
-        old.active = 1;
-        back.load_saved(old);
+        back.load_saved(s2);
         assert_eq!(back.hold, Some(Preset::tool(Tool::Text)));
     }
 }

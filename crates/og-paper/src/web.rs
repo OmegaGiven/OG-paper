@@ -29,6 +29,11 @@ pub enum Cmd {
     BookmarkToBar(usize),
     BookmarkRemove(usize),
     BookmarkRename(usize, String),
+    /// Make a view public (shared with the page) or private.
+    ViewPublic(usize, bool),
+    /// Fly to / keep a copy of someone's public view.
+    SharedViewGo(usize),
+    SharedViewCopy(usize),
     /// Show the canvas as it was after timeline event `i`; `None` leaves.
     Timeline(Option<usize>),
     /// Show only the ink drawn between events `from` and `to` (inclusive)
@@ -402,6 +407,24 @@ pub fn og_bookmark_remove(i: usize) {
 #[wasm_bindgen]
 pub fn og_bookmark_rename(i: usize, name: String) {
     push(Cmd::BookmarkRename(i, name));
+}
+
+/// Make view `i` public (everyone on the page sees it) or private.
+#[wasm_bindgen]
+pub fn og_view_public(i: usize, on: bool) {
+    push(Cmd::ViewPublic(i, on));
+}
+
+/// Fly to someone's public view `i`.
+#[wasm_bindgen]
+pub fn og_shared_view_go(i: usize) {
+    push(Cmd::SharedViewGo(i));
+}
+
+/// Keep a copy of someone's public view `i` as one's own.
+#[wasm_bindgen]
+pub fn og_shared_view_copy(i: usize) {
+    push(Cmd::SharedViewCopy(i));
 }
 
 /// Show the canvas as it was after timeline event `i` (negative: back to now).

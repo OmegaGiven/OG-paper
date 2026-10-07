@@ -136,6 +136,8 @@ pub enum Msg {
         ok: bool,
         made: u128,
     },
+    /// Public views (see `views` and `snapshot::encode_views`).
+    Views(Vec<u8>),
 }
 
 /// One page a server hosts.
@@ -425,6 +427,10 @@ impl Msg {
                 w.u8(*ok as u8);
                 w.u128(*made);
             }
+            Msg::Views(b) => {
+                w.u8(22);
+                w.bytes(b);
+            }
         }
         w.0
     }
@@ -567,6 +573,7 @@ impl Msg {
                 ok: r.u8()? != 0,
                 made: r.u128()?,
             },
+            22 => Msg::Views(r.bytes()?),
             t => return Err(format!("unknown message {t}")),
         })
     }

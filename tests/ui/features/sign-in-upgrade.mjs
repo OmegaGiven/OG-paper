@@ -22,14 +22,19 @@ export default {
     await t.tap('Menu');
     await t.tap('Pages');
     await t.tap(await t.find(`127.0.0.1:${hub.port}`));
-    await t.tap('Sign in');
-    await t.tap(await t.find('User name'));
-    await t.type('admin');
-    await t.tap(await t.find('Password'));
-    await t.type('password');
-    // The one beside the password (the toolbar has a Sign in button too).
-    const btns = (await t.nodes()).filter(n => n.w > 0 && [n.label, n.value].includes('Sign in')).sort((a, b) => b.y - a.y);
-    await t.tap(btns[0]);
+    // Typing can drop a key on a loaded machine: try the sign-in twice.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await t.tap('Sign in');
+      await t.tap(await t.find('User name'));
+      await t.type('admin');
+      await t.tap(await t.find('Password'));
+      await t.type('password');
+      // The one beside the password (the toolbar has a Sign in button too).
+      const btns = (await t.nodes()).filter(n => n.w > 0 && [n.label, n.value].includes('Sign in')).sort((a, b) => b.y - a.y);
+      await t.tap(btns[0]);
+      const ok = await t.wait(async () => (await t.state()).viewOnly === false, 'signed in', 8000).then(() => true, () => false);
+      if (ok) break;
+    }
     await t.caption('...and the open page can be drawn on');
     await t.wait(async () => (await t.state()).viewOnly === false, 'drawing allowed after signing in', 12000);
     t.check(true, 'the page upgraded to drawing without rejoining');

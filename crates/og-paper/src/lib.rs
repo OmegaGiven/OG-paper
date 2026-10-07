@@ -52,6 +52,8 @@ mod snapshot;
 mod timeline;
 mod ui;
 mod uid;
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+mod views;
 #[cfg(target_arch = "wasm32")]
 mod web;
 mod wire;
@@ -192,6 +194,8 @@ pub struct App {
     objs: objects::Objects,
     edit: edit::EditState,
     bookmarks: Vec<Bookmark>,
+    /// Others' public views on this page (see `views`).
+    shared_views: Vec<views::SharedView>,
     /// What new portals show (Portal tool).
     portal_view: Option<objects::PortalView>,
     /// A freehand portal window being drawn (screen px).
@@ -307,6 +311,7 @@ impl App {
             objs: objects::Objects::default(),
             edit: edit::EditState::default(),
             bookmarks: Vec::new(),
+            shared_views: Vec::new(),
             portal_view: None,
             portal_path: Vec::new(),
             portal_passes: 0,
@@ -949,6 +954,7 @@ impl App {
     }
 
     fn load_scene(&mut self, scene: Scene, cam: Camera) {
+        self.shared_views.clear();
         self.timeline = Timeline::from_scene(&scene, timeline::now_ms());
         self.share = share::Share::loaded(&scene, None);
         self.merge_changes = None;
@@ -1087,6 +1093,7 @@ impl App {
                     }
                 }
                 self.groups_saved = self.objs.groups.len();
+                self.load_shared_views();
                 self.say(format!("Opened {} ({n} strokes)", path.display()));
             }
             Err(e) => self.say(format!("Could not open {}: {e}", path.display())),
@@ -2316,6 +2323,8 @@ impl App {
             cam: self.cam.clone(),
             view_px: self.view_px(),
             when,
+            public: false,
+            id: 0,
         });
     }
 
@@ -2593,6 +2602,7 @@ impl App {
             }
             Cmd::BookmarkRemove(i) => {
                 if i < self.bookmarks.len() {
+                    self.view_deleting(i);
                     self.bookmarks.remove(i);
                 }
             }
@@ -2602,7 +2612,13 @@ impl App {
                         b.name = name.trim().to_string();
                     }
                 }
+                if self.bookmarks.get(i).is_some_and(|b| b.public) {
+                    self.public_view_changed(i);
+                }
             }
+            Cmd::ViewPublic(i, on) => self.view_set_public(i, on),
+            Cmd::SharedViewGo(i) => self.shared_view_go(i),
+            Cmd::SharedViewCopy(i) => self.shared_view_copy(i),
             Cmd::Text(Some(text)) => {
                 if let Some(t) = self.edit.text.as_mut() {
                     t.text = text;
@@ -2814,10 +2830,11 @@ impl App {
             .iter()
             .map(|b| {
                 format!(
-                    "{{\"name\":{},\"zoom\":{:.2},\"at\":{}}}",
+                    "{{\"name\":{},\"zoom\":{:.2},\"at\":{},\"public\":{}}}",
                     web::json_str(&b.name),
                     b.cam.log10_zoom(),
-                    b.when.map_or("null".to_string(), |(_, t)| t.to_string())
+                    b.when.map_or("null".to_string(), |(_, t)| t.to_string()),
+                    b.public
                 )
             })
             .collect();
@@ -2845,7 +2862,7 @@ impl App {
             -99.0
         };
         web::set_status(format!(
-            "{{\"ready\":true,\"zoom\":{:.3},\"strokes\":{},\"drawn\":{},\"erased\":{},\"undos\":{},\"deepDraw\":{:.2},\"flying\":{},\"dirty\":{},\"bookmarks\":[{}],\"timeline\":{},\"dark\":{},\"canvas\":\"{:032x}\",\"peer\":\"{:016x}\",\"net\":{},\"name\":{},\"passes\":{},\"hints\":{},\"tool\":{},\"hold\":{},\"viewOnly\":{}}}",
+            "{{\"ready\":true,\"zoom\":{:.3},\"strokes\":{},\"drawn\":{},\"erased\":{},\"undos\":{},\"deepDraw\":{:.2},\"flying\":{},\"dirty\":{},\"bookmarks\":[{}],\"timeline\":{},\"dark\":{},\"canvas\":\"{:032x}\",\"peer\":\"{:016x}\",\"net\":{},\"name\":{},\"passes\":{},\"hints\":{},\"tool\":{},\"hold\":{},\"viewOnly\":{},\"shared\":[{}]}}",
             self.cam.log10_zoom(),
             self.scene.strokes.iter().filter(|s| !s.deleted).count(),
             st.drawn,
@@ -2866,6 +2883,17 @@ impl App {
             web::json_str(self.ui.tool.name()),
             web::json_str(self.ui.hold.map_or("", |h| h.tool.name())),
             self.view_only,
+            self.shared_views
+                .iter()
+                .map(|v| format!(
+                    "{{\"name\":{},\"author\":{},\"zoom\":{:.2},\"at\":{}}}",
+                    web::json_str(&v.name),
+                    web::json_str(&v.author),
+                    v.cam.log10_zoom(),
+                    v.when.map_or("null".to_string(), |(_, t)| t.to_string())
+                ))
+                .collect::<Vec<_>>()
+                .join(","),
         ));
         if self.fly.is_some() {
             self.redraw();

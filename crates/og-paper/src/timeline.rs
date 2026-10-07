@@ -137,6 +137,10 @@ pub struct Bookmark {
     /// everything up to then). Times, not positions in the history, so it
     /// stays right as more is drawn.
     pub when: Option<(i64, i64)>,
+    /// Shared with everyone on the page (see `views`).
+    pub public: bool,
+    /// Its id once it has been public (0 before), so others can follow it.
+    pub id: u128,
 }
 
 impl Timeline {

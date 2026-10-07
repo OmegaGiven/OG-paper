@@ -29,6 +29,8 @@
 //!   apps show in its place (a window of paper).
 //! - v7 timeline bookmarks: count u32; each: bookmark index u32, then the
 //!   moment's start and time (ms i64 each; start i64::MIN = everything).
+//! - v8 public views: count u32; each: bookmark index u32, id u128, public
+//!   u8 (see `views`).
 //!
 //! Compatibility: a newer version may only add at the end (a new section
 //! after the last; never a field inside an existing record), so an older
@@ -47,7 +49,7 @@ use crate::shapes::{ArrowType, FillStyle, Geom, Head, ShapeKind, ShapeStyle, Slo
 use crate::timeline::{Bookmark, Event, Timeline};
 
 const MAGIC: &[u8; 4] = b"OGPT";
-const VERSION: u8 = 7;
+const VERSION: u8 = 8;
 /// Marks a portal's view after its shape in a lone object's bytes.
 const PORTAL_TAG: &[u8; 4] = b"OGPV";
 
@@ -329,7 +331,86 @@ pub fn encode(
         b.extend_from_slice(&from.to_le_bytes());
         b.extend_from_slice(&to.to_le_bytes());
     }
+    let shared: Vec<(usize, &Bookmark)> = bookmarks
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| m.id != 0)
+        .collect();
+    b.extend_from_slice(&(shared.len() as u32).to_le_bytes());
+    for (i, m) in shared {
+        b.extend_from_slice(&(i as u32).to_le_bytes());
+        b.extend_from_slice(&m.id.to_le_bytes());
+        b.push(m.public as u8);
+    }
     b
+}
+
+/// Public views for `Msg::Views` (and a page file): count u32; each: id
+/// u128, removed u8, name, author (u32 length + UTF-8 each), camera,
+/// view_px f64, moment flag u8 then start and time (i64 each).
+pub(crate) fn encode_views(views: &[crate::views::SharedView]) -> Vec<u8> {
+    let mut b = Vec::new();
+    b.extend_from_slice(&(views.len() as u32).to_le_bytes());
+    for v in views {
+        b.extend_from_slice(&v.id.to_le_bytes());
+        b.push(v.removed as u8);
+        for s in [&v.name, &v.author] {
+            b.extend_from_slice(&(s.len() as u32).to_le_bytes());
+            b.extend_from_slice(s.as_bytes());
+        }
+        put_cam(&mut b, &v.cam);
+        b.extend_from_slice(&v.view_px.to_le_bytes());
+        match v.when {
+            Some((from, to)) => {
+                b.push(1);
+                b.extend_from_slice(&from.to_le_bytes());
+                b.extend_from_slice(&to.to_le_bytes());
+            }
+            None => b.push(0),
+        }
+    }
+    b
+}
+
+pub(crate) fn decode_views(
+    bytes: &[u8],
+    base_px: f64,
+) -> Result<Vec<crate::views::SharedView>, String> {
+    let mut r = Reader { b: bytes, at: 0 };
+    let n = r.u32()? as usize;
+    let mut out = Vec::with_capacity(n.min(1024));
+    for _ in 0..n {
+        let id = u128::from_le_bytes(r.take(16)?.try_into().expect("16 bytes"));
+        let removed = r.u8()? != 0;
+        let mut text = || -> Result<String, String> {
+            let len = r.u32()? as usize;
+            Ok(String::from_utf8_lossy(r.take(len)?)
+                .chars()
+                .take(200)
+                .collect())
+        };
+        let name = text()?;
+        let author = text()?;
+        let cam = r.cam(base_px)?;
+        let view_px = r.f64()?;
+        let when = if r.u8()? != 0 {
+            let from = i64::from_le_bytes(r.take(8)?.try_into().expect("8 bytes"));
+            let to = i64::from_le_bytes(r.take(8)?.try_into().expect("8 bytes"));
+            Some((from, to))
+        } else {
+            None
+        };
+        out.push(crate::views::SharedView {
+            id,
+            name,
+            author,
+            cam,
+            view_px,
+            when,
+            removed,
+        });
+    }
+    Ok(out)
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
@@ -413,6 +494,8 @@ pub fn decode(bytes: &[u8], base_px: f64) -> Result<Snapshot, String> {
             cam,
             view_px,
             when: None,
+            public: false,
+            id: 0,
         });
     }
     let mut objs = Objects::default();
@@ -514,6 +597,18 @@ pub fn decode(bytes: &[u8], base_px: f64) -> Result<Snapshot, String> {
                 let to = i64::from_le_bytes(r.take(8)?.try_into().expect("8 bytes"));
                 if let Some(m) = bookmarks.get_mut(i) {
                     m.when = Some((from, to));
+                }
+            }
+        }
+        if v >= 8 && r.at < bytes.len() {
+            let n = r.u32()? as usize;
+            for _ in 0..n.min(bookmarks.len()) {
+                let i = r.u32()? as usize;
+                let id = u128::from_le_bytes(r.take(16)?.try_into().expect("16 bytes"));
+                let public = r.u8()? != 0;
+                if let Some(m) = bookmarks.get_mut(i) {
+                    m.id = id;
+                    m.public = public;
                 }
             }
         }
@@ -809,12 +904,16 @@ mod tests {
                 cam: cam.clone(),
                 view_px: 640.0,
                 when: None,
+                public: false,
+                id: 0,
             },
             Bookmark {
                 name: "that afternoon".into(),
                 cam: cam.clone(),
                 view_px: 640.0,
                 when: Some((i64::MIN, 1_791_000_000_000)),
+                public: true,
+                id: 0x5eed,
             },
         ];
         let mut objs = Objects::default();
@@ -925,6 +1024,11 @@ mod tests {
             Some((i64::MIN, 1_791_000_000_000)),
             "a timeline moment"
         );
+        assert!(
+            snap.bookmarks[1].public && snap.bookmarks[1].id == 0x5eed,
+            "a public view"
+        );
+        assert!(!snap.bookmarks[0].public && snap.bookmarks[0].id == 0);
         assert_eq!(snap.cam.cell, cam.cell);
         assert_eq!(snap.cam.off, cam.off);
         assert!((snap.cam.scale - cam.scale).abs() < 1e-12);
