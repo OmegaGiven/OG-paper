@@ -118,6 +118,7 @@ reports features without tests and tests named here that don't exist.
 | UI-13 | Phone keyboard for the app's text boxes | tap any text box on a phone | W | ui:share-live |
 | UI-14 | Paste, copy and cut go to the focused text box | Ctrl+V in a text box | W D | ui:share-live |
 | UI-15 | Try mode tour | omegagiven.github.io/OG-paper/try/ › Tour | W | todo |
+| UI-16 | Tool panel: a sheet along the bottom on phones (tucks into a strip), a movable window on wider screens; width and opacity always in view, the rest in tabs | tap the strip / the panel button | W D M | ui:tool-panel |
 
 ## Plugins
 

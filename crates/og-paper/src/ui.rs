@@ -684,6 +684,12 @@ pub struct UiState {
     /// The tool panel (bottom left) is expanded; collapsed it is one small button.
     /// `None` until the first frame, which picks by screen width.
     pub panel_open: Option<bool>,
+    /// The tool panel's last tab, per set of tabs (see `panel_tabs`).
+    pub panel_tab: std::collections::HashMap<&'static str, PanelTab>,
+    /// Height of the phone's settings sheet (0 when not shown), so the
+    /// corner buttons ride above it; and how far its handle is dragged.
+    pub sheet_h: f32,
+    pub sheet_drag: f32,
     pub shape: ShapeStyle,
     /// Shape outline width, screen pixels at the zoom drawn at.
     pub shape_width: f32,
@@ -870,6 +876,9 @@ impl Default for UiState {
             grid: GridMode::Off,
             timeline_on: false,
             panel_open: None,
+            panel_tab: Default::default(),
+            sheet_h: 0.0,
+            sheet_drag: 0.0,
             shape: ShapeStyle::default(),
             shape_width: 3.0,
             portal_free: false,
@@ -1348,6 +1357,16 @@ fn geo(ctx: &egui::Context, st: &UiState) -> Geo {
         Some(f) => at_frac(screen, f, m + r),
         None => pos2(screen.right() - m - r, screen.top() + m + r),
     };
+    // Buttons the phone's settings sheet would cover ride above it.
+    let lift = |p: Pos2| {
+        let top = screen.bottom() - st.sheet_h;
+        if st.sheet_h > 0.0 && p.y + r > top {
+            pos2(p.x, top - m * 0.6 - r)
+        } else {
+            p
+        }
+    };
+    let (tool, bar, app) = (lift(tool), lift(bar), lift(app));
     Geo {
         app,
         r,
@@ -2814,16 +2833,282 @@ fn rotate_icon(p: &egui::Painter, c: Pos2, r: f32, col: Color32) {
 /// selection's), open until it is collapsed to a small button (which pops it
 /// back out). New per-tool options (textures, presets, ...) go here as
 /// sections.
+/// A part of the tool panel: the panel shows one at a time behind a row of
+/// tabs. A tool with a single part shows everything (`All`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PanelTab {
+    All,
+    Look,
+    Color,
+    Style,
+    Tip,
+    Dynamics,
+    Scatter,
+    Paint,
+    Gaps,
+    Shape,
+    Font,
+    Text,
+}
+
+impl PanelTab {
+    fn name(self) -> &'static str {
+        match self {
+            PanelTab::All => "All",
+            PanelTab::Look => "Look",
+            PanelTab::Color => "Color",
+            PanelTab::Style => "Style",
+            PanelTab::Tip => "Tip",
+            PanelTab::Dynamics => "Dynamics",
+            PanelTab::Scatter => "Scatter",
+            PanelTab::Paint => "Paint",
+            PanelTab::Gaps => "Gaps",
+            PanelTab::Shape => "Shape",
+            PanelTab::Font => "Font",
+            PanelTab::Text => "Size & align",
+        }
+    }
+}
+
+thread_local! {
+    /// The tab the tool panel is drawing (`All` outside the panel).
+    static PANEL_TAB: std::cell::Cell<PanelTab> = const { std::cell::Cell::new(PanelTab::All) };
+}
+
+/// Whether the panel is drawing this part now.
+fn part(t: PanelTab) -> bool {
+    let cur = PANEL_TAB.with(|c| c.get());
+    cur == PanelTab::All || cur == t
+}
+
+/// A heading the tab name already gives (shown only without tabs).
+fn part_heading(ui: &mut egui::Ui, text: &str) {
+    if PANEL_TAB.with(|c| c.get()) == PanelTab::All {
+        heading(ui, text);
+    }
+}
+
+/// The panel's tabs for the current tool (or selection), and the key their
+/// last choice is remembered under.
+fn panel_tabs(st: &UiState) -> (&'static str, &'static [PanelTab]) {
+    use PanelTab::*;
+    const INK: &[PanelTab] = &[Color, Style];
+    const BRUSH: &[PanelTab] = &[Look, Color, Tip, Dynamics, Scatter, Paint];
+    const SHAPE: &[PanelTab] = &[Shape, Style, Color];
+    const TEXT: &[PanelTab] = &[Font, Text, Color];
+    match st.tool {
+        Tool::Pen if st.pen.advanced => ("brush", BRUSH),
+        Tool::Pen => ("ink", INK),
+        Tool::Texture => ("brush", BRUSH),
+        Tool::Bucket => ("fill", &[Color, Gaps]),
+        Tool::Shapes => ("shape", SHAPE),
+        Tool::Text => ("text", TEXT),
+        Tool::Select | Tool::Lasso => match st.sel.kind {
+            SelKind::Ink if st.sel.ink.is_some() => ("ink", INK),
+            SelKind::Shapes | SelKind::Portals => ("shape", SHAPE),
+            SelKind::Text => ("text", TEXT),
+            _ => ("", &[]),
+        },
+        _ => ("", &[]),
+    }
+}
+
+/// What the quick strip shows and edits: the color, the width (with its
+/// largest value) and the opacity, as far as the tool has them. None for a
+/// tool with none of them.
+type StripRefs<'a> = (
+    Option<Color32>,
+    Option<(&'a mut f32, f32)>,
+    Option<&'a mut u8>,
+);
+
+fn strip_refs(st: &mut UiState) -> Option<StripRefs<'_>> {
+    Some(match st.tool {
+        Tool::Pen => {
+            let max = if st.pen.advanced { 200.0 } else { 48.0 };
+            (
+                Some(st.pen.color),
+                Some((&mut st.pen.width, max)),
+                Some(&mut st.pen.opacity),
+            )
+        }
+        Tool::Texture => (
+            Some(st.texture.color),
+            Some((&mut st.texture.width, 200.0)),
+            Some(&mut st.texture.opacity),
+        ),
+        Tool::Highlighter => (
+            Some(st.highlighter.color),
+            Some((&mut st.highlighter.width, 80.0)),
+            None,
+        ),
+        Tool::Bucket => (Some(st.fill.color), None, Some(&mut st.fill.opacity)),
+        Tool::Shapes => (
+            Some(c32(st.shape.stroke)),
+            Some((&mut st.shape_width, 24.0)),
+            Some(&mut st.shape.opacity),
+        ),
+        Tool::Text => (Some(c32(st.text.color)), None, Some(&mut st.text.opacity)),
+        Tool::Select | Tool::Lasso => match st.sel.kind {
+            SelKind::Ink => {
+                let ink = st.sel.ink.as_mut()?;
+                let c = ink.color;
+                (
+                    Some(c),
+                    Some((&mut ink.width, 48.0)),
+                    Some(&mut ink.opacity),
+                )
+            }
+            SelKind::Shapes | SelKind::Portals => (
+                Some(c32(st.sel.shape.stroke)),
+                None,
+                Some(&mut st.sel.shape.opacity),
+            ),
+            SelKind::Text => (
+                Some(c32(st.sel.text.color)),
+                None,
+                Some(&mut st.sel.text.opacity),
+            ),
+            SelKind::Images => (None, None, Some(&mut st.sel.opacity)),
+            _ => return None,
+        },
+        _ => return None,
+    })
+}
+
+const STRIP_BG: Color32 = Color32::from_rgb(243, 239, 231);
+const CHIP_BG: Color32 = Color32::from_rgb(236, 232, 224);
+
+/// A round color swatch; true when tapped.
+fn color_dot(ui: &mut egui::Ui, c: Color32, r: f32, tip: &str) -> bool {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::splat(2.0 * r + 2.0), Sense::click());
+    let p = ui.painter();
+    p.circle_filled(rect.center(), r, Color32::WHITE);
+    p.circle_stroke(rect.center(), r, Stroke::new(1.0, EDGE));
+    p.circle_filled(rect.center(), r - 3.0, c);
+    resp.on_hover_text(tip).clicked()
+}
+
+/// The settings always in view above the tabs: the color (tap it for the
+/// Color tab), the width and the opacity. True when the color was tapped.
+fn quick_strip(ui: &mut egui::Ui, st: &mut UiState, touch: bool) -> bool {
+    let Some((color, width, opacity)) = strip_refs(st) else {
+        return false;
+    };
+    let mut tapped = false;
+    egui::Frame::new()
+        .fill(STRIP_BG)
+        .corner_radius(10.0)
+        .inner_margin(egui::Margin::symmetric(8, 4))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                if let Some(c) = color {
+                    tapped = color_dot(ui, c, if touch { 14.0 } else { 11.0 }, "Color");
+                }
+                ui.vertical(|ui| {
+                    let label_w = 52.0;
+                    let row = |ui: &mut egui::Ui,
+                               name: &str,
+                               add: &mut dyn FnMut(&mut egui::Ui)| {
+                        ui.horizontal(|ui| {
+                            ui.add_sized(
+                                vec2(label_w, ui.spacing().interact_size.y),
+                                egui::Label::new(
+                                    egui::RichText::new(name)
+                                        .size(11.5)
+                                        .color(Color32::from_gray(110)),
+                                ),
+                            );
+                            ui.spacing_mut().slider_width = (ui.available_width() - 64.0).max(60.0);
+                            add(ui);
+                        });
+                    };
+                    if let Some((w, max)) = width {
+                        row(ui, "Width", &mut |ui| {
+                            ui.add(
+                                egui::Slider::new(&mut *w, 0.5..=max)
+                                    .logarithmic(true)
+                                    .suffix(" px"),
+                            );
+                        });
+                    }
+                    if let Some(o) = opacity {
+                        row(ui, "Opacity", &mut |ui| {
+                            let mut v = *o as f32 / 255.0 * 100.0;
+                            if ui
+                                .add(
+                                    egui::Slider::new(&mut v, 5.0..=100.0)
+                                        .suffix(" %")
+                                        .fixed_decimals(0),
+                                )
+                                .changed()
+                            {
+                                *o = (v / 100.0 * 255.0).round() as u8;
+                            }
+                        });
+                    }
+                });
+            });
+        });
+    tapped
+}
+
+/// A pill button, dark when chosen.
+fn pill(ui: &mut egui::Ui, text: &str, on: bool, touch: bool) -> egui::Response {
+    let t = egui::RichText::new(text)
+        .size(if touch { 13.5 } else { 12.5 })
+        .color(if on { Color32::WHITE } else { INKY });
+    ui.add(
+        egui::Button::new(t)
+            .fill(if on { INKY } else { CHIP_BG })
+            .stroke(Stroke::NONE)
+            .corner_radius(99.0)
+            .min_size(vec2(0.0, if touch { 30.0 } else { 24.0 })),
+    )
+}
+
+/// Two or more choices in a rounded track; returns the one tapped.
+fn segmented(ui: &mut egui::Ui, items: &[&str], cur: usize, touch: bool) -> Option<usize> {
+    let mut hit = None;
+    egui::Frame::new()
+        .fill(CHIP_BG)
+        .corner_radius(9.0)
+        .inner_margin(2.0)
+        .show(ui, |ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            ui.horizontal(|ui| {
+                for (i, it) in items.iter().enumerate() {
+                    let on = i == cur;
+                    let b = egui::Button::new(
+                        egui::RichText::new(*it)
+                            .size(if touch { 13.0 } else { 12.0 })
+                            .color(INKY),
+                    )
+                    .fill(if on { Color32::WHITE } else { CHIP_BG })
+                    .stroke(Stroke::NONE)
+                    .corner_radius(7.0)
+                    .min_size(vec2(0.0, if touch { 28.0 } else { 22.0 }));
+                    if ui.add(b).clicked() && !on {
+                        hit = Some(i);
+                    }
+                }
+            });
+        });
+    hit
+}
+
 fn tool_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) {
     let tool = st.tool;
     if st.hide_panel || !tool.has_panel() || (tool.selects() && st.sel.count == 0) {
+        st.sheet_h = 0.0;
         return;
     }
     let touch = st.touch_ui;
     let m = if touch { 18.0 } else { 16.0 };
     let screen = ctx.content_rect();
-    // Bottom left by default (in thumb reach on phones, out of the way on
-    // desktops); any corner via Edit layout.
+    // Where the window starts on a desktop: bottom left by default, any
+    // corner via Edit layout; it can be dragged anywhere from there.
     let pc = if st.radial_bar {
         crate::layout::Corner::TopLeft
     } else {
@@ -2835,225 +3120,427 @@ fn tool_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) 
         crate::layout::Corner::TopLeft => Align2::LEFT_TOP,
         crate::layout::Corner::TopRight => Align2::RIGHT_TOP,
     };
-    let corner = vec2(
-        if pc.is_right() { -m } else { m },
-        // Top right sits under the settings button.
+    let corner = pos2(
+        if pc.is_right() {
+            screen.right() - m
+        } else {
+            screen.left() + m
+        },
         match pc {
-            crate::layout::Corner::TopRight => m + if touch { 70.0 } else { 60.0 },
-            crate::layout::Corner::TopLeft => m,
-            _ => -m,
+            // Top right sits under the settings button.
+            crate::layout::Corner::TopRight => screen.top() + m + if touch { 70.0 } else { 60.0 },
+            crate::layout::Corner::TopLeft => screen.top() + m,
+            _ => screen.bottom() - m,
         },
     );
-    // Open by default where there is room; tucked away on phones.
-    // Open at first on wide screens, measured at the UI size it will have
-    // (the first frame is drawn before the UI size takes effect).
+    // Phones get a sheet along the bottom; wider screens a window. Measured
+    // at the UI size it will have (the first frame is drawn before the UI
+    // size takes effect). Open at first only where there is room.
     let wide = screen.width() * ctx.zoom_factor() / st.ui_scale >= 700.0;
+    let sheet = !wide;
     let open = *st.panel_open.get_or_insert(wide);
 
     if !open {
-        // Collapsed: a small round button showing the tool and its color.
-        let r = if touch { 24.0 } else { 19.0 } * ui_scale(screen).max(0.7);
-        let col = tool_color(st, tool);
-        egui::Area::new(Id::new("tool_panel_btn"))
-            .order(Order::Foreground)
-            .anchor(align, corner)
-            .show(ctx, |ui| {
-                let (rect, resp) =
-                    ui.allocate_exact_size(Vec2::splat(2.0 * r + 4.0), Sense::click());
-                let c = rect.center();
-                let p = ui.painter();
-                disc(
-                    p,
-                    c,
-                    r,
-                    if resp.hovered() { Color32::WHITE } else { FACE },
-                    false,
-                );
-                sliders_icon(p, c, r, col);
-                if resp.clicked() {
-                    st.panel_open = Some(true);
-                }
-                resp.on_hover_text(format!("{} settings", tool.name()));
-            });
+        st.sheet_h = 0.0;
+        if sheet {
+            // Collapsed on a phone: a strip with the color, width and
+            // opacity; tap it to open the sheet.
+            let name = tool.name();
+            let vals = strip_refs(st)
+                .map(|(c, w, o)| (c, w.map(|(w, _)| *w), o.map(|o| *o as f32 / 2.55)));
+            let g = geo(ctx, st);
+            let room = (screen.width() - 4.0 * (g.r + m)).max(160.0);
+            egui::Area::new(Id::new("tool_panel_btn"))
+                .order(Order::Foreground)
+                .anchor(Align2::CENTER_BOTTOM, vec2(0.0, -m))
+                .show(ctx, |ui| {
+                    ui.style_mut().visuals = egui::Visuals::light();
+                    let inner = egui::Frame::new()
+                        .fill(FACE)
+                        .stroke(Stroke::new(1.0, EDGE))
+                        .corner_radius(14.0)
+                        .inner_margin(egui::Margin::symmetric(10, 6))
+                        .shadow(egui::Shadow {
+                            offset: [0, 2],
+                            blur: 10,
+                            spread: 0,
+                            color: Color32::from_black_alpha(40),
+                        })
+                        .show(ui, |ui| {
+                            ui.set_max_width(room);
+                            ui.horizontal(|ui| {
+                                let chip = |ui: &mut egui::Ui, t: String| {
+                                    egui::Frame::new()
+                                        .fill(CHIP_BG)
+                                        .corner_radius(7.0)
+                                        .inner_margin(egui::Margin::symmetric(6, 2))
+                                        .show(ui, |ui| ui.label(egui::RichText::new(t).size(12.0)));
+                                };
+                                if let Some((c, w, o)) = vals {
+                                    if let Some(c) = c {
+                                        color_dot(ui, c, 10.0, "Color");
+                                    }
+                                    ui.label(egui::RichText::new(name).strong());
+                                    if let Some(w) = w {
+                                        chip(
+                                            ui,
+                                            if w < 10.0 {
+                                                format!("{w:.1} px")
+                                            } else {
+                                                format!("{w:.0} px")
+                                            },
+                                        );
+                                    }
+                                    if let Some(o) = o {
+                                        chip(ui, format!("{o:.0}%"));
+                                    }
+                                } else {
+                                    ui.label(egui::RichText::new(name).strong());
+                                }
+                                // An up chevron: it opens upward.
+                                let (r, _) =
+                                    ui.allocate_exact_size(vec2(14.0, 14.0), Sense::hover());
+                                let c = r.center();
+                                ui.painter().add(Shape::line(
+                                    vec![
+                                        c + vec2(-5.0, 2.5),
+                                        c + vec2(0.0, -2.5),
+                                        c + vec2(5.0, 2.5),
+                                    ],
+                                    Stroke::new(1.8, Color32::from_gray(140)),
+                                ));
+                            });
+                        });
+                    let resp = ui
+                        .interact(
+                            inner.response.rect,
+                            Id::new("tool_strip_open"),
+                            Sense::click(),
+                        )
+                        .on_hover_text(format!("{name} settings"));
+                    resp.widget_info(|| {
+                        egui::WidgetInfo::labeled(
+                            egui::WidgetType::Button,
+                            true,
+                            format!("{name} settings"),
+                        )
+                    });
+                    if resp.clicked() {
+                        st.panel_open = Some(true);
+                    }
+                });
+        } else {
+            // Collapsed on a desktop: a small round button showing the tool
+            // and its color.
+            let r = if touch { 24.0 } else { 19.0 } * ui_scale(screen).max(0.7);
+            let col = tool_color(st, tool);
+            let a = vec2(
+                if pc.is_right() { -m } else { m },
+                match pc {
+                    crate::layout::Corner::TopRight => m + if touch { 70.0 } else { 60.0 },
+                    crate::layout::Corner::TopLeft => m,
+                    _ => -m,
+                },
+            );
+            egui::Area::new(Id::new("tool_panel_btn"))
+                .order(Order::Foreground)
+                .anchor(align, a)
+                .show(ctx, |ui| {
+                    let (rect, resp) =
+                        ui.allocate_exact_size(Vec2::splat(2.0 * r + 4.0), Sense::click());
+                    let c = rect.center();
+                    let p = ui.painter();
+                    disc(
+                        p,
+                        c,
+                        r,
+                        if resp.hovered() { Color32::WHITE } else { FACE },
+                        false,
+                    );
+                    sliders_icon(p, c, r, col);
+                    if resp.clicked() {
+                        st.panel_open = Some(true);
+                    }
+                    resp.on_hover_text(format!("{} settings", tool.name()));
+                });
+        }
         return;
     }
 
+    let (key, tabs) = panel_tabs(st);
+    let cur = if tabs.len() > 1 {
+        st.panel_tab
+            .get(key)
+            .copied()
+            .filter(|t| tabs.contains(t))
+            .unwrap_or(tabs[0])
+    } else {
+        PanelTab::All
+    };
     let mut dial_hue = st.dial_hue;
     let mut pick = false;
-    egui::Area::new(Id::new("tool_panel"))
-        .order(Order::Foreground)
-        .anchor(align, corner)
-        .show(ctx, |ui| {
-            // Light like the rest of the controls, whatever the system theme.
-            ui.style_mut().visuals = egui::Visuals::light();
-            let frame = egui::Frame::new()
-                .fill(FACE)
-                .stroke(Stroke::new(1.0, EDGE))
-                .corner_radius(12.0)
-                .inner_margin(12.0)
-                .shadow(egui::Shadow {
-                    offset: [0, 2],
-                    blur: 10,
-                    spread: 0,
-                    color: Color32::from_black_alpha(40),
-                });
-            frame.show(ui, |ui| {
-                let w = if touch { 248.0 } else { 220.0 };
-                ui.set_width(w);
-                if touch {
-                    ui.style_mut().spacing.interact_size.y = 34.0;
-                    ui.style_mut().spacing.slider_width = w - 70.0;
-                } else {
-                    ui.style_mut().spacing.slider_width = w - 64.0;
+    let area = if sheet {
+        egui::Area::new(Id::new("tool_panel"))
+            .order(Order::Foreground)
+            .anchor(Align2::CENTER_BOTTOM, vec2(0.0, 0.0))
+    } else {
+        egui::Area::new(Id::new("tool_panel").with(format!("{pc:?}")))
+            .order(Order::Foreground)
+            .movable(true)
+            .constrain(true)
+            .pivot(align)
+            .default_pos(corner)
+    };
+    let shown = area.show(ctx, |ui| {
+        // Light like the rest of the controls, whatever the system theme.
+        ui.style_mut().visuals = egui::Visuals::light();
+        let w = if sheet {
+            screen.width() - 30.0
+        } else if touch {
+            330.0
+        } else {
+            300.0
+        };
+        let frame = egui::Frame::new()
+            .fill(FACE)
+            .stroke(Stroke::new(1.0, EDGE))
+            .corner_radius(if sheet {
+                egui::CornerRadius {
+                    nw: 18,
+                    ne: 18,
+                    sw: 0,
+                    se: 0,
                 }
-                let title = if tool.selects() {
-                    format!("Selection ({})", st.sel.count)
+            } else {
+                egui::CornerRadius::same(16)
+            })
+            .inner_margin(egui::Margin {
+                left: 14,
+                right: 14,
+                top: 4,
+                bottom: 12,
+            })
+            .shadow(egui::Shadow {
+                offset: [0, 2],
+                blur: 14,
+                spread: 0,
+                color: Color32::from_black_alpha(45),
+            });
+        frame.show(ui, |ui| {
+            ui.set_width(w);
+            ui.set_max_width(w);
+            if touch {
+                ui.style_mut().spacing.interact_size.y = 32.0;
+            }
+            // Room for a slider's value and its name beside it.
+            ui.style_mut().spacing.slider_width = (w - 170.0).clamp(90.0, 260.0);
+            // The grab handle: drag the sheet down (or tap) to tuck it
+            // away; on a desktop the window is dragged by any free space.
+            let (hr, hresp) = ui.allocate_exact_size(
+                vec2(w, 14.0),
+                if sheet {
+                    Sense::click_and_drag()
                 } else {
-                    tool.name().to_string()
-                };
-                ui.horizontal(|ui| {
-                    ui.strong(title);
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let (rect, resp) = ui.allocate_exact_size(
-                            Vec2::splat(if touch { 30.0 } else { 22.0 }),
-                            Sense::click(),
-                        );
-                        let p = ui.painter();
-                        if resp.hovered() {
-                            p.circle_filled(
-                                rect.center(),
-                                rect.width() * 0.5,
-                                Color32::from_gray(232),
-                            );
-                        }
-                        collapse_icon(p, rect.center(), rect.width() * 0.5);
-                        if resp.clicked() {
-                            st.panel_open = Some(false);
-                        }
-                        resp.on_hover_text("Hide (tap the button to bring it back)");
+                    Sense::hover()
+                },
+            );
+            ui.painter().rect_filled(
+                Rect::from_center_size(hr.center(), vec2(40.0, 5.0)),
+                3.0,
+                Color32::from_rgb(207, 201, 189),
+            );
+            if sheet {
+                if hresp.dragged() {
+                    st.sheet_drag += hresp.drag_delta().y;
+                }
+                if hresp.clicked() || (hresp.drag_stopped() && st.sheet_drag > 24.0) {
+                    st.panel_open = Some(false);
+                }
+                if !hresp.dragged() {
+                    st.sheet_drag = 0.0;
+                }
+                hresp.on_hover_text("Swipe down to tuck the settings away");
+            }
+            let title = if tool.selects() {
+                format!("Selection ({})", st.sel.count)
+            } else {
+                tool.name().to_string()
+            };
+            ui.horizontal(|ui| {
+                // Not selectable, so dragging the title moves the window.
+                ui.add(egui::Label::new(egui::RichText::new(title).strong()).selectable(false));
+                if tool == Tool::Pen {
+                    let now = st.pen.advanced as usize;
+                    if let Some(i) = segmented(ui, &["Simple", "Advanced"], now, touch) {
+                        st.pen.advanced = i == 1;
+                    }
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let (rect, resp) = ui.allocate_exact_size(
+                        Vec2::splat(if touch { 30.0 } else { 22.0 }),
+                        Sense::click(),
+                    );
+                    let p = ui.painter();
+                    if resp.hovered() {
+                        p.circle_filled(rect.center(), rect.width() * 0.5, Color32::from_gray(232));
+                    }
+                    collapse_icon(p, rect.center(), rect.width() * 0.5);
+                    if resp.clicked() {
+                        st.panel_open = Some(false);
+                    }
+                    resp.widget_info(|| {
+                        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Hide settings")
+                    });
+                    resp.on_hover_text(if sheet {
+                        "Hide (tap the strip to bring it back)"
+                    } else {
+                        "Hide (tap the button to bring it back)"
                     });
                 });
-                let max_h = (screen.height() - 2.0 * m - 60.0).max(160.0);
-                egui::ScrollArea::vertical()
-                    .max_height(max_h)
-                    .min_scrolled_height(max_h)
+            });
+            if tool.selects() {
+                select_actions(ui, st.sel.kind, st.sel.count, st.cropping, actions);
+            }
+            if quick_strip(ui, st, touch) && tabs.contains(&PanelTab::Color) {
+                st.panel_tab.insert(key, PanelTab::Color);
+            }
+            if tabs.len() > 1 {
+                egui::ScrollArea::horizontal()
+                    .id_salt("panel_tabs")
+                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
                     .show(ui, |ui| {
-                        pick = match tool {
-                            Tool::Pen => {
-                                brush_section(ui, &mut st.pen, touch, &mut dial_hue, false)
-                            }
-                            Tool::Texture => {
-                                brush_section(ui, &mut st.texture, touch, &mut dial_hue, true)
-                            }
-                            Tool::Highlighter => ink_section(
-                                ui,
-                                &mut st.highlighter,
-                                tool,
-                                touch,
-                                &mut dial_hue,
-                                true,
-                            ),
-                            Tool::Bucket => fill_section(
-                                ui,
-                                &mut st.fill,
-                                &mut st.fill_gap,
-                                touch,
-                                &mut dial_hue,
-                            ),
-                            Tool::Shapes => shape_section(
-                                ui,
-                                &mut st.shape,
-                                Some(&mut st.shape_width),
-                                &mut st.color_target,
-                                touch,
-                                &mut dial_hue,
-                            ),
-                            Tool::Portal => portal_section(ui, st, touch, actions),
-                            Tool::Text => text_section(
-                                ui,
-                                &mut st.text,
-                                Some(&mut st.text_size),
-                                touch,
-                                &mut dial_hue,
-                                &st.egui_fonts,
-                                actions,
-                            ),
-                            Tool::Select | Tool::Lasso => {
-                                select_actions(ui, st.sel.kind, st.sel.count, st.cropping, actions);
-                                match st.sel.kind {
-                                    SelKind::Ink => match st.sel.ink.as_mut() {
-                                        Some(ink) => ink_section(
-                                            ui,
-                                            ink,
-                                            Tool::Texture,
-                                            touch,
-                                            &mut dial_hue,
-                                            false,
-                                        ),
-                                        None => false,
-                                    },
-                                    SelKind::Shapes => shape_section(
-                                        ui,
-                                        &mut st.sel.shape,
-                                        None,
-                                        &mut st.color_target,
-                                        touch,
-                                        &mut dial_hue,
-                                    ),
-                                    SelKind::Text => text_section(
-                                        ui,
-                                        &mut st.sel.text,
-                                        None,
-                                        touch,
-                                        &mut dial_hue,
-                                        &st.egui_fonts,
-                                        actions,
-                                    ),
-                                    SelKind::Images => {
-                                        opacity_slider(ui, &mut st.sel.opacity);
-                                        false
-                                    }
-                                    SelKind::Portals => {
-                                        heading(ui, "Portal");
-                                        ui.horizontal_wrapped(|ui| {
-                                            if ui
-                                                .button("Go there")
-                                                .on_hover_text("Fly into the view it shows")
-                                                .clicked()
-                                            {
-                                                actions.push(Action::PortalGo);
-                                            }
-                                            if !st.portal_shows.is_empty()
-                                                && ui
-                                                    .button(format!("Show {}", st.portal_shows))
-                                                    .on_hover_text("Show the view chosen in the Portal tool instead")
-                                                    .clicked()
-                                            {
-                                                actions.push(Action::PortalRetarget);
-                                            }
-                                        });
-                                        shape_section(
-                                            ui,
-                                            &mut st.sel.shape,
-                                            None,
-                                            &mut st.color_target,
-                                            touch,
-                                            &mut dial_hue,
-                                        )
-                                    }
-                                    _ => false,
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 4.0;
+                            for &t in tabs {
+                                if pill(ui, t.name(), t == cur, touch).clicked() {
+                                    st.panel_tab.insert(key, t);
                                 }
                             }
-                            _ => false,
-                        };
+                        });
                     });
-            });
+            }
+            // The tab's settings, scrolling when they don't fit: the sheet
+            // keeps about half the screen, the window most of it.
+            let used = ui.min_rect().height();
+            let total = if sheet {
+                screen.height() * 0.5
+            } else {
+                screen.height() - 2.0 * m - 40.0
+            };
+            let body_h = (total - used - 20.0).max(120.0);
+            PANEL_TAB.with(|c| c.set(cur));
+            egui::ScrollArea::vertical()
+                .id_salt(("panel_body", key))
+                .max_height(body_h)
+                .min_scrolled_height(body_h)
+                .auto_shrink([false, !(sheet && tabs.len() > 1)])
+                .show(ui, |ui| {
+                    // The color dial is as wide as it is given: keep it
+                    // to a size that leaves room for the rest.
+                    if cur == PanelTab::Color || tool == Tool::Highlighter {
+                        let dw = ui.available_width().min(if sheet { 230.0 } else { 260.0 });
+                        let pad = (ui.available_width() - dw) * 0.5;
+                        ui.horizontal(|ui| {
+                            ui.add_space(pad);
+                            ui.vertical(|ui| {
+                                ui.set_width(dw);
+                                pick = panel_body(ui, st, tool, touch, &mut dial_hue, actions);
+                            });
+                        });
+                    } else {
+                        pick = panel_body(ui, st, tool, touch, &mut dial_hue, actions);
+                    }
+                });
+            PANEL_TAB.with(|c| c.set(PanelTab::All));
         });
+    });
+    // The sheet's height, so the corner buttons ride above it.
+    let h = if sheet {
+        shown.response.rect.height()
+    } else {
+        0.0
+    };
+    if (h - st.sheet_h).abs() > 0.5 {
+        st.sheet_h = h;
+        ctx.request_repaint();
+    }
     st.dial_hue = dial_hue;
     if pick {
         // The dial's eyedropper: pick a color from the canvas, then come back.
         st.last_ink = tool;
         st.tool = Tool::Picker;
+    }
+}
+
+/// The tool's settings for the tab being drawn (see [`part`]); true when the
+/// color dial's eyedropper was tapped.
+fn panel_body(
+    ui: &mut egui::Ui,
+    st: &mut UiState,
+    tool: Tool,
+    touch: bool,
+    dial_hue: &mut f32,
+    actions: &mut Vec<Action>,
+) -> bool {
+    match tool {
+        Tool::Pen => brush_section(ui, &mut st.pen, touch, dial_hue, false),
+        Tool::Texture => brush_section(ui, &mut st.texture, touch, dial_hue, true),
+        Tool::Highlighter => ink_section(ui, &mut st.highlighter, tool, touch, dial_hue, false),
+        Tool::Bucket => fill_section(ui, &mut st.fill, &mut st.fill_gap, touch, dial_hue),
+        Tool::Shapes => shape_section(ui, &mut st.shape, &mut st.color_target, touch, dial_hue),
+        Tool::Portal => portal_section(ui, st, touch, actions),
+        Tool::Text => text_section(
+            ui,
+            &mut st.text,
+            Some(&mut st.text_size),
+            touch,
+            dial_hue,
+            &st.egui_fonts,
+            actions,
+        ),
+        Tool::Select | Tool::Lasso => match st.sel.kind {
+            SelKind::Ink => match st.sel.ink.as_mut() {
+                Some(ink) => ink_section(ui, ink, Tool::Texture, touch, dial_hue, false),
+                None => false,
+            },
+            SelKind::Shapes => {
+                shape_section(ui, &mut st.sel.shape, &mut st.color_target, touch, dial_hue)
+            }
+            SelKind::Text => text_section(
+                ui,
+                &mut st.sel.text,
+                None,
+                touch,
+                dial_hue,
+                &st.egui_fonts,
+                actions,
+            ),
+            SelKind::Portals => {
+                if part(PanelTab::Shape) {
+                    heading(ui, "Portal");
+                    ui.horizontal_wrapped(|ui| {
+                        if ui
+                            .button("Go there")
+                            .on_hover_text("Fly into the view it shows")
+                            .clicked()
+                        {
+                            actions.push(Action::PortalGo);
+                        }
+                        if !st.portal_shows.is_empty()
+                            && ui
+                                .button(format!("Show {}", st.portal_shows))
+                                .on_hover_text("Show the view chosen in the Portal tool instead")
+                                .clicked()
+                        {
+                            actions.push(Action::PortalRetarget);
+                        }
+                    });
+                }
+                shape_section(ui, &mut st.sel.shape, &mut st.color_target, touch, dial_hue)
+            }
+            _ => false,
+        },
+        _ => false,
     }
 }
 
@@ -3130,21 +3617,6 @@ fn text_chip(p: &egui::Painter, c: Pos2, text: &str) {
     );
 }
 
-fn opacity_slider(ui: &mut egui::Ui, o: &mut u8) {
-    heading(ui, "Opacity");
-    let mut v = *o as f32 / 255.0 * 100.0;
-    if ui
-        .add(
-            egui::Slider::new(&mut v, 5.0..=100.0)
-                .suffix(" %")
-                .fixed_decimals(0),
-        )
-        .changed()
-    {
-        *o = (v / 100.0 * 255.0).round() as u8;
-    }
-}
-
 fn dash_chips(ui: &mut egui::Ui, dash: &mut Dash, sz: f32) -> bool {
     heading(ui, "Stroke style");
     chips(
@@ -3167,42 +3639,36 @@ fn ink_section(
     preview: bool,
 ) -> bool {
     let sz = if touch { 34.0 } else { 28.0 };
-    if preview {
-        let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 44.0), Sense::hover());
-        let pw = ink.width.min(40.0);
-        let [r, g, b, a] = ink.rgba();
-        let a = if tool == Tool::Highlighter { 140 } else { a };
-        let col = Color32::from_rgba_unmultiplied(r, g, b, a);
-        let pts: Vec<Pos2> = (0..24)
-            .map(|i| {
-                let x = i as f32 / 23.0;
-                pos2(
-                    rect.left() + 14.0 + x * (rect.width() - 28.0),
-                    rect.center().y + (x * 6.0).sin() * 8.0,
-                )
-            })
-            .collect();
-        ui.painter().add(Shape::line(pts, Stroke::new(pw, col)));
+    if part(PanelTab::Style) {
+        if preview {
+            let (rect, _) =
+                ui.allocate_exact_size(vec2(ui.available_width(), 44.0), Sense::hover());
+            let pw = ink.width.min(40.0);
+            let [r, g, b, a] = ink.rgba();
+            let a = if tool == Tool::Highlighter { 140 } else { a };
+            let col = Color32::from_rgba_unmultiplied(r, g, b, a);
+            let pts: Vec<Pos2> = (0..24)
+                .map(|i| {
+                    let x = i as f32 / 23.0;
+                    pos2(
+                        rect.left() + 14.0 + x * (rect.width() - 28.0),
+                        rect.center().y + (x * 6.0).sin() * 8.0,
+                    )
+                })
+                .collect();
+            ui.painter().add(Shape::line(pts, Stroke::new(pw, col)));
+        }
+        if tool == Tool::Pen {
+            ui.checkbox(&mut ink.pressure, "Width follows pressure");
+        }
+        if tool != Tool::Highlighter {
+            dash_chips(ui, &mut ink.dash, sz);
+        }
     }
-    heading(ui, "Stroke width");
-    let max = if tool == Tool::Highlighter {
-        80.0
-    } else {
-        48.0
-    };
-    ui.add(
-        egui::Slider::new(&mut ink.width, 0.5..=max)
-            .logarithmic(true)
-            .suffix(" px"),
-    );
-    if tool == Tool::Pen {
-        ui.checkbox(&mut ink.pressure, "Width follows pressure");
+    if !part(PanelTab::Color) {
+        return false;
     }
-    if tool != Tool::Highlighter {
-        dash_chips(ui, &mut ink.dash, sz);
-        opacity_slider(ui, &mut ink.opacity);
-    }
-    heading(ui, "Color");
+    part_heading(ui, "Color");
     color_dial(
         ui,
         &mut ink.color,
@@ -3220,33 +3686,37 @@ fn fill_section(
     touch: bool,
     dial_hue: &mut f32,
 ) -> bool {
-    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::hover());
-    let [r, g, b, a] = ink.rgba();
-    ui.painter().rect_filled(
-        rect.shrink2(vec2(14.0, 4.0)),
-        6.0,
-        Color32::from_rgba_unmultiplied(r, g, b, a),
-    );
-    help(ui, "Tap inside a closed outline to fill it.");
-    heading(ui, "Close gaps");
-    ui.horizontal(|ui| {
-        for (v, name, tip) in [
-            (0u8, "Off", "Only fill fully closed outlines"),
-            (2, "Small", "Bridge gaps of a few points"),
-            (5, "Medium", "Bridge gaps up to about 10 points"),
-            (9, "Large", "Bridge gaps up to about 18 points"),
-        ] {
-            if ui
-                .selectable_label(*gap == v, name)
-                .on_hover_text(tip)
-                .clicked()
-            {
-                *gap = v;
+    if part(PanelTab::Gaps) {
+        let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::hover());
+        let [r, g, b, a] = ink.rgba();
+        ui.painter().rect_filled(
+            rect.shrink2(vec2(14.0, 4.0)),
+            6.0,
+            Color32::from_rgba_unmultiplied(r, g, b, a),
+        );
+        help(ui, "Tap inside a closed outline to fill it.");
+        heading(ui, "Close gaps");
+        ui.horizontal(|ui| {
+            for (v, name, tip) in [
+                (0u8, "Off", "Only fill fully closed outlines"),
+                (2, "Small", "Bridge gaps of a few points"),
+                (5, "Medium", "Bridge gaps up to about 10 points"),
+                (9, "Large", "Bridge gaps up to about 18 points"),
+            ] {
+                if ui
+                    .selectable_label(*gap == v, name)
+                    .on_hover_text(tip)
+                    .clicked()
+                {
+                    *gap = v;
+                }
             }
-        }
-    });
-    opacity_slider(ui, &mut ink.opacity);
-    heading(ui, "Color");
+        });
+    }
+    if !part(PanelTab::Color) {
+        return false;
+    }
+    part_heading(ui, "Color");
     color_dial(ui, &mut ink.color, false, dial_hue, touch)
 }
 
@@ -3254,128 +3724,125 @@ fn fill_section(
 fn shape_section(
     ui: &mut egui::Ui,
     sh: &mut ShapeStyle,
-    width: Option<&mut f32>,
     target: &mut ColorTarget,
     touch: bool,
     dial_hue: &mut f32,
 ) -> bool {
     let sz = if touch { 34.0 } else { 28.0 };
-    heading(ui, "Shape");
-    chips(
-        ui,
-        &SHAPES,
-        &mut sh.kind,
-        sz,
-        |k| k.name().into(),
-        |p, c, r, k| shape_icon(p, c, r, k, INKY),
-    );
-    if matches!(sh.kind, ShapeKind::Star | ShapeKind::Polygon) {
-        heading(
+    if part(PanelTab::Shape) {
+        part_heading(ui, "Shape");
+        chips(
             ui,
-            if sh.kind == ShapeKind::Star {
-                "Points"
-            } else {
-                "Sides"
-            },
+            &SHAPES,
+            &mut sh.kind,
+            sz,
+            |k| k.name().into(),
+            |p, c, r, k| shape_icon(p, c, r, k, INKY),
         );
-        let mut n = sh.sides as u32;
-        if ui.add(egui::Slider::new(&mut n, 3..=12)).changed() {
-            sh.sides = n as u8;
-        }
-    }
-    if let Some(w) = width {
-        heading(ui, "Stroke width");
-        ui.add(
-            egui::Slider::new(w, 0.5..=24.0)
-                .logarithmic(true)
-                .suffix(" px"),
-        );
-    }
-    dash_chips(ui, &mut sh.dash, sz);
-    heading(ui, "Sloppiness");
-    chips(
-        ui,
-        &SLOPPINESS,
-        &mut sh.sloppiness,
-        sz,
-        |s| s.name().into(),
-        |p, c, r, s| line_icon(p, c, r, Dash::Solid, s, ArrowType::Curved),
-    );
-    if !sh.kind.is_linear() {
-        if sh.kind != ShapeKind::Ellipse {
-            heading(ui, "Edges");
-            chips(
+        if matches!(sh.kind, ShapeKind::Star | ShapeKind::Polygon) {
+            heading(
                 ui,
-                &[false, true],
-                &mut sh.round,
-                sz,
-                |r| if r { "Round" } else { "Sharp" }.into(),
-                |p, c, r, round| {
-                    let st = Stroke::new(1.8, INKY);
-                    let (bl, tr) = (c + vec2(-r, r), c + vec2(r, -r));
-                    if round {
-                        let rad = r * 1.1;
-                        let mut pts = vec![bl];
-                        for i in (0..=8).rev() {
-                            let t = i as f32 / 8.0 * FRAC_PI_2;
-                            pts.push(pos2(
-                                c.x - r + rad * (1.0 - t.sin()),
-                                c.y - r + rad * (1.0 - t.cos()),
-                            ));
-                        }
-                        pts.push(tr);
-                        p.add(Shape::line(pts, st));
-                    } else {
-                        p.add(Shape::line(vec![bl, pos2(bl.x, tr.y), tr], st));
-                    }
+                if sh.kind == ShapeKind::Star {
+                    "Points"
+                } else {
+                    "Sides"
                 },
             );
+            let mut n = sh.sides as u32;
+            if ui.add(egui::Slider::new(&mut n, 3..=12)).changed() {
+                sh.sides = n as u8;
+            }
         }
-        heading(ui, "Fill");
-        chips(
-            ui,
-            &FILLS,
-            &mut sh.fill_style,
-            sz,
-            |f| f.name().into(),
-            fill_icon,
-        );
     }
-    if sh.kind.is_linear() {
-        heading(ui, "Line type");
+    if part(PanelTab::Style) {
+        dash_chips(ui, &mut sh.dash, sz);
+        heading(ui, "Sloppiness");
         chips(
             ui,
-            &ARROW_TYPES,
-            &mut sh.arrow,
+            &SLOPPINESS,
+            &mut sh.sloppiness,
             sz,
-            |a| a.name().into(),
-            |p, c, r, a| line_icon(p, c, r, Dash::Solid, Sloppiness::Architect, a),
+            |s| s.name().into(),
+            |p, c, r, s| line_icon(p, c, r, Dash::Solid, s, ArrowType::Curved),
         );
+        if !sh.kind.is_linear() {
+            if sh.kind != ShapeKind::Ellipse {
+                heading(ui, "Edges");
+                chips(
+                    ui,
+                    &[false, true],
+                    &mut sh.round,
+                    sz,
+                    |r| if r { "Round" } else { "Sharp" }.into(),
+                    |p, c, r, round| {
+                        let st = Stroke::new(1.8, INKY);
+                        let (bl, tr) = (c + vec2(-r, r), c + vec2(r, -r));
+                        if round {
+                            let rad = r * 1.1;
+                            let mut pts = vec![bl];
+                            for i in (0..=8).rev() {
+                                let t = i as f32 / 8.0 * FRAC_PI_2;
+                                pts.push(pos2(
+                                    c.x - r + rad * (1.0 - t.sin()),
+                                    c.y - r + rad * (1.0 - t.cos()),
+                                ));
+                            }
+                            pts.push(tr);
+                            p.add(Shape::line(pts, st));
+                        } else {
+                            p.add(Shape::line(vec![bl, pos2(bl.x, tr.y), tr], st));
+                        }
+                    },
+                );
+            }
+            heading(ui, "Fill");
+            chips(
+                ui,
+                &FILLS,
+                &mut sh.fill_style,
+                sz,
+                |f| f.name().into(),
+                fill_icon,
+            );
+        }
+        if sh.kind.is_linear() {
+            heading(ui, "Line type");
+            chips(
+                ui,
+                &ARROW_TYPES,
+                &mut sh.arrow,
+                sz,
+                |a| a.name().into(),
+                |p, c, r, a| line_icon(p, c, r, Dash::Solid, Sloppiness::Architect, a),
+            );
+        }
+        if sh.kind == ShapeKind::Arrow {
+            heading(ui, "Start");
+            chips(
+                ui,
+                &HEADS,
+                &mut sh.start,
+                sz,
+                |h| h.name().into(),
+                |p, c, r, h| head_icon(p, c, r, h, true),
+            );
+            heading(ui, "End");
+            chips(
+                ui,
+                &HEADS,
+                &mut sh.end,
+                sz,
+                |h| h.name().into(),
+                |p, c, r, h| head_icon(p, c, r, h, false),
+            );
+        }
     }
-    if sh.kind == ShapeKind::Arrow {
-        heading(ui, "Start");
-        chips(
-            ui,
-            &HEADS,
-            &mut sh.start,
-            sz,
-            |h| h.name().into(),
-            |p, c, r, h| head_icon(p, c, r, h, true),
-        );
-        heading(ui, "End");
-        chips(
-            ui,
-            &HEADS,
-            &mut sh.end,
-            sz,
-            |h| h.name().into(),
-            |p, c, r, h| head_icon(p, c, r, h, false),
-        );
+    if !part(PanelTab::Color) {
+        return false;
     }
-    opacity_slider(ui, &mut sh.opacity);
     let fillable = !sh.kind.is_linear() && sh.fill_style != FillStyle::None;
     if fillable {
-        heading(ui, "Color");
+        part_heading(ui, "Color");
         ui.horizontal(|ui| {
             ui.selectable_value(target, ColorTarget::Stroke, "Stroke");
             ui.selectable_value(target, ColorTarget::Fill, "Fill");
@@ -3411,54 +3878,60 @@ fn text_section(
     actions: &mut Vec<Action>,
 ) -> bool {
     let sz = if touch { 34.0 } else { 28.0 };
-    heading(ui, "Font");
-    font_picker(ui, tx, touch, egui_fonts, actions);
-    if let Some(size) = size {
-        heading(ui, "Size");
-        let mut pick = [16.0f32, 24.0, 36.0, 56.0]
-            .iter()
-            .position(|&v| (v - *size).abs() < 0.5)
-            .unwrap_or(9);
-        let before = pick;
+    if part(PanelTab::Font) {
+        part_heading(ui, "Font");
+        font_picker(ui, tx, touch, egui_fonts, actions);
+    }
+    if part(PanelTab::Text) {
+        if let Some(size) = size {
+            heading(ui, "Size");
+            let mut pick = [16.0f32, 24.0, 36.0, 56.0]
+                .iter()
+                .position(|&v| (v - *size).abs() < 0.5)
+                .unwrap_or(9);
+            let before = pick;
+            chips(
+                ui,
+                &[0usize, 1, 2, 3],
+                &mut pick,
+                sz,
+                |i| ["Small", "Medium", "Large", "Very large"][i].into(),
+                |p, c, _, i| text_chip(p, c, ["S", "M", "L", "XL"][i]),
+            );
+            if pick != before && pick < 4 {
+                *size = [16.0, 24.0, 36.0, 56.0][pick];
+            }
+            ui.add(
+                egui::Slider::new(size, 6.0..=160.0)
+                    .logarithmic(true)
+                    .suffix(" px"),
+            );
+        }
+        heading(ui, "Align");
         chips(
             ui,
-            &[0usize, 1, 2, 3],
-            &mut pick,
+            &ALIGNS,
+            &mut tx.align,
             sz,
-            |i| ["Small", "Medium", "Large", "Very large"][i].into(),
-            |p, c, _, i| text_chip(p, c, ["S", "M", "L", "XL"][i]),
-        );
-        if pick != before && pick < 4 {
-            *size = [16.0, 24.0, 36.0, 56.0][pick];
-        }
-        ui.add(
-            egui::Slider::new(size, 6.0..=160.0)
-                .logarithmic(true)
-                .suffix(" px"),
+            |a| format!("{a:?}"),
+            |p, c, r, a| {
+                for (i, w) in [1.0f32, 0.6, 0.85].iter().enumerate() {
+                    let y = c.y - r * 0.6 + i as f32 * r * 0.6;
+                    let len = 2.0 * r * w;
+                    let x0 = match a {
+                        Align::Left => c.x - r,
+                        Align::Center => c.x - len * 0.5,
+                        Align::Right => c.x + r - len,
+                    };
+                    p.line_segment([pos2(x0, y), pos2(x0 + len, y)], Stroke::new(1.6, INKY));
+                }
+            },
         );
     }
-    heading(ui, "Align");
-    chips(
-        ui,
-        &ALIGNS,
-        &mut tx.align,
-        sz,
-        |a| format!("{a:?}"),
-        |p, c, r, a| {
-            for (i, w) in [1.0f32, 0.6, 0.85].iter().enumerate() {
-                let y = c.y - r * 0.6 + i as f32 * r * 0.6;
-                let len = 2.0 * r * w;
-                let x0 = match a {
-                    Align::Left => c.x - r,
-                    Align::Center => c.x - len * 0.5,
-                    Align::Right => c.x + r - len,
-                };
-                p.line_segment([pos2(x0, y), pos2(x0 + len, y)], Stroke::new(1.6, INKY));
-            }
-        },
-    );
-    opacity_slider(ui, &mut tx.opacity);
-    heading(ui, "Color");
+    if !part(PanelTab::Color) {
+        return false;
+    }
+    part_heading(ui, "Color");
     let mut c = c32(tx.color);
     let pick = color_dial(ui, &mut c, false, dial_hue, touch);
     tx.color = u32c(c);
@@ -5746,51 +6219,29 @@ fn brush_section(
     dial_hue: &mut f32,
     texture: bool,
 ) -> bool {
-    if !texture {
-        ui.horizontal(|ui| {
-            if ui
-                .selectable_label(!ink.advanced, "Simple")
-                .on_hover_text("A plain line: width, pressure, dashes")
-                .clicked()
-            {
-                ink.advanced = false;
-            }
-            if ui
-                .selectable_label(ink.advanced, "Advanced")
-                .on_hover_text("The brush engine: looks, tips, dynamics, scatter, color")
-                .clicked()
-            {
-                ink.advanced = true;
+    // Simple and Advanced are switched in the panel's header.
+    if !texture && !ink.advanced {
+        return ink_section(ui, ink, Tool::Pen, touch, dial_hue, true);
+    }
+    if part(PanelTab::Look) {
+        brush_preview(ui, ink, 56.0);
+        heading(ui, if texture { "Texture" } else { "Look" });
+        let looks = ogpaper_core::brush::looks();
+        ui.horizontal_wrapped(|ui| {
+            for l in looks.iter().filter(|l| l.texture == texture) {
+                if ui
+                    .selectable_label(ink.params.look == l.params.look, l.name)
+                    .clicked()
+                {
+                    let seed = ink.params.seed;
+                    ink.params = l.params;
+                    ink.params.seed = seed;
+                }
             }
         });
-        if !ink.advanced {
-            return ink_section(ui, ink, Tool::Pen, touch, dial_hue, true);
-        }
     }
-    brush_preview(ui, ink, 56.0);
-    heading(ui, if texture { "Texture" } else { "Look" });
-    let looks = ogpaper_core::brush::looks();
-    ui.horizontal_wrapped(|ui| {
-        for l in looks.iter().filter(|l| l.texture == texture) {
-            if ui
-                .selectable_label(ink.params.look == l.params.look, l.name)
-                .clicked()
-            {
-                let seed = ink.params.seed;
-                ink.params = l.params;
-                ink.params.seed = seed;
-            }
-        }
-    });
-    heading(ui, "Size");
-    ui.add(
-        egui::Slider::new(&mut ink.width, 0.5..=200.0)
-            .logarithmic(true)
-            .suffix(" px"),
-    );
-    opacity_slider(ui, &mut ink.opacity);
     let p = &mut ink.params;
-    egui::CollapsingHeader::new("Tip").show(ui, |ui| {
+    if part(PanelTab::Tip) {
         ui.horizontal_wrapped(|ui| {
             for t in ogpaper_core::Tip::ALL {
                 if ui.selectable_label(p.tip == t, t.name()).clicked() {
@@ -5838,21 +6289,22 @@ fn brush_section(
         }
         ui.add(egui::Slider::new(&mut p.aspect, 0.05..=1.0).text("roundness"));
         ui.checkbox(&mut p.follow, "Turn with the stroke");
-    });
-    egui::CollapsingHeader::new("Dynamics").show(ui, |ui| {
-        ui.add(egui::Slider::new(&mut p.p_size, 0.0..=1.0).text("pressure → size"));
-        ui.add(egui::Slider::new(&mut p.p_opacity, 0.0..=1.0).text("pressure → opacity"));
-        ui.add(egui::Slider::new(&mut p.s_size, -1.0..=1.0).text("speed → thinner"));
-        ui.add(egui::Slider::new(&mut p.s_opacity, -1.0..=1.0).text("speed → fainter"));
+    }
+    if part(PanelTab::Dynamics) {
+        ui.add(egui::Slider::new(&mut p.p_size, 0.0..=1.0).text("size by pressure"));
+        ui.add(egui::Slider::new(&mut p.p_opacity, 0.0..=1.0).text("opacity by pressure"));
+        ui.add(egui::Slider::new(&mut p.s_size, -1.0..=1.0).text("thinner when fast"));
+        ui.add(egui::Slider::new(&mut p.s_opacity, -1.0..=1.0).text("fainter when fast"));
         ui.add(egui::Slider::new(&mut p.taper_in, 0.0..=20.0).text("taper start"));
         ui.add(egui::Slider::new(&mut p.taper_out, 0.0..=20.0).text("taper end"));
         ui.add(
             egui::Slider::new(&mut p.fade, 0.0..=200.0)
                 .logarithmic(true)
+                .fixed_decimals(1)
                 .text("fade out"),
         );
-    });
-    egui::CollapsingHeader::new("Scatter").show(ui, |ui| {
+    }
+    if part(PanelTab::Scatter) {
         ui.add(egui::Slider::new(&mut p.jitter, 0.0..=4.0).text("scatter"));
         let mut c = p.count as f32;
         if ui
@@ -5879,8 +6331,8 @@ fn brush_section(
         {
             p.passes = ps as u8;
         }
-    });
-    egui::CollapsingHeader::new("Paint").show(ui, |ui| {
+    }
+    if part(PanelTab::Paint) {
         ui.add(
             egui::Slider::new(&mut p.flow, 0.02..=1.0)
                 .logarithmic(true)
@@ -5909,8 +6361,11 @@ fn brush_section(
         {
             p.seed = p.seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
         }
-    });
-    heading(ui, "Color");
+    }
+    if !part(PanelTab::Color) {
+        return false;
+    }
+    part_heading(ui, "Color");
     color_dial(ui, &mut ink.color, false, dial_hue, touch)
 }
 
