@@ -71,7 +71,7 @@ impl Tool {
         }
     }
 
-    fn name(self) -> &'static str {
+    pub fn name(self) -> &'static str {
         match self {
             Tool::Pen => "Brush",
             Tool::Texture => "Texture",
@@ -997,6 +997,10 @@ impl UiState {
         let mut bars = self.toolbars.clone();
         if let Some(b) = bars.get_mut(self.active_bar) {
             b.slots = self.hotbar.clone();
+        }
+        // One hold tool for all toolbars (kept on each, which older apps
+        // read as theirs).
+        for b in &mut bars {
             b.hold = self.hold;
         }
         // Only the views some slot still points at.
@@ -1059,7 +1063,13 @@ impl UiState {
         self.toolbars = s.bars;
         self.inventory = s.inv;
         self.views = s.views;
-        self.hold = self.toolbars.get(self.active_bar).and_then(|b| b.hold);
+        // One hold tool: the active toolbar's, else any toolbar's (files
+        // from when each toolbar had its own).
+        self.hold = self
+            .toolbars
+            .get(self.active_bar)
+            .and_then(|b| b.hold)
+            .or_else(|| self.toolbars.iter().find_map(|b| b.hold));
     }
 
     /// Show toolbar `k` in the quick bar.
@@ -1068,10 +1078,8 @@ impl UiState {
             return;
         }
         self.toolbars[self.active_bar].slots = std::mem::take(&mut self.hotbar);
-        self.toolbars[self.active_bar].hold = self.hold;
         self.active_bar = k;
         self.hotbar = self.toolbars[k].slots.clone();
-        self.hold = self.toolbars[k].hold;
         self.bar_rename = None;
         self.presets_dirty = true;
         self.message = Some(format!("Toolbar {}", k + 1));
@@ -1887,10 +1895,12 @@ fn quick_bar(ctx: &egui::Context, st: &mut UiState, g: &Geo) {
                         let r = Rect::from_min_size(cell(ri, i + 1), Vec2::splat(s));
                         slot(ui, st, r, Slots::Row(k), i, &mut fx);
                     }
-                    // Its hold slot: the tool a right click or a press and
-                    // hold uses while this toolbar is the active one.
-                    let r = Rect::from_min_size(cell(ri, n + 1), Vec2::splat(s));
-                    slot(ui, st, r, Slots::Hold(k), 0, &mut fx);
+                    // The hold slot (the tool a right click or a press and
+                    // hold uses): one, at the end of the main toolbar.
+                    if active {
+                        let r = Rect::from_min_size(cell(ri, n + 1), Vec2::splat(s));
+                        slot(ui, st, r, Slots::Hold(k), 0, &mut fx);
+                    }
                 }
             });
     }
@@ -2390,11 +2400,14 @@ fn toolbar_menu(
                                 );
                                 slot(ui, st, r, Slots::Row(k), i, fx);
                             }
-                            let hr = Rect::from_min_size(
-                                at(x0 + (n + 1) as f32 * (s + gap)),
-                                Vec2::splat(s),
-                            );
-                            slot(ui, st, hr, Slots::Hold(k), 0, fx);
+                            // The one hold slot, on the active toolbar's row.
+                            if active {
+                                let hr = Rect::from_min_size(
+                                    at(x0 + (n + 1) as f32 * (s + gap)),
+                                    Vec2::splat(s),
+                                );
+                                slot(ui, st, hr, Slots::Hold(k), 0, fx);
+                            }
                             // Delete.
                             let dr = Rect::from_min_size(
                                 at(x0 + (n + 2) as f32 * (s + gap)),
@@ -2541,8 +2554,7 @@ fn slot_mut(st: &mut UiState, which: Slots, i: usize) -> &mut Option<Preset> {
         Slots::Row(k) if k == st.active_bar => &mut st.hotbar[i],
         Slots::Row(k) => &mut st.toolbars[k].slots[i],
         Slots::Inventory => &mut st.inventory[i],
-        Slots::Hold(k) if k == st.active_bar => &mut st.hold,
-        Slots::Hold(k) => &mut st.toolbars[k].hold,
+        Slots::Hold(_) => &mut st.hold,
     }
 }
 
@@ -2556,7 +2568,13 @@ fn slot(ui: &mut egui::Ui, st: &mut UiState, rect: Rect, which: Slots, i: usize,
         Sense::click()
     };
     let resp = ui.interact(rect, Id::new(("slot", which, i)), sense);
-    named(&resp, format!("Slot {}", i + 1));
+    named(
+        &resp,
+        match which {
+            Slots::Hold(_) => "Hold slot".to_string(),
+            _ => format!("Slot {}", i + 1),
+        },
+    );
     if st.bag_open && resp.drag_started() && st.held.is_none() {
         if let Some(it) = slot_mut(st, which, i).take() {
             st.held = Some(it);
@@ -2640,16 +2658,10 @@ fn slot(ui: &mut egui::Ui, st: &mut UiState, rect: Rect, which: Slots, i: usize,
         (Some(it), None) => preset_icon(p, rect.center(), rect.width() * 0.5, it, &st.egui_fonts),
         _ => {}
     }
-    if resp.clicked() && matches!(which, Slots::Hold(_)) && !(st.bag_open && st.held.is_some()) {
-        // The hold slot takes the tool in hand (using it as the main tool
-        // would defeat it).
-        *slot_mut(st, which, 0) = Some(current);
-        fx.changed = true;
-        fx.say = Some(format!(
-            "Hold tool: {} (right click, or press and hold)",
-            describe(&current)
-        ));
-    } else if resp.clicked() {
+    // The hold slot is like any other: tapped, its tool becomes the main
+    // one. It changes only when empty (a tap saves the current tool) or by
+    // putting a tool down on it from the inventory.
+    if resp.clicked() {
         if st.bag_open && st.held.is_some() {
             // Put down (or swap with what is here) what is in hand.
             let held = st.held.take();
@@ -2675,7 +2687,7 @@ fn slot(ui: &mut egui::Ui, st: &mut UiState, rect: Rect, which: Slots, i: usize,
     let tip = match &item {
         _ if matches!(which, Slots::Hold(_)) => match &item {
             Some(it) => format!(
-                "Hold tool: {} (right click, or press and hold, uses it)",
+                "Hold tool: {} (right click, or press and hold, uses it; tap to make it the main tool)",
                 describe(it)
             ),
             None => "Hold tool: tap to make the current tool what a right click or a press and hold uses".into(),
@@ -2688,13 +2700,15 @@ fn slot(ui: &mut egui::Ui, st: &mut UiState, rect: Rect, which: Slots, i: usize,
         None => "Empty: tap to save the current tool here".into(),
     };
     let resp = resp.on_hover_text(tip);
+    let hold = matches!(which, Slots::Hold(_));
     resp.context_menu(|ui| {
-        if ui.button("Save the current tool here").clicked() {
+        // The hold tool changes only from the inventory (or when empty).
+        if !hold && ui.button("Save the current tool here").clicked() {
             *slot_mut(st, which, i) = Some(current);
             fx.changed = true;
             ui.close();
         }
-        if let Some(v) = st.view_now.clone() {
+        if let (false, Some(v)) = (hold, st.view_now.clone()) {
             if ui
                 .button("Save this view here")
                 .on_hover_text("Tap the slot later to fly back")
@@ -8103,7 +8117,8 @@ fn radial_bar(ctx: &egui::Context, st: &mut UiState, g: &Geo) {
                             st.bag_open = st.bar_menu;
                         }
                     } else {
-                        // The hold tool: tap to make it the tool in hand.
+                        // The hold tool: tap to make it the main tool (or,
+                        // empty, to save the current tool there).
                         disc(&p, pc, rr, if hover { Color32::WHITE } else { FACE }, false);
                         p.circle_stroke(pc, rr - 3.0, Stroke::new(1.0, ACCENT));
                         match st.hold {
@@ -8113,13 +8128,18 @@ fn radial_bar(ctx: &egui::Context, st: &mut UiState, g: &Geo) {
                             }
                         }
                         label_text = match &st.hold {
-                            Some(h) => format!("Hold tool: {} (tap to use the current tool)", describe(h)),
+                            Some(h) => format!("Hold tool: {} (tap to make it the main tool)", describe(h)),
                             None => "Hold tool: tap to use the current tool on right click / press and hold".into(),
                         };
                         if resp.clicked() {
-                            st.hold = Some(current);
-                            changed = true;
-                            st.message = Some(format!("Hold tool: {}", describe(&current)));
+                            match st.hold {
+                                Some(h) => st.apply(&h),
+                                None => {
+                                    st.hold = Some(current);
+                                    changed = true;
+                                    st.message = Some(format!("Hold tool: {}", describe(&current)));
+                                }
+                            }
                         }
                     }
                     if open > 0.9 && hover {
@@ -8234,5 +8254,36 @@ fn radial_bar(ctx: &egui::Context, st: &mut UiState, g: &Geo) {
         });
     if changed {
         st.presets_dirty = true;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn one_hold_tool_for_all_toolbars() {
+        let mut st = UiState::default();
+        st.toolbars.push(hotbar::empty_bar("Two"));
+        st.hold = Some(Preset::tool(Tool::Eraser));
+        st.switch_bar(1);
+        assert_eq!(
+            st.hold,
+            Some(Preset::tool(Tool::Eraser)),
+            "switching keeps it"
+        );
+        // Saved on every toolbar, and read back as the one.
+        let saved = st.saved();
+        assert!(saved.bars.iter().all(|b| b.hold == st.hold));
+        let mut back = UiState::default();
+        back.load_saved(saved);
+        assert_eq!(back.hold, Some(Preset::tool(Tool::Eraser)));
+        // A file from when each toolbar had its own: the active one's, else any.
+        let mut old = st.saved();
+        old.bars[0].hold = Some(Preset::tool(Tool::Text));
+        old.bars[1].hold = None;
+        old.active = 1;
+        back.load_saved(old);
+        assert_eq!(back.hold, Some(Preset::tool(Tool::Text)));
     }
 }

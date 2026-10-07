@@ -105,7 +105,7 @@ reports features without tests and tests named here that don't exist.
 |---|---|---|---|---|
 | UI-01 | Menu (gear, top right) grouped in sections | gear button | W D M | ui:menu |
 | UI-02 | Tool fan (undo, redo, tools) | Tool button (bottom right) | W D M | ui:draw-undo |
-| UI-03 | Quick toolbar with numbered slots and a hold slot per toolbar | Menu › UI › Quick toolbar | W D M | ui:tools-tour, rust:hotbar::tests::slots_round_trip, rust:hotbar::tests::names_and_many_toolbars_survive |
+| UI-03 | Quick toolbar with numbered slots and one hold slot (tap it to use its tool; set it from the inventory) | Menu › UI › Quick toolbar | W D M | ui:tools-tour, ui:hold-slot, rust:hotbar::tests::slots_round_trip, rust:hotbar::tests::names_and_many_toolbars_survive |
 | UI-04 | Inventory: drag tools between slots; drag onto the trash to delete | Quick toolbar › bag | W D M | rust:hotbar::tests::inventory_keeps_a_free_row, todo |
 | UI-05 | Radial toolbar; page shaded only under an open fan | Menu › UI › Radial toolbar | W D M | rust:layout::tests::fans_open_toward_the_middle, todo |
 | UI-06 | Edit layout (move the buttons) | Menu › UI › Edit layout | W D M | rust:layout::tests::layouts_round_trip, todo |
