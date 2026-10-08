@@ -721,6 +721,11 @@ pub struct UiState {
     pub sel: SelStyle,
     /// The selection's Details tab: label, value rows.
     pub sel_details: Vec<(String, String)>,
+    /// The tool panel's sections' heights as last drawn (with a heading),
+    /// whether each set of tabs is shown stacked, and the width measured at.
+    pub tab_heights: std::collections::HashMap<(&'static str, PanelTab), f32>,
+    pub panel_stacked: std::collections::HashMap<&'static str, bool>,
+    pub panel_measure_w: f32,
     /// A picture is being cropped.
     pub cropping: bool,
     /// Desktop library: open, and its stickers (name, thumbnail pixels,
@@ -911,6 +916,9 @@ impl Default for UiState {
             text_size: 24.0,
             sel: SelStyle::default(),
             sel_details: Vec::new(),
+            tab_heights: Default::default(),
+            panel_stacked: Default::default(),
+            panel_measure_w: 0.0,
             egui_fonts: Default::default(),
             text_edit: None,
             overlay: Overlay::default(),
@@ -2986,7 +2994,7 @@ fn rotate_icon(p: &egui::Painter, c: Pos2, r: f32, col: Color32) {
 /// sections.
 /// A part of the tool panel: the panel shows one at a time behind a row of
 /// tabs. A tool with a single part shows everything (`All`).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum PanelTab {
     All,
     Look,
@@ -3654,7 +3662,7 @@ fn tool_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) 
                 size.y
             };
             let fixed = !(sheet && tabs.len() <= 1);
-            let tab_row = |ui: &mut egui::Ui, st: &mut UiState| {
+            let tab_row = |ui: &mut egui::Ui, st: &mut UiState, shown: &[PanelTab]| {
                 if side_tabs.len() > 1 {
                     egui::ScrollArea::horizontal()
                         .id_salt("panel_tabs")
@@ -3663,12 +3671,38 @@ fn tool_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) 
                             ui.horizontal(|ui| {
                                 ui.spacing_mut().item_spacing.x = 4.0;
                                 for &t in &side_tabs {
-                                    if pill(ui, t.name(), t == side_cur, touch).clicked() {
+                                    if pill(ui, t.name(), shown.contains(&t), touch).clicked() {
                                         st.panel_tab.insert(key, t);
                                     }
                                 }
                             });
                         });
+                }
+            };
+            // Room for every section: show them all down the panel (each
+            // with its heading); else one at a time behind tabs. Decided
+            // from the sections' heights as last drawn, with some slack so
+            // it doesn't flip back and forth; measured again when the
+            // panel's width changes (their heights follow it).
+            let multi = side_tabs.len() > 1;
+            if (st.panel_measure_w - w).abs() > 16.0 {
+                st.panel_measure_w = w;
+                st.tab_heights.clear();
+                st.panel_stacked.clear();
+            }
+            let stacked = multi && *st.panel_stacked.get(key).unwrap_or(&true);
+            let decide = |st: &mut UiState, stacked: bool, avail: f32| {
+                if !multi {
+                    return;
+                }
+                let sum: Option<f32> = side_tabs
+                    .iter()
+                    .map(|t| st.tab_heights.get(&(key, *t)).copied())
+                    .sum();
+                if stacked && sum.is_some_and(|s| s > avail + 2.0) {
+                    st.panel_stacked.insert(key, false);
+                } else if !stacked && sum.is_some_and(|s| s + 24.0 <= avail) {
+                    st.panel_stacked.insert(key, true);
                 }
             };
             if wide {
@@ -3698,46 +3732,65 @@ fn tool_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) 
                         let rw = ui.available_width();
                         ui.set_width(rw);
                         ui.style_mut().spacing.slider_width = (rw - 170.0).clamp(90.0, 320.0);
-                        tab_row(ui, st);
+                        let avail = body_h;
+                        let shown = fitting(st, key, &side_tabs, side_cur, stacked, avail - 34.0);
+                        if !stacked {
+                            tab_row(ui, st, &shown);
+                        }
                         let used = ui.min_rect().height();
-                        PANEL_TAB.with(|c| c.set(side_cur));
+                        let h = (body_h - used).max(80.0);
                         egui::ScrollArea::vertical()
                             .id_salt(("panel_body", key))
-                            .max_height((body_h - used).max(80.0))
-                            .min_scrolled_height((body_h - used).max(80.0))
+                            .max_height(h)
+                            .min_scrolled_height(h)
                             .auto_shrink([false, !fixed])
                             .show(ui, |ui| {
-                                pick |= panel_body(ui, st, tool, touch, &mut dial_hue, actions);
+                                pick |= sections(
+                                    ui,
+                                    st,
+                                    tool,
+                                    touch,
+                                    &mut dial_hue,
+                                    actions,
+                                    key,
+                                    &shown,
+                                    sheet,
+                                );
                             });
+                        decide(st, stacked, avail);
                     });
                 });
             } else {
-                tab_row(ui, st);
+                let avail = (total - ui.min_rect().height() - 30.0).max(120.0);
+                let shown = if multi {
+                    fitting(st, key, &side_tabs, cur, stacked, avail - 34.0)
+                } else {
+                    vec![cur]
+                };
+                if !stacked {
+                    tab_row(ui, st, &shown);
+                }
                 let used = ui.min_rect().height();
                 let body_h = (total - used - 30.0).max(120.0);
-                PANEL_TAB.with(|c| c.set(cur));
                 egui::ScrollArea::vertical()
                     .id_salt(("panel_body", key))
                     .max_height(body_h)
                     .min_scrolled_height(body_h)
                     .auto_shrink([false, !fixed])
                     .show(ui, |ui| {
-                        // The color dial is as wide as it is given: keep it
-                        // to a size that leaves room for the rest.
-                        if cur == PanelTab::Color || tool == Tool::Highlighter {
-                            let dw = ui.available_width().min(if sheet { 260.0 } else { 300.0 });
-                            let pad = (ui.available_width() - dw) * 0.5;
-                            ui.horizontal(|ui| {
-                                ui.add_space(pad);
-                                ui.vertical(|ui| {
-                                    ui.set_width(dw);
-                                    pick = panel_body(ui, st, tool, touch, &mut dial_hue, actions);
-                                });
-                            });
-                        } else {
-                            pick = panel_body(ui, st, tool, touch, &mut dial_hue, actions);
-                        }
+                        pick = sections(
+                            ui,
+                            st,
+                            tool,
+                            touch,
+                            &mut dial_hue,
+                            actions,
+                            key,
+                            &shown,
+                            sheet,
+                        );
                     });
+                decide(st, stacked, avail);
             }
             PANEL_TAB.with(|c| c.set(PanelTab::All));
         });
@@ -3792,6 +3845,96 @@ fn tool_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) 
         st.last_ink = tool;
         st.tool = Tool::Picker;
     }
+}
+
+/// Height a section's heading takes when the sections are stacked.
+const SECTION_HEAD: f32 = 24.0;
+
+/// The sections to show: all of `tabs` when stacked; else the chosen tab
+/// `cur` and, after it, as many of the following ones as fit in `room` (by
+/// their heights as last drawn; one not drawn yet gets a try while there
+/// is a good bit of room).
+fn fitting(
+    st: &UiState,
+    key: &'static str,
+    tabs: &[PanelTab],
+    cur: PanelTab,
+    stacked: bool,
+    room: f32,
+) -> Vec<PanelTab> {
+    if stacked {
+        return tabs.to_vec();
+    }
+    let start = tabs.iter().position(|t| *t == cur).unwrap_or(0);
+    let mut out = vec![];
+    let mut used = 0.0;
+    for &t in &tabs[start..] {
+        let h = st.tab_heights.get(&(key, t)).copied();
+        let fits = match h {
+            Some(h) => used + h <= room,
+            None => used + 160.0 <= room,
+        };
+        // One that doesn't fit is left to its tab; later, smaller ones may.
+        if !out.is_empty() && !fits {
+            continue;
+        }
+        used += h.unwrap_or(160.0);
+        out.push(t);
+    }
+    out
+}
+
+/// The panel's sections `shown`, one after another, with headings when
+/// there are several. Notes each section's height (with its heading) for
+/// deciding what fits. True when the color dial's eyedropper was tapped.
+#[allow(clippy::too_many_arguments)]
+fn sections(
+    ui: &mut egui::Ui,
+    st: &mut UiState,
+    tool: Tool,
+    touch: bool,
+    dial_hue: &mut f32,
+    actions: &mut Vec<Action>,
+    key: &'static str,
+    shown: &[PanelTab],
+    sheet: bool,
+) -> bool {
+    let mut pick = false;
+    let headed = shown.len() > 1;
+    for (k, &t) in shown.iter().enumerate() {
+        let top = ui.cursor().top();
+        if headed {
+            if k > 0 {
+                ui.add_space(6.0);
+            }
+            ui.label(
+                egui::RichText::new(t.name())
+                    .strong()
+                    .size(if touch { 15.0 } else { 13.0 }),
+            );
+        }
+        PANEL_TAB.with(|c| c.set(t));
+        // The color dial is as wide as it is given: keep it to a size that
+        // leaves room for the rest.
+        if t == PanelTab::Color || (t == PanelTab::All && tool == Tool::Highlighter) {
+            let dw = ui.available_width().min(if sheet { 260.0 } else { 300.0 });
+            let pad = (ui.available_width() - dw) * 0.5;
+            ui.horizontal(|ui| {
+                ui.add_space(pad);
+                ui.vertical(|ui| {
+                    ui.set_width(dw);
+                    pick |= panel_body(ui, st, tool, touch, dial_hue, actions);
+                });
+            });
+        } else {
+            pick |= panel_body(ui, st, tool, touch, dial_hue, actions);
+        }
+        let h = ui.cursor().top() - top + if headed { 0.0 } else { SECTION_HEAD };
+        if t != PanelTab::All {
+            st.tab_heights.insert((key, t), h);
+        }
+    }
+    pick
 }
 
 /// The Details tab: label, value rows.
