@@ -453,6 +453,15 @@ impl OgpFile {
         self.set_meta("view", &v)
     }
 
+    /// Keep a piece of text with the canvas (an app's own data, by key).
+    pub fn put_text(&self, k: &str, v: &str) -> Result<(), Error> {
+        self.set_meta(&format!("app.{k}"), v)
+    }
+
+    pub fn get_text(&self, k: &str) -> Result<Option<String>, Error> {
+        self.get_meta(&format!("app.{k}"))
+    }
+
     fn set_meta(&self, k: &str, v: &str) -> Result<(), Error> {
         self.conn.execute(
             "INSERT INTO meta (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = ?2",
