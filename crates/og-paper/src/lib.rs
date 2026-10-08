@@ -244,6 +244,10 @@ pub struct App {
     /// What the commands being run may use (a plugin's allowed
     /// permissions; none for automations).
     cmd_perms: Vec<String>,
+    /// What the last copy put on the system clipboard (desktop): pasting
+    /// that pastes the copy itself.
+    #[cfg_attr(not(desktop), allow(dead_code))]
+    clip_text: Option<String>,
     /// Others' public views on this page (see `views`).
     shared_views: Vec<views::SharedView>,
     /// What new portals show (Portal tool).
@@ -372,6 +376,7 @@ impl App {
             shared_views: Vec::new(),
             audio_rec: None,
             cmd_perms: Vec::new(),
+            clip_text: None,
             portal_view: None,
             portal_path: Vec::new(),
             portal_passes: 0,
@@ -1938,13 +1943,21 @@ impl App {
         }
     }
 
-    /// After copying: put a marker on the system clipboard, so pasting
-    /// pastes the copy until something else is copied elsewhere.
+    /// After copying: put the selection's text on the system clipboard
+    /// (for other apps; a marker when it has none), so pasting here pastes
+    /// the copy until something else is copied elsewhere.
     #[cfg(desktop)]
     fn clip_mark(&mut self) {
+        let text = self.selection_text();
+        let text = if text.trim().is_empty() {
+            CLIP_MARK.to_string()
+        } else {
+            text
+        };
         if let Ok(mut cb) = arboard::Clipboard::new() {
-            let _ = cb.set_text(CLIP_MARK);
+            let _ = cb.set_text(text.clone());
         }
+        self.clip_text = Some(text);
     }
     #[cfg(not(desktop))]
     fn clip_mark(&mut self) {}
@@ -1957,7 +1970,8 @@ impl App {
             return false;
         };
         let text = cb.get_text().ok();
-        if text.as_deref() == Some(CLIP_MARK) {
+        // This app's own copy (its marker, or the text it put there).
+        if text.as_deref() == Some(CLIP_MARK) || (text.is_some() && text == self.clip_text) {
             return false;
         }
         let at = Some(self.cursor);

@@ -6,7 +6,7 @@
 
 import init, {
   og_load, og_demo, og_blank, og_status, og_requests, og_set_menu, og_text_request, og_text_done, og_font_add,
-  og_copy, og_paste_own, og_wants_text, og_text_field, og_copied_take, og_field_at, og_paste_image, og_paste_text, og_pdf_page,
+  og_copy, og_paste_own, og_selection_text, og_wants_text, og_text_field, og_copied_take, og_field_at, og_paste_image, og_paste_text, og_pdf_page,
   og_home, og_bookmark_add, og_bookmark_go, og_view_public, og_shared_view_go, og_shared_view_copy, og_bookmark_remove, og_bookmark_rename, og_bookmark_to_bar,
   og_search, og_search_results, og_search_go, og_export, og_export_take, og_has_selection,
   og_sticker_take, og_sticker_svg, og_sticker_place, og_import, og_merge, og_changes_take, og_merge_quiet, og_set_folder, og_net_url, og_net_take, og_net_open, og_net_recv, og_net_closed, og_join, og_poke, og_rtc_host, og_rtc_closing, og_view_token, og_relay_share, og_dir_requests, og_page_arg, og_set_pages, og_plugin_install, og_pack_install, og_pack_sticker_take, og_run, og_set_name, og_add_server, og_audio_max, og_audio_take, og_audio_take_id, og_audio_recorded, og_audio_cancelled, og_plugin_bytes_take,
@@ -1159,6 +1159,8 @@ export async function start({ mode = 'app' } = {}) {
   // Copying in the app puts this marker on the clipboard: pasting it pastes
   // the app's own copy (shapes, ink and text keep everything).
   const CLIP_MARK = 'OG Paper selection (paste it into OG Paper)';
+  // In the HTML a copy puts on the clipboard: pasting it here is this app's.
+  const OWN = /<meta name="og-paper-clip"/;
   const onCanvas = e => {
     const t = e.target;
     return !(t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement || t?.isContentEditable);
@@ -1237,8 +1239,14 @@ export async function start({ mode = 'app' } = {}) {
   for (const kind of ['copy', 'cut']) {
     document.addEventListener(kind, e => {
       if (intoField(kind, e)) return;
-      if (!onCanvas(e) || !og_copy(kind === 'cut')) return;
-      e.clipboardData.setData('text/plain', CLIP_MARK);
+      if (!onCanvas(e)) return;
+      const text = og_selection_text();
+      if (!og_copy(kind === 'cut')) return;
+      // Other apps get the selected texts; pasting here (the marker in the
+      // HTML) brings back the objects themselves.
+      e.clipboardData.setData('text/plain', text.trim() ? text : CLIP_MARK);
+      const esc = t => t.replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+      e.clipboardData.setData('text/html', `<meta name="og-paper-clip" content="1"><pre>${esc(text)}</pre>`);
       e.preventDefault();
     });
   }
@@ -1396,7 +1404,7 @@ export async function start({ mode = 'app' } = {}) {
       return;
     }
     const text = dt.getData('text/plain');
-    if (text === CLIP_MARK) { og_paste_own(); return; }
+    if (text === CLIP_MARK || OWN.test(dt.getData('text/html') || '')) { og_paste_own(); return; }
     // Spreadsheets also put a picture of the cells on the clipboard: the table wins.
     const table = htmlTable(dt.getData('text/html') || '');
     if (table) { og_paste_text(table, at?.[0], at?.[1]); return; }
@@ -1441,9 +1449,10 @@ export async function start({ mode = 'app' } = {}) {
         const get = async t => { for (const i of items) if (i.types.includes(t)) return i.getType(t); return null; };
         const textBlob = await get('text/plain');
         const text = textBlob ? await textBlob.text() : '';
-        if (text === CLIP_MARK) { og_paste_own(); return; }
         const html = await get('text/html');
-        const table = html && htmlTable(await html.text());
+        const htmlText = html ? await html.text() : '';
+        if (text === CLIP_MARK || OWN.test(htmlText)) { og_paste_own(); return; }
+        const table = htmlText && htmlTable(htmlText);
         if (table) { og_paste_text(table, mid[0], mid[1]); return; }
         const pic = types.find(t => t.startsWith('image/'));
         if (pic) { await addPicture(await get(pic), mid); return; }

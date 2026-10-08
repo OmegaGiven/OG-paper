@@ -41,6 +41,7 @@ reports features without tests and tests named here that don't exist.
 | EDIT-07 | Sticker library (save a selection, place it again) | Menu › Library; Selection panel › Add to library | W D M | rust:library::tests::stickers_round_trip, todo |
 | EDIT-08 | Delete button on a selection (a ✕ off its top right corner, clear of the handles) | Select › ✕ | W D M | ui:delete-button |
 | EDIT-09 | Details tab for a selection: what it is, made when and by whom, how often it changed, facts by kind | Select › Details | W D M | ui:details-tab, rust:details::tests::a_new_shape_was_made_by_you_and_never_changed |
+| EDIT-10 | Drag-select favours what is picked out (a bucket fill only when wholly inside); copying texts gives other apps their plain text | Select › drag; Ctrl+C | W D M | ui:select-texts |
 
 ## Navigating the endless canvas
 

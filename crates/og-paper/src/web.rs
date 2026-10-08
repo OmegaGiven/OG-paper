@@ -135,6 +135,7 @@ thread_local! {
     static AUDIO_MAX: std::cell::Cell<u32> = const { std::cell::Cell::new(30_000) };
     static AUDIO_OUT: RefCell<Option<(u64, Vec<u8>)>> = RefCell::default();
     static PLUGIN_BYTES: RefCell<Option<Vec<u8>>> = RefCell::default();
+    static SEL_TEXT: RefCell<String> = RefCell::default();
     static NET_URL: RefCell<String> = RefCell::default();
     static RTC_CLOSE: RefCell<Vec<u64>> = RefCell::default();
     static DIR_REQ: RefCell<Vec<(u64, String)>> = RefCell::default();
@@ -230,6 +231,17 @@ pub fn og_field_at(x: f32, y: f32) -> bool {
 #[wasm_bindgen]
 pub fn og_copied_take() -> Option<String> {
     COPIED.with(|c| c.borrow_mut().take())
+}
+
+/// The selection's text, for a copy to put on the clipboard.
+pub fn set_selection_text(t: String) {
+    SEL_TEXT.with(|s| *s.borrow_mut() = t);
+}
+
+/// The selected texts as plain text ("" when none), for other apps.
+#[wasm_bindgen]
+pub fn og_selection_text() -> String {
+    SEL_TEXT.with(|s| s.borrow().clone())
 }
 
 /// Whether something is selected (so the page knows a copy has something).

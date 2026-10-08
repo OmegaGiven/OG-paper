@@ -71,6 +71,10 @@ pub struct EditState {
     /// Shape being dragged out: start and current (px).
     pub shape_drag: Option<([f64; 2], [f64; 2])>,
     pub marquee: Option<([f64; 2], [f64; 2])>,
+    /// A press that began on a bucket fill: a drag from it draws a box
+    /// (fills are usually the background of what is wanted); a tap
+    /// selects the fill.
+    pub fill_tap: Option<ObjRef>,
     /// Lasso loop being drawn (px).
     pub lasso: Option<Vec<[f64; 2]>>,
     /// A picture being cropped.
@@ -635,6 +639,11 @@ impl App {
         Some([d.x as f64 * k, d.y as f64 * k])
     }
 
+    /// Whether `r` is a bucket fill (a stroke drawn with the fill brush).
+    fn is_fill(&self, r: ObjRef) -> bool {
+        matches!(r, ObjRef::Ink(id) if self.scene.strokes[id as usize].brush == ogpaper_core::Brush::Fill)
+    }
+
     pub(crate) fn select_begin(&mut self, p: [f64; 2]) {
         if self.edit.crop.is_some() && self.crop_begin(p) {
             return;
@@ -711,6 +720,13 @@ impl App {
                     self.edit.selection.push(o);
                 }
                 self.gesture = Gesture::None;
+            }
+            Some(o) if self.is_fill(o) => {
+                if !self.mods.shift_key() {
+                    self.edit.selection.clear();
+                }
+                self.edit.fill_tap = Some(o);
+                self.edit.marquee = Some((p, p));
             }
             Some(o) => {
                 self.edit.selection = vec![o];
@@ -884,9 +900,18 @@ impl App {
                 self.apply_op_with(&op, d.att);
             }
         }
+        let fill_tap = self.edit.fill_tap.take();
         if let Some((a, b)) = self.edit.marquee.take() {
-            if !cancel {
-                self.marquee_select(a, b);
+            let tap = crate::dist(a, b) < 6.0 * self.ppp();
+            match fill_tap {
+                // Tapped (not dragged) on a fill: select it.
+                Some(f) if tap && !cancel => {
+                    if !self.edit.selection.contains(&f) {
+                        self.edit.selection.push(f);
+                    }
+                }
+                _ if !cancel => self.marquee_select(a, b),
+                _ => {}
             }
         }
         if let Some(poly) = self.edit.lasso.take() {
@@ -905,7 +930,9 @@ impl App {
         if hi[0] - lo[0] < 3.0 && hi[1] - lo[1] < 3.0 {
             return;
         }
-        self.region_select(|q| q[0] >= lo[0] && q[0] <= hi[0] && q[1] >= lo[1] && q[1] <= hi[1]);
+        self.region_select([hi[0] - lo[0], hi[1] - lo[1]], |q| {
+            q[0] >= lo[0] && q[0] <= hi[0] && q[1] >= lo[1] && q[1] <= hi[1]
+        });
     }
 
     /// Select what the loop `poly` (px) takes in (see `region_select`). A
@@ -925,14 +952,16 @@ impl App {
             lo = [lo[0].min(q[0]), lo[1].min(q[1])];
             hi = [hi[0].max(q[0]), hi[1].max(q[1])];
         }
-        self.region_select(|q| {
+        self.region_select([hi[0] - lo[0], hi[1] - lo[1]], |q| {
             q[0] >= lo[0] && q[0] <= hi[0] && q[1] >= lo[1] && q[1] <= hi[1] && in_poly(q, poly)
         });
     }
 
-    /// Select each object a marquee or lasso takes in generously: when at
-    /// least `SELECT_SHARE` of its points are inside, or its middle is.
-    fn region_select(&mut self, inside: impl Fn([f64; 2]) -> bool) {
+    /// Select each object a marquee or lasso (`size` px across) takes in
+    /// generously: when at least `SELECT_SHARE` of its points are inside,
+    /// or its middle is and it is no bigger than the region (so a large
+    /// panel behind what is being picked out isn't taken by its middle).
+    fn region_select(&mut self, size: [f64; 2], inside: impl Fn([f64; 2]) -> bool) {
         // (object, points inside, points, extent)
         let mut seen: Vec<(ObjRef, usize, usize, [f64; 2], [f64; 2])> = Vec::new();
         // Finer than drawing: ink too small to draw (a few pixels when
@@ -977,15 +1006,23 @@ impl App {
                 None => seen.push((r, n_in, pts.len(), lo, hi)),
             }
         }
+        // Fills (the bucket's) are usually the background of what is being
+        // picked out: they are taken only when nothing else is.
+        let mut taken: Vec<ObjRef> = Vec::new();
         for (r, n_in, n, lo, hi) in seen {
             if n == 0 || self.edit.selection.contains(&r) {
                 continue;
             }
             let middle = [(lo[0] + hi[0]) * 0.5, (lo[1] + hi[1]) * 0.5];
-            if n_in as f64 >= SELECT_SHARE * n as f64 || inside(middle) {
-                self.edit.selection.push(r);
+            let small = hi[0] - lo[0] <= size[0] && hi[1] - lo[1] <= size[1];
+            if n_in as f64 >= SELECT_SHARE * n as f64 || (small && inside(middle)) {
+                taken.push(r);
             }
         }
+        if taken.iter().any(|&r| !self.is_fill(r)) {
+            taken.retain(|&r| !self.is_fill(r));
+        }
+        self.edit.selection.extend(taken);
     }
 
     // ---- edits on the selection --------------------------------------------
@@ -1217,6 +1254,42 @@ impl App {
         self.edit.clipboard = self.edit.selection.clone();
     }
 
+    /// The selected texts and tables as plain text, for other apps (top
+    /// to bottom, then left to right; a table's cells tab-separated).
+    pub(crate) fn selection_text(&self) -> String {
+        let mut items: Vec<([f64; 2], String)> = Vec::new();
+        for r in &self.edit.selection {
+            let ObjRef::Group(g) = r else { continue };
+            let grp = &self.objs.groups[*g as usize];
+            let d = objects::to_cam(&grp.cell, &grp.data, &self.cam);
+            let g = d.geom();
+            let top = [g.center[0] - g.half[0], g.center[1] - g.half[1]];
+            match &d {
+                ObjData::Text { text, .. } => items.push((top, text.clone())),
+                ObjData::Table { cells, .. } => items.push((
+                    top,
+                    cells
+                        .iter()
+                        .map(|row| row.join("\t"))
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                )),
+                _ => {}
+            }
+        }
+        // Rows first: things whose tops are close count as one row.
+        let row = self.ppp() * 12.0 / self.cam.ppc();
+        items.sort_by(|a, b| {
+            let (ra, rb) = ((a.0[1] / row).floor(), (b.0[1] / row).floor());
+            ra.total_cmp(&rb).then(a.0[0].total_cmp(&b.0[0]))
+        });
+        items
+            .into_iter()
+            .map(|(_, t)| t)
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     /// Paste copies centred on the pointer.
     pub(crate) fn paste(&mut self) {
         let clip = self.edit.clipboard.clone();
@@ -1373,6 +1446,9 @@ impl App {
         if sel != self.edit.sel_seen_for || log_len != self.edit.details_log_len {
             self.ui.sel_details = self.sel_details(&sel);
             self.edit.details_log_len = log_len;
+            // The page copies the selection's text synchronously.
+            #[cfg(target_arch = "wasm32")]
+            crate::web::set_selection_text(self.selection_text());
         }
         if sel != self.edit.sel_seen_for {
             let s = self.describe(&sel);
