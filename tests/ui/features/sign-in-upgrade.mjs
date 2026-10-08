@@ -24,11 +24,15 @@ export default {
     await t.tap(await t.find(`127.0.0.1:${hub.port}`));
     // Typing can drop a key on a loaded machine: try the sign-in twice.
     for (let attempt = 0; attempt < 2; attempt++) {
-      await t.tap('Sign in');
-      await t.tap(await t.find('User name'));
-      await t.type('admin');
-      await t.tap(await t.find('Password'));
-      await t.type('password');
+      if (!(await t.has('User name').catch(() => false))) await t.tap('Sign in');
+      // Clear what a failed try left (else it types "adminadmin").
+      const fill = async (field, text) => {
+        await t.tap(await t.find(field));
+        for (let i = 0; i < 16; i++) await t.key('Backspace');
+        await t.type(text);
+      };
+      await fill('User name', 'admin');
+      await fill('Password', 'password');
       // The one beside the password (the toolbar has a Sign in button too).
       const btns = (await t.nodes()).filter(n => n.w > 0 && [n.label, n.value].includes('Sign in')).sort((a, b) => b.y - a.y);
       await t.tap(btns[0]);

@@ -580,6 +580,10 @@ pub struct UiState {
     /// The quick toolbar as a fan from the bottom-right corner (tools move
     /// bottom left, their settings top right).
     pub radial_bar: bool,
+    /// The frame time readout shows (UI settings › Show frame time), and
+    /// its text.
+    pub perf: bool,
+    pub perf_text: String,
     /// Helper text (how-to lines) shows.
     pub hints: bool,
     /// How big the UI is drawn (UI > Size), 1 = normal.
@@ -830,6 +834,8 @@ impl Default for UiState {
             radial_bar: false,
             dark: false,
             hints: true,
+            perf: false,
+            perf_text: String::new(),
             ui_scale: 1.0,
             importing: false,
             folder_on: false,
@@ -1241,6 +1247,7 @@ pub enum Action {
     Dark,
     /// Show or hide helper text.
     Hints,
+    Perf,
     /// UI > Size: one step bigger (+1) or smaller (-1), or normal (0).
     UiScale(i8),
     /// Open the text search.
@@ -1610,6 +1617,26 @@ pub fn draw(ctx: &egui::Context, st: &mut UiState) -> Vec<Action> {
     quick_bar(ctx, st, &g);
     if st.radial_bar && !st.hide_bar {
         radial_bar(ctx, st, &g);
+    }
+    if st.perf && !st.perf_text.is_empty() {
+        egui::Area::new(Id::new("perf"))
+            .order(Order::Tooltip)
+            .anchor(Align2::LEFT_TOP, vec2(6.0, 6.0))
+            .interactable(false)
+            .show(ctx, |ui| {
+                egui::Frame::new()
+                    .fill(Color32::from_black_alpha(170))
+                    .corner_radius(6.0)
+                    .inner_margin(egui::Margin::symmetric(8, 3))
+                    .show(ui, |ui| {
+                        ui.label(
+                            egui::RichText::new(&st.perf_text)
+                                .monospace()
+                                .size(11.0)
+                                .color(Color32::WHITE),
+                        );
+                    });
+            });
     }
     tool_panel(ctx, st, &mut actions);
     text_editor(ctx, st, &mut actions);
@@ -6815,6 +6842,13 @@ fn layout_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>
                         "Helper text",
                         "The how-to lines in panels and over the text box",
                         Action::Hints,
+                    );
+                    tick(
+                        ui,
+                        st.perf,
+                        "Show frame time",
+                        "Frames per second and how long each takes (to report slowness)",
+                        Action::Perf,
                     );
                     tick(
                         ui,

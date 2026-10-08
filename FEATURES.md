@@ -122,6 +122,7 @@ reports features without tests and tests named here that don't exist.
 | UI-14 | Paste, copy and cut go to the focused text box | Ctrl+V in a text box | W D | ui:share-live |
 | UI-15 | Try mode tour | omegagiven.github.io/OG-paper/try/ › Tour | W | todo |
 | UI-16 | Tool panel: a sheet along the bottom on phones (drag it taller or tuck it into a strip), a movable, resizable window on wider screens (wide: color in its own column); width and opacity always in view, the rest in tabs | tap the strip / the panel button | W D M | ui:tool-panel |
+| UI-17 | Show frame time: frames per second and time per frame, to report slowness | Menu › UI settings › Show frame time | W D M | ui:frame-time |
 
 ## Plugins
 

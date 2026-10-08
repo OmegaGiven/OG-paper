@@ -106,6 +106,47 @@ const NO_CHANGES_BASE: &str =
 #[cfg(desktop)]
 const CLIP_MARK: &str = "OG Paper selection (paste it into OG Paper)";
 
+/// Points from `p1` to `p2` (not `p1` itself) along a centripetal
+/// Catmull-Rom curve through p0..p3, about every 3 px; pressure (the third
+/// value) goes straight across.
+fn curve_segment(p0: [f32; 3], p1: [f32; 3], p2: [f32; 3], p3: [f32; 3], out: &mut Vec<[f32; 3]>) {
+    let d = |a: [f32; 3], b: [f32; 3]| ((a[0] - b[0]).hypot(a[1] - b[1])).max(1e-3);
+    let len = d(p1, p2);
+    let steps = (len / 3.0).ceil().clamp(1.0, 16.0) as usize;
+    if steps == 1 {
+        out.push(p2);
+        return;
+    }
+    // Knot spacing by the square root of distance (no loops or cusps).
+    let (t1, t2, t3) = {
+        let a = d(p0, p1).sqrt();
+        let b = len.sqrt();
+        let c = d(p2, p3).sqrt();
+        (a, a + b, a + b + c)
+    };
+    let lerp = |a: [f32; 3], b: [f32; 3], ta: f32, tb: f32, t: f32| {
+        let w = if (tb - ta).abs() < 1e-6 {
+            0.0
+        } else {
+            (t - ta) / (tb - ta)
+        };
+        [a[0] + (b[0] - a[0]) * w, a[1] + (b[1] - a[1]) * w]
+    };
+    for k in 1..=steps {
+        let f = k as f32 / steps as f32;
+        let t = t1 + (t2 - t1) * f;
+        let q = |a: [f32; 2]| [a[0], a[1], 0.0];
+        let a1 = lerp(p0, p1, 0.0, t1, t);
+        let a2 = lerp(p1, p2, t1, t2, t);
+        let a3 = lerp(p2, p3, t2, t3, t);
+        let b1 = lerp(q(a1), q(a2), 0.0, t2, t);
+        let b2 = lerp(q(a2), q(a3), t1, t3, t);
+        let c = lerp(q(b1), q(b2), t1, t2, t);
+        let pr = p1[2] + (p2[2] - p1[2]) * f;
+        out.push(if k == steps { p2 } else { [c[0], c[1], pr] });
+    }
+}
+
 pub(crate) fn home_camera() -> Camera {
     Camera::new(CellAddr::new(0, 0, 0), [0.5, 0.5], BASE_PX)
 }
@@ -238,6 +279,14 @@ pub struct App {
     gesture: Gesture,
     /// The stroke being drawn: screen px + pressure.
     wet: Vec<[f32; 3]>,
+    /// The stroke in progress as the pointer gave it (`wet` is a smooth
+    /// curve through these), and how much of `wet` is settled.
+    wet_raw: Vec<[f32; 3]>,
+    wet_done: usize,
+    /// The frame time readout's last frame and smoothed times (ms).
+    perf_last: Option<web_time::Instant>,
+    perf_gap: f64,
+    perf_work: f64,
     erased: Vec<u32>,
     touches: HashMap<u64, [f64; 2]>,
     touch_ink: Option<u64>,
@@ -338,6 +387,11 @@ impl App {
             space: false,
             gesture: Gesture::None,
             wet: Vec::new(),
+            wet_raw: Vec::new(),
+            wet_done: 0,
+            perf_last: None,
+            perf_gap: 16.7,
+            perf_work: 0.0,
             erased: Vec::new(),
             touches: HashMap::new(),
             touch_ink: None,
@@ -432,19 +486,90 @@ impl App {
                 pressure
             };
         let q = [p[0] as f32, p[1] as f32, pressure];
-        if let Some(l) = self.wet.last() {
+        if let Some(l) = self.wet_raw.last() {
             if (l[0] - q[0]).hypot(l[1] - q[1]) < 1.2 {
                 return;
             }
         }
-        self.wet.push(q);
+        // Pointers report ~60 times a second, so a quick arc arrives as a
+        // few far-apart points: draw a smooth curve through them instead
+        // of straight pieces. Each segment settles once the point after it
+        // is known; the newest one is redrawn as the next point comes.
+        self.wet_raw.push(q);
+        let r = &self.wet_raw;
+        let n = r.len();
+        if n == 1 {
+            self.wet.clear();
+            self.wet.push(q);
+            self.wet_done = 1;
+        } else {
+            self.wet.truncate(self.wet_done);
+            // Beyond either end: the curve carried on (a quadratic through
+            // the three end points; a straight line with only two), so the
+            // end segments bend like their neighbours.
+            let past = |a: [f32; 3], b: [f32; 3], c: Option<[f32; 3]>| match c {
+                Some(c) => [
+                    3.0 * a[0] - 3.0 * b[0] + c[0],
+                    3.0 * a[1] - 3.0 * b[1] + c[1],
+                    a[2],
+                ],
+                None => [2.0 * a[0] - b[0], 2.0 * a[1] - b[1], a[2]],
+            };
+            let at = |i: isize| -> [f32; 3] {
+                if i < 0 {
+                    past(r[0], r[1], r.get(2).copied())
+                } else if i as usize >= n {
+                    past(r[n - 1], r[n - 2], n.checked_sub(3).map(|k| r[k]))
+                } else {
+                    r[i as usize]
+                }
+            };
+            if n >= 3 {
+                let i = n as isize - 3;
+                curve_segment(at(i - 1), at(i), at(i + 1), at(i + 2), &mut self.wet);
+                self.wet_done = self.wet.len();
+            }
+            let i = n as isize - 2;
+            curve_segment(at(i - 1), at(i), at(i + 1), at(i + 2), &mut self.wet);
+        }
         self.redraw();
+    }
+
+    /// The frame time readout: frames per second (from the time between
+    /// frames, smoothed) and this side's work per frame.
+    fn perf_tick(&mut self, started: web_time::Instant) {
+        let now = web_time::Instant::now();
+        let work = (now - started).as_secs_f64() * 1000.0;
+        let gap = self
+            .perf_last
+            .map_or(16.7, |t| (now - t).as_secs_f64() * 1000.0)
+            .min(1000.0);
+        self.perf_last = Some(now);
+        let k = 0.1;
+        self.perf_gap = self.perf_gap * (1.0 - k) + gap * k;
+        self.perf_work = self.perf_work * (1.0 - k) + work * k;
+        self.ui.perf_text = format!(
+            "{:.0} fps · {:.1} ms a frame · {:.1} ms work · {} strokes",
+            1000.0 / self.perf_gap.max(1.0),
+            self.perf_gap,
+            self.perf_work,
+            self.draw.strokes.len()
+        );
+        // Keep measuring while the readout shows.
+        self.redraw();
+    }
+
+    /// Drop the stroke in progress.
+    fn wet_clear(&mut self) {
+        self.wet.clear();
+        self.wet_raw.clear();
+        self.wet_done = 0;
     }
 
     fn ink_commit(&mut self) {
         let tool = self.ui.tool;
         let Some(brush) = self.ui.ink().and_then(|i| i.brush_for(tool)) else {
-            self.wet.clear();
+            self.wet_clear();
             return;
         };
         if self.wet.is_empty() {
@@ -483,7 +608,7 @@ impl App {
             }),
         };
         let id = self.scene.add_stroke_with(&cell, &pts, style, uid::new());
-        self.wet.clear();
+        self.wet_clear();
         self.history.record(Change::Added(vec![id]));
         self.note(id, true);
         #[cfg(target_arch = "wasm32")]
@@ -605,7 +730,7 @@ impl App {
         }
         match self.gesture {
             Gesture::Ink => {
-                self.wet.clear();
+                self.wet_clear();
                 self.ink_add(p, pressure);
             }
             Gesture::Erase => self.erase_at(p),
@@ -796,7 +921,7 @@ impl App {
     fn end_gesture(&mut self, cancel: bool) {
         match self.gesture {
             Gesture::Ink if !cancel => self.ink_commit(),
-            Gesture::Ink => self.wet.clear(),
+            Gesture::Ink => self.wet_clear(),
             Gesture::Erase => self.erase_end(),
             Gesture::Pick if !cancel => self.pick_end(),
             Gesture::Pick => self.ui.pick_preview = None,
@@ -967,7 +1092,7 @@ impl App {
         self.history = History::default();
         self.tl_view = None;
         self.fly = None;
-        self.wet.clear();
+        self.wet_clear();
         self.objs = objects::Objects::default();
         self.edit = edit::EditState::default();
         self.ui.text_edit = None;
@@ -1268,6 +1393,10 @@ impl App {
                 let mut p = prefs::load();
                 p.insert("uiscale".into(), format!("{s:.1}"));
                 prefs::save(&p);
+                self.redraw();
+            }
+            Action::Perf => {
+                self.ui.perf = !self.ui.perf;
                 self.redraw();
             }
             Action::Hints => {
@@ -2912,6 +3041,7 @@ impl App {
         let Some(window) = self.window.clone() else {
             return;
         };
+        let started = web_time::Instant::now();
         self.redraw_again.set(false);
         // Keep the surface the window's size: on iOS the window can have no
         // size yet when the renderer is made, and its resize can come first.
@@ -3186,6 +3316,9 @@ impl App {
             wet,
             paint,
         );
+        if self.ui.perf {
+            self.perf_tick(started);
+        }
         if self.frames_logged < 12 {
             self.frames_logged += 1;
             log::info!(
@@ -3705,4 +3838,30 @@ fn android_main(app: winit::platform::android::activity::AndroidApp) {
     let mut a = App::new(None);
     a.plugins_load_saved();
     el.run_app(&mut a).expect("event loop");
+}
+
+#[cfg(test)]
+mod stroke_tests {
+    use super::*;
+
+    #[test]
+    fn a_quick_arc_is_drawn_as_a_curve() {
+        // A quarter circle given as a few far-apart points, the way a fast
+        // finger arrives at 60 Hz.
+        let (c, r) = ([400.0f64, 400.0], 300.0);
+        let mut app = App::new(None);
+        for k in 0..=6 {
+            let a = k as f64 / 6.0 * std::f64::consts::FRAC_PI_2;
+            app.ink_add([c[0] + r * a.cos(), c[1] + r * a.sin()], 1.0);
+        }
+        let off = |p: &[f32; 3]| ((p[0] as f64 - c[0]).hypot(p[1] as f64 - c[1]) - r).abs();
+        let worst = app.wet.iter().map(off).fold(0.0, f64::max);
+        // Straight pieces would sag ~2.6 px in the middle of each; the curve
+        // stays within half a pixel, with points every few pixels.
+        assert!(worst < 0.5, "worst {worst}");
+        assert!(app.wet.len() > 60, "{} points", app.wet.len());
+        // It ends exactly where the pointer did.
+        let last = app.wet.last().unwrap();
+        assert!((last[0] as f64 - c[0]).abs() < 1e-3 && (last[1] as f64 - (c[1] + r)).abs() < 1e-3);
+    }
 }
