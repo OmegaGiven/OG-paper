@@ -40,6 +40,7 @@ reports features without tests and tests named here that don't exist.
 | EDIT-06 | Crop pictures | Select a picture › Crop | W D M | rust:crop::tests::crop_round_trips_through_the_full_box |
 | EDIT-07 | Sticker library (save a selection, place it again) | Menu › Library; Selection panel › Add to library | W D M | rust:library::tests::stickers_round_trip, todo |
 | EDIT-08 | Delete button on a selection (a ✕ off its top right corner, clear of the handles) | Select › ✕ | W D M | ui:delete-button |
+| EDIT-09 | Details tab for a selection: what it is, made when and by whom, how often it changed, facts by kind | Select › Details | W D M | ui:details-tab, rust:details::tests::a_new_shape_was_made_by_you_and_never_changed |
 
 ## Navigating the endless canvas
 
@@ -129,6 +130,7 @@ reports features without tests and tests named here that don't exist.
 | ID | Feature | Where | Platforms | Tests |
 |---|---|---|---|---|
 | PLUG-01 | WASM plugins | Menu › Plugins | W D | rust:plugin::tests::the_example_plugin_loads_and_answers |
+| PLUG-04 | Plugin permissions (asked for, allowed in Plugins) and audio clips: the Audio notes plugin records a voice note into a clip anyone on the page can play | Menu › Plugins › Install Audio notes › Allow | W | ui:audio-notes, rust:plugin::tests::audio_notes_asks_for_the_microphone, rust:audio::tests::base64_and_clock |
 | PLUG-02 | .ogpack packs (toolbars, tools, stickers) | Menu › Plugins › Install pack | W D | rust:pack::tests::packs_read_toolbars_tools_and_stickers |
 | PLUG-03 | Scripts (automation inside the app) | Menu › Plugins; `window.ogPaper.run` | W D | rust:script::tests::colors_parse, todo |
 

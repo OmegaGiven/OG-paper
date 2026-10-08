@@ -7,10 +7,13 @@
 
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 mod artwork;
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+mod audio;
 mod bucket;
 mod crop;
 #[cfg(any(test, target_arch = "wasm32"))]
 mod demo;
+mod details;
 mod diagram;
 mod edit;
 mod egui_io;
@@ -235,6 +238,12 @@ pub struct App {
     objs: objects::Objects,
     edit: edit::EditState,
     bookmarks: Vec<Bookmark>,
+    /// A recording a command asked for, until it stops (see `audio`).
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    audio_rec: Option<audio::RecRequest>,
+    /// What the commands being run may use (a plugin's allowed
+    /// permissions; none for automations).
+    cmd_perms: Vec<String>,
     /// Others' public views on this page (see `views`).
     shared_views: Vec<views::SharedView>,
     /// What new portals show (Portal tool).
@@ -361,6 +370,8 @@ impl App {
             edit: edit::EditState::default(),
             bookmarks: Vec::new(),
             shared_views: Vec::new(),
+            audio_rec: None,
+            cmd_perms: Vec::new(),
             portal_view: None,
             portal_path: Vec::new(),
             portal_passes: 0,
@@ -1027,6 +1038,7 @@ impl App {
                     objects::ObjData::Image { .. } => "image".into(),
                     objects::ObjData::Table { .. } => "table".into(),
                     objects::ObjData::Portal { .. } => "portal".into(),
+                    objects::ObjData::Audio { .. } => "audio".into(),
                 },
                 data: snapshot::data_bytes(&g.data),
                 strokes: g
@@ -1035,7 +1047,7 @@ impl App {
                     .map(|&s| self.scene.strokes[s as usize].uid)
                     .collect(),
             };
-            if let objects::ObjData::Image { id, .. } = g.data {
+            if let Some(id) = g.data.blob_id() {
                 if let Some(a) = self.objs.images.get(&id) {
                     let _ = f.put_image(id, &a.bytes);
                 }
@@ -1300,6 +1312,7 @@ impl App {
             | Action::FlipH
             | Action::FlipV
             | Action::EditText => self.sel_action(a),
+            Action::AudioPlay => self.audio_play_selected(),
             Action::SaveSticker => self.save_sticker(),
             #[cfg(target_arch = "wasm32")]
             Action::Library => web::emit("library"),
@@ -1580,6 +1593,8 @@ impl App {
                 self.plugins_to_ui();
             }
             Action::PluginPress(p, b) => self.plugin_press(p, b),
+            Action::PluginAllow(i, yes) => self.plugin_allow(i, yes),
+            Action::PluginInstallBundled(i) => self.plugin_install_bundled(i),
             Action::PluginRemove(i) => self.plugin_remove(i),
             #[cfg(target_arch = "wasm32")]
             Action::PluginInstall => web::emit("plugin-pick"),
@@ -2860,6 +2875,8 @@ impl App {
                     .map(|(u, t)| (u.to_string(), t.to_string()));
                 self.add_server(&link, account);
             }
+            Cmd::AudioRecorded(bytes, dur) => self.audio_recorded(bytes, dur),
+            Cmd::AudioCancelled(why) => self.audio_record_cancelled(&why),
             Cmd::Name(name) => {
                 if !name.trim().is_empty() {
                     self.ui.file_name = name;
@@ -2991,7 +3008,7 @@ impl App {
             -99.0
         };
         web::set_status(format!(
-            "{{\"ready\":true,\"zoom\":{:.3},\"strokes\":{},\"drawn\":{},\"erased\":{},\"undos\":{},\"deepDraw\":{:.2},\"flying\":{},\"dirty\":{},\"bookmarks\":[{}],\"timeline\":{},\"dark\":{},\"canvas\":\"{:032x}\",\"peer\":\"{:016x}\",\"net\":{},\"name\":{},\"passes\":{},\"hints\":{},\"tool\":{},\"hold\":{},\"viewOnly\":{},\"shared\":[{}],\"delKnob\":{},\"selected\":{}}}",
+            "{{\"ready\":true,\"zoom\":{:.3},\"strokes\":{},\"drawn\":{},\"erased\":{},\"undos\":{},\"deepDraw\":{:.2},\"flying\":{},\"dirty\":{},\"bookmarks\":[{}],\"timeline\":{},\"dark\":{},\"canvas\":\"{:032x}\",\"peer\":\"{:016x}\",\"net\":{},\"name\":{},\"passes\":{},\"hints\":{},\"tool\":{},\"hold\":{},\"viewOnly\":{},\"shared\":[{}],\"delKnob\":{},\"selected\":{},\"clips\":{}}}",
             self.cam.log10_zoom(),
             self.scene.strokes.iter().filter(|s| !s.deleted).count(),
             st.drawn,
@@ -3029,6 +3046,12 @@ impl App {
                 format!("[{:.4},{:.4}]", k[0] / w.max(1.0), k[1] / h.max(1.0))
             }),
             self.edit.selection.len(),
+            self.objs
+                .groups
+                .iter()
+                .filter(|g| matches!(g.data, objects::ObjData::Audio { .. })
+                    && g.strokes.iter().all(|&s| !self.scene.strokes[s as usize].deleted))
+                .count(),
         ));
         if self.fly.is_some() {
             self.redraw();

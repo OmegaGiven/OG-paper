@@ -70,6 +70,10 @@ pub enum Cmd {
     Run(String),
     /// The open page's name (from the page's list).
     Name(String),
+    /// A recording the page made (sound file, length ms), or why it ended
+    /// without one.
+    AudioRecorded(Vec<u8>, u32),
+    AudioCancelled(String),
     /// A server link to add to Pages (from `#server=` in the address), and
     /// an account to sign in with ("user:token", from `&acct=`; or "").
     AddServer(String, String),
@@ -128,6 +132,9 @@ thread_local! {
     static STICKER: RefCell<Option<Vec<u8>>> = RefCell::default();
     static EXPORT: RefCell<Option<Result<Vec<u8>, String>>> = RefCell::default();
     static CHANGES: RefCell<Option<Vec<u8>>> = RefCell::default();
+    static AUDIO_MAX: std::cell::Cell<u32> = const { std::cell::Cell::new(30_000) };
+    static AUDIO_OUT: RefCell<Option<(u64, Vec<u8>)>> = RefCell::default();
+    static PLUGIN_BYTES: RefCell<Option<Vec<u8>>> = RefCell::default();
     static NET_URL: RefCell<String> = RefCell::default();
     static RTC_CLOSE: RefCell<Vec<u64>> = RefCell::default();
     static DIR_REQ: RefCell<Vec<(u64, String)>> = RefCell::default();
@@ -268,6 +275,63 @@ pub fn stats(f: impl FnOnce(&mut Stats)) {
 
 pub fn get_stats() -> Stats {
     STATS.with(|s| s.get())
+}
+
+/// Record from the microphone, up to `max_ms` (the page does it, with a
+/// bar to stop it).
+pub fn audio_record(max_ms: u32) {
+    AUDIO_MAX.with(|m| m.set(max_ms));
+    emit("audio-record");
+}
+
+/// Play a clip's sound (`id`: the same clip again stops it).
+pub fn audio_play(id: u64, bytes: Vec<u8>) {
+    AUDIO_OUT.with(|o| *o.borrow_mut() = Some((id, bytes)));
+    emit("audio-play");
+}
+
+/// A plugin's file for the page to keep (one installed from the app's own
+/// list, which the page never picked).
+pub fn plugin_bytes(b: Vec<u8>) {
+    PLUGIN_BYTES.with(|p| *p.borrow_mut() = Some(b));
+}
+
+#[wasm_bindgen]
+pub fn og_plugin_bytes_take() -> Option<Vec<u8>> {
+    PLUGIN_BYTES.with(|p| p.borrow_mut().take())
+}
+
+/// The longest recording asked for (ms).
+#[wasm_bindgen]
+pub fn og_audio_max() -> u32 {
+    AUDIO_MAX.with(|m| m.get())
+}
+
+/// The clip to play: its id (hex) and sound.
+#[wasm_bindgen]
+pub fn og_audio_take_id() -> String {
+    AUDIO_OUT.with(|o| {
+        o.borrow()
+            .as_ref()
+            .map_or(String::new(), |(id, _)| format!("{id:016x}"))
+    })
+}
+
+#[wasm_bindgen]
+pub fn og_audio_take() -> Option<Vec<u8>> {
+    AUDIO_OUT.with(|o| o.borrow_mut().take().map(|(_, b)| b))
+}
+
+/// A recording finished (`dur_ms` long).
+#[wasm_bindgen]
+pub fn og_audio_recorded(bytes: Vec<u8>, dur_ms: u32) {
+    push(Cmd::AudioRecorded(bytes, dur_ms));
+}
+
+/// A recording ended without a sound (`why` to show, or "").
+#[wasm_bindgen]
+pub fn og_audio_cancelled(why: String) {
+    push(Cmd::AudioCancelled(why));
 }
 
 /// Ask the page to do something only it can (file dialogs, downloads).

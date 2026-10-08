@@ -9,7 +9,7 @@ import init, {
   og_copy, og_paste_own, og_wants_text, og_text_field, og_copied_take, og_field_at, og_paste_image, og_paste_text, og_pdf_page,
   og_home, og_bookmark_add, og_bookmark_go, og_view_public, og_shared_view_go, og_shared_view_copy, og_bookmark_remove, og_bookmark_rename, og_bookmark_to_bar,
   og_search, og_search_results, og_search_go, og_export, og_export_take, og_has_selection,
-  og_sticker_take, og_sticker_svg, og_sticker_place, og_import, og_merge, og_changes_take, og_merge_quiet, og_set_folder, og_net_url, og_net_take, og_net_open, og_net_recv, og_net_closed, og_join, og_poke, og_rtc_host, og_rtc_closing, og_view_token, og_relay_share, og_dir_requests, og_page_arg, og_set_pages, og_plugin_install, og_pack_install, og_pack_sticker_take, og_run, og_set_name, og_add_server,
+  og_sticker_take, og_sticker_svg, og_sticker_place, og_import, og_merge, og_changes_take, og_merge_quiet, og_set_folder, og_net_url, og_net_take, og_net_open, og_net_recv, og_net_closed, og_join, og_poke, og_rtc_host, og_rtc_closing, og_view_token, og_relay_share, og_dir_requests, og_page_arg, og_set_pages, og_plugin_install, og_pack_install, og_pack_sticker_take, og_run, og_set_name, og_add_server, og_audio_max, og_audio_take, og_audio_take_id, og_audio_recorded, og_audio_cancelled, og_plugin_bytes_take,
   og_timeline, og_timeline_range, og_timeline_restore, og_snapshot_request, og_snapshot_take,
 } from './pkg/og_paper.js';
 
@@ -68,6 +68,12 @@ const CSS = `
 .og-list .go small { color: var(--muted); display: block; font-size: 12px; }
 .og-list .mini { border: 0; background: none; color: var(--muted); padding: 6px; font-size: 13px; }
 .og-list .mini.pub[aria-pressed="true"] { color: var(--accent, #c8285a); font-weight: 600; }
+.og-rec { position: fixed; left: 50%; bottom: calc(96px + env(safe-area-inset-bottom)); transform: translateX(-50%); z-index: 30;
+  display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-radius: 999px; background: var(--face); border: 1px solid var(--edge);
+  box-shadow: 0 4px 16px rgba(0,0,0,.18); font-variant-numeric: tabular-nums; }
+.og-rec .dot { width: 12px; height: 12px; border-radius: 50%; background: #d62f40; animation: og-pulse 1s ease-in-out infinite; }
+@keyframes og-pulse { 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { .og-rec .dot { animation: none; } }
 .og-shared-head { margin: 10px 0 2px; font-size: 13px; color: var(--muted); font-weight: 600; }
 .og-fmt { flex-wrap: wrap; gap: 6px; }
 .og-lib { display: grid; grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); gap: 8px; margin-top: 8px; max-height: 60vh; overflow: auto; }
@@ -1303,6 +1309,77 @@ export async function start({ mode = 'app' } = {}) {
       say(e?.name === 'PasswordException' ? `${name} is password-protected` : `Could not import ${name}: ${e?.message || e}`);
     }
   }
+  // ---- audio clips (see crates/og-paper/src/audio.rs) ----
+  // Recording: the microphone through MediaRecorder at a speech bitrate
+  // (Opus where the browser has it, else MP4/AAC on Safari), with a bar to
+  // stop or cancel; the clip goes back to the canvas when it stops.
+  let recBar = null;
+  async function audioRecord(maxMs) {
+    if (recBar) return;
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+    } catch (e) {
+      og_audio_cancelled(e?.name === 'NotAllowedError' ? 'The browser did not allow the microphone' : `No microphone: ${e?.message || e}`);
+      return;
+    }
+    const types = ['audio/webm;codecs=opus', 'audio/ogg;codecs=opus', 'audio/mp4', 'audio/webm'];
+    const mimeType = types.find(t => window.MediaRecorder?.isTypeSupported?.(t));
+    let rec;
+    try {
+      rec = new MediaRecorder(stream, { ...(mimeType ? { mimeType } : {}), audioBitsPerSecond: 16000 });
+    } catch (e) {
+      stream.getTracks().forEach(t => t.stop());
+      og_audio_cancelled(`Could not record here: ${e?.message || e}`);
+      return;
+    }
+    const parts = [];
+    let cancelled = false;
+    const started = performance.now();
+    recBar = el('div', { class: 'og-rec', role: 'status' },
+      '<span class="dot"></span><span class="t">0:00</span><button class="og-btn stop">Stop</button><button class="og-btn cancel">Cancel</button>');
+    root.append(recBar);
+    const t = recBar.querySelector('.t');
+    const tick = setInterval(() => {
+      const s = Math.floor((performance.now() - started) / 1000);
+      t.textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+    }, 250);
+    const limit = setTimeout(() => rec.state !== 'inactive' && rec.stop(), maxMs);
+    rec.ondataavailable = e => e.data.size && parts.push(e.data);
+    rec.onstop = async () => {
+      clearInterval(tick); clearTimeout(limit);
+      stream.getTracks().forEach(tr => tr.stop());
+      recBar.remove(); recBar = null;
+      if (cancelled) { og_audio_cancelled('Recording cancelled'); return; }
+      const dur = Math.round(performance.now() - started);
+      const blob = new Blob(parts, { type: rec.mimeType || mimeType || 'audio/webm' });
+      og_audio_recorded(new Uint8Array(await blob.arrayBuffer()), Math.min(dur, maxMs));
+    };
+    recBar.querySelector('.stop').onclick = () => rec.stop();
+    recBar.querySelector('.cancel').onclick = () => { cancelled = true; rec.stop(); };
+    rec.start(250);
+  }
+  // Playing: one clip at a time; the same clip again stops it.
+  let player = null, playingId = '';
+  function audioPlay() {
+    const id = og_audio_take_id();
+    const bytes = og_audio_take();
+    if (player) {
+      player.pause(); URL.revokeObjectURL(player.src);
+      const same = playingId === id;
+      player = null; playingId = '';
+      if (same) return;
+    }
+    if (!bytes) return;
+    const b = bytes;
+    const type = b[0] === 0x1a ? 'audio/webm' : (b[0] === 0x4f ? 'audio/ogg' : (b[4] === 0x66 ? 'audio/mp4' : (b[0] === 0x52 ? 'audio/wav' : 'audio/mpeg')));
+    player = new Audio(URL.createObjectURL(new Blob([b], { type })));
+    playingId = id;
+    window.ogAudioPlaying = id;
+    player.onended = () => { if (player) URL.revokeObjectURL(player.src); player = null; playingId = ''; window.ogAudioPlaying = ''; };
+    player.play().catch(e => { say(`This browser could not play the clip (${type}): ${e?.message || e}`); player = null; playingId = ''; });
+  }
+
   // An HTML table (from a spreadsheet or a web page) as tab-separated text.
   function htmlTable(html) {
     if (!/<table/i.test(html)) return null;
@@ -1535,7 +1612,9 @@ export async function start({ mode = 'app' } = {}) {
       else if (r === 'dir-connect') for (const [c, url] of JSON.parse(og_dir_requests())) dirOpen(c, url);
       else if (r === 'open-page') pageOpen(og_page_arg());
       else if (r === 'plugin-pick') { pluginPicker.value = ''; pluginPicker.click(); }
-      else if (r === 'plugin-store' && pendingPlugin) {
+      else if (r === 'audio-record') audioRecord(og_audio_max());
+      else if (r === 'audio-play') audioPlay();
+      else if (r === 'plugin-store' && (pendingPlugin || (pendingPlugin = og_plugin_bytes_take()))) {
         const name = og_page_arg();
         idbPut('plugin:' + name, pendingPlugin);
         pendingPlugin = null;

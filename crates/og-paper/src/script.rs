@@ -236,6 +236,40 @@ impl App {
                     .add_stroke_at(&anchor, &pts, style, crate::uid::new(), z);
                 added.push(id);
             }
+            "audio" => {
+                let (x, y) = (num(c, "x").unwrap_or(0.0), num(c, "y").unwrap_or(0.0));
+                let w = num(c, "w").unwrap_or(220.0).clamp(8.0, 100_000.0);
+                let h = num(c, "h").unwrap_or(w * 0.24).clamp(4.0, 100_000.0);
+                let rec = crate::audio::RecRequest {
+                    x,
+                    y,
+                    w,
+                    h,
+                    max_ms: (num(c, "max_seconds").unwrap_or(30.0).clamp(1.0, 120.0) * 1000.0)
+                        as u32,
+                };
+                if c.get("record").and_then(Value::as_bool) == Some(true) {
+                    // The microphone: only for a plugin the person allowed it.
+                    if !self.cmd_perms.iter().any(|p| p == "microphone") {
+                        return Err(
+                            "recording needs the microphone: allow it for this plugin in Plugins"
+                                .into(),
+                        );
+                    }
+                    self.audio_record_start(rec)?;
+                    return Ok(json!({ "recording": true }));
+                }
+                let data = c
+                    .get("data")
+                    .and_then(Value::as_str)
+                    .ok_or("audio needs \"data\" (a sound file, base64) or \"record\": true")?;
+                if data.len() > crate::audio::MAX_BYTES * 4 / 3 + 8 {
+                    return Err("that sound is too big (2 MB at most)".into());
+                }
+                let bytes = crate::audio::base64_decode(data)?;
+                let dur = num(c, "duration_ms").unwrap_or(0.0).clamp(0.0, 3_600_000.0) as u32;
+                self.audio_add_now(bytes, dur, &rec, added)?;
+            }
             other => return Err(format!("unknown add: {other}")),
         }
         Ok(Value::Null)

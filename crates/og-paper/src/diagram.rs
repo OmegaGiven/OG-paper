@@ -67,9 +67,10 @@ fn outline_of(d: &ObjData) -> Option<(Outline, &Geom)> {
             ShapeKind::Diamond => Some((Outline::Diamond, geom)),
             _ => Some((Outline::Box, geom)),
         },
-        ObjData::Text { geom, .. } | ObjData::Table { geom, .. } | ObjData::Image { geom, .. } => {
-            Some((Outline::Box, geom))
-        }
+        ObjData::Text { geom, .. }
+        | ObjData::Table { geom, .. }
+        | ObjData::Image { geom, .. }
+        | ObjData::Audio { geom, .. } => Some((Outline::Box, geom)),
     }
 }
 

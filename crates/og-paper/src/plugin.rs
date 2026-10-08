@@ -43,7 +43,44 @@ pub struct Plugin {
     pub description: String,
     /// Button id and label.
     pub buttons: Vec<(i32, String)>,
+    /// What it asks to use beyond drawing (only these are known:
+    /// "microphone"). Nothing is used until the person allows it.
+    pub permissions: Vec<String>,
     pub bytes: Vec<u8>,
+}
+
+/// Permissions a plugin may ask for, and how they read in the panel.
+pub const PERMISSIONS: &[(&str, &str)] =
+    &[("microphone", "the microphone (to record audio clips)")];
+
+/// Plugins that come with the app, ready to install: name, file.
+pub const BUNDLED: &[(&str, &[u8])] = &[
+    (
+        "Audio notes",
+        include_bytes!("../../../plugins/examples/audio-notes.wasm"),
+    ),
+    (
+        "Starter kit",
+        include_bytes!("../../../plugins/examples/starter.wasm"),
+    ),
+];
+
+/// Whether the person allowed plugin `name` what it asks for.
+pub fn allowed(name: &str) -> bool {
+    crate::prefs::load()
+        .get(&format!("plugin.allow.{name}"))
+        .is_some_and(|v| v == "yes")
+}
+
+pub fn set_allowed(name: &str, yes: bool) {
+    let mut p = crate::prefs::load();
+    let k = format!("plugin.allow.{name}");
+    if yes {
+        p.insert(k, "yes".into());
+    } else {
+        p.remove(&k);
+    }
+    crate::prefs::save(&p);
 }
 
 struct Live {
@@ -152,8 +189,20 @@ impl Plugin {
                     .collect()
             })
             .unwrap_or_default();
+        let permissions = m
+            .get("permissions")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(Value::as_str)
+                    .filter(|p| PERMISSIONS.iter().any(|(k, _)| k == p))
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
         Ok(Plugin {
             name,
+            permissions,
             version: s("version"),
             description: s("description").chars().take(300).collect(),
             buttons,
@@ -201,10 +250,14 @@ impl App {
                     }
                 }
                 if !quiet {
-                    self.say(format!(
-                        "Plugin {} installed: its buttons are in Plugins",
-                        p.name
-                    ));
+                    self.say(if p.permissions.is_empty() || allowed(&p.name) {
+                        format!("Plugin {} installed: its buttons are in Plugins", p.name)
+                    } else {
+                        format!(
+                            "Plugin {} installed: it asks to use the microphone — allow it in Plugins",
+                            p.name
+                        )
+                    });
                     #[cfg(target_arch = "wasm32")]
                     crate::web::page_request("plugin-store", &p.name);
                 }
@@ -265,8 +318,46 @@ impl App {
                     format!("{} · {}", p.version, p.description)
                 },
                 buttons: p.buttons.clone(),
+                asks: p
+                    .permissions
+                    .iter()
+                    .filter_map(|k| {
+                        PERMISSIONS
+                            .iter()
+                            .find(|(n, _)| n == k)
+                            .map(|(_, l)| l.to_string())
+                    })
+                    .collect(),
+                allowed: allowed(&p.name),
             })
             .collect();
+        self.ui.plugins_bundled = BUNDLED
+            .iter()
+            .map(|(n, _)| (n.to_string(), self.plugins.iter().any(|p| p.name == *n)))
+            .collect();
+    }
+
+    /// Allow (or stop allowing) what plugin `i` asks for.
+    pub(crate) fn plugin_allow(&mut self, i: usize, yes: bool) {
+        let Some(p) = self.plugins.get(i) else {
+            return;
+        };
+        set_allowed(&p.name, yes);
+        self.say(if yes {
+            format!("{} may use what it asked for", p.name)
+        } else {
+            format!("{} may no longer use what it asked for", p.name)
+        });
+        self.plugins_to_ui();
+    }
+
+    /// Install a plugin that comes with the app.
+    pub(crate) fn plugin_install_bundled(&mut self, i: usize) {
+        if let Some((_, bytes)) = BUNDLED.get(i) {
+            self.plugin_install(bytes.to_vec(), false);
+            #[cfg(target_arch = "wasm32")]
+            crate::web::plugin_bytes(bytes.to_vec());
+        }
     }
 
     /// What a plugin is told: the view (home-view points) and the texts.
@@ -300,13 +391,29 @@ impl App {
         let input = self.plugin_input(button);
         match p.press(button, &input) {
             Ok(cmds) => {
+                // What it asked for, if the person allowed it.
+                self.cmd_perms = if allowed(&p.name) {
+                    p.permissions.clone()
+                } else {
+                    vec![]
+                };
                 let results = self.run_commands(&cmds);
+                self.cmd_perms.clear();
+                let first_error = results.as_array().and_then(|r| {
+                    r.iter()
+                        .find(|x| x.get("ok") == Some(&json!(false)))
+                        .and_then(|x| x.get("error")?.as_str().map(str::to_string))
+                });
                 let failed = results.as_array().map_or(0, |r| {
                     r.iter()
                         .filter(|x| x.get("ok") == Some(&json!(false)))
                         .count()
                 });
-                if failed > 0 {
+                if failed == 1 {
+                    if let Some(e) = first_error {
+                        self.say(format!("{}: {e}", p.name));
+                    }
+                } else if failed > 0 {
                     self.say(format!("{}: {failed} of its commands did not work", p.name));
                 }
             }
@@ -319,6 +426,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::objects::ObjData;
 
     #[test]
     fn the_example_plugin_loads_and_answers() {
@@ -334,5 +442,79 @@ mod tests {
         assert!(first["points"].as_array().unwrap().len() > 100);
         // Garbage is refused, not run.
         assert!(Plugin::load(b"not wasm".to_vec()).is_err());
+    }
+
+    #[test]
+    fn audio_notes_asks_for_the_microphone() {
+        let p = Plugin::load(BUNDLED[0].1.to_vec()).unwrap();
+        assert_eq!(p.name, "Audio notes");
+        assert_eq!(p.permissions, vec!["microphone".to_string()]);
+        let input =
+            json!({"button": 1, "view": {"x": -100, "y": -50, "w": 200, "h": 100}, "texts": []});
+        let cmds = p.press(1, &input).unwrap();
+        assert_eq!(cmds[0]["add"], "audio");
+        assert_eq!(cmds[0]["record"], true);
+
+        let mut app = App::new(None);
+        // Without the microphone allowed, recording is refused.
+        let r = app.run_commands(&cmds);
+        assert_eq!(r[0]["ok"], false);
+        assert!(r[0]["error"].as_str().unwrap().contains("microphone"));
+        // A clip from data: a tiny WAV, base64.
+        let mut wav = b"RIFF\x24\x00\x00\x00WAVEfmt ".to_vec();
+        wav.extend_from_slice(&[
+            16, 0, 0, 0, 1, 0, 1, 0, 0x40, 0x1f, 0, 0, 0x80, 0x3e, 0, 0, 2, 0, 16, 0,
+        ]);
+        wav.extend_from_slice(b"data\x00\x00\x00\x00");
+        let b64 = {
+            const T: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+            let mut o = String::new();
+            for ch in wav.chunks(3) {
+                let n = (ch[0] as u32) << 16
+                    | (*ch.get(1).unwrap_or(&0) as u32) << 8
+                    | *ch.get(2).unwrap_or(&0) as u32;
+                for k in 0..4 {
+                    if k <= ch.len() {
+                        o.push(T[(n >> (18 - 6 * k) & 63) as usize] as char);
+                    } else {
+                        o.push('=');
+                    }
+                }
+            }
+            o
+        };
+        let r = app.run_commands(
+            &json!([{"add": "audio", "data": b64, "duration_ms": 1500, "x": 0, "y": 0, "w": 200}]),
+        );
+        assert_eq!(r[0]["ok"], true, "{r}");
+        let g = app
+            .objs
+            .groups
+            .iter()
+            .find(|g| matches!(g.data, ObjData::Audio { .. }))
+            .expect("a clip");
+        let ObjData::Audio { id, dur_ms, .. } = g.data else {
+            unreachable!()
+        };
+        assert_eq!(dur_ms, 1500);
+        assert!(app
+            .objs
+            .images
+            .get(&id)
+            .is_some_and(|a| a.bytes.as_slice() == wav.as_slice()));
+        // A lone clip's bytes round trip; older apps read a rounded box.
+        let bytes = crate::snapshot::data_bytes(&g.data);
+        assert!(
+            matches!(crate::snapshot::get_data(&bytes).unwrap(), ObjData::Audio { id: i, dur_ms: 1500, .. } if i == id)
+        );
+        let mut plain = Vec::new();
+        crate::snapshot::put_data(&mut plain, &g.data);
+        assert!(matches!(
+            crate::snapshot::get_data(&plain).unwrap(),
+            ObjData::Shape { .. }
+        ));
+        // Not a sound: refused.
+        let r = app.run_commands(&json!([{"add": "audio", "data": "aGVsbG8="}]));
+        assert_eq!(r[0]["ok"], false);
     }
 }

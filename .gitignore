@@ -7,3 +7,4 @@ web/app/pkg/
 og-paper-data/
 plugins/examples/starter/target/
 /out/
+plugins/examples/audio-notes/target/

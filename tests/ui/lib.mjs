@@ -103,7 +103,9 @@ export async function launch(size, { demo = false } = {}) {
   const c = spawn(findBrowser(), [
     '--headless=new', '--no-sandbox', `--remote-debugging-port=${port}`, `--user-data-dir=${prof}`,
     `--window-size=${s.width},${s.height}`, '--enable-unsafe-webgpu', '--enable-features=Vulkan',
-    '--use-angle=vulkan', '--ignore-gpu-blocklist', ...(process.env.UI_NO_LNA ? ['--disable-features=LocalNetworkAccessChecks,PrivateNetworkAccessSendPreflights,PrivateNetworkAccessRespectPreflightResults,BlockInsecurePrivateNetworkRequests'] : []), '--hide-scrollbars', '--mute-audio', 'about:blank',
+    '--use-angle=vulkan', '--ignore-gpu-blocklist', ...(process.env.UI_NO_LNA ? ['--disable-features=LocalNetworkAccessChecks,PrivateNetworkAccessSendPreflights,PrivateNetworkAccessRespectPreflightResults,BlockInsecurePrivateNetworkRequests'] : []), '--hide-scrollbars', '--mute-audio',
+    // A fake microphone that needs no permission prompt (audio clips).
+    '--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream', 'about:blank',
   ], { stdio: 'ignore' });
   children.push(c);
   let targets;

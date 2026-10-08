@@ -83,6 +83,8 @@ pub struct EditState {
     /// The selection style last handed to the panel.
     pub sel_seen: Option<SelStyle>,
     pub sel_seen_for: Vec<ObjRef>,
+    /// The sync log's length when the Details were last worked out.
+    pub details_log_len: usize,
     pub seed: u32,
 }
 
@@ -636,6 +638,14 @@ impl App {
     pub(crate) fn select_begin(&mut self, p: [f64; 2]) {
         if self.edit.crop.is_some() && self.crop_begin(p) {
             return;
+        }
+        // An audio clip's play button plays it (no selecting).
+        if !self.mods.shift_key() {
+            if let Some(g) = self.audio_button_at(p) {
+                self.audio_play(g);
+                self.gesture = Gesture::None;
+                return;
+            }
         }
         // The selection's delete button.
         if let Some(k) = self.del_knob_px() {
@@ -1269,7 +1279,7 @@ impl App {
     }
 
     /// Add a new object centred on screen point `at` (px) and select it.
-    fn insert(&mut self, data: ObjData) {
+    pub(crate) fn insert(&mut self, data: ObjData) {
         let (g, ids) = self.add_group(&data, None);
         self.record_edit(vec![], ids);
         self.edit.selection = vec![ObjRef::Group(g)];
@@ -1358,6 +1368,12 @@ impl App {
         }
         self.ui.cropping = self.edit.crop.is_some();
         let sel = self.edit.selection.clone();
+        // Details: again when the selection or the page's history changes.
+        let log_len = self.share.log.len();
+        if sel != self.edit.sel_seen_for || log_len != self.edit.details_log_len {
+            self.ui.sel_details = self.sel_details(&sel);
+            self.edit.details_log_len = log_len;
+        }
         if sel != self.edit.sel_seen_for {
             let s = self.describe(&sel);
             self.ui.sel = s;
@@ -1391,6 +1407,7 @@ impl App {
                 ObjData::Shape { .. } => SelKind::Shapes,
                 ObjData::Text { .. } | ObjData::Table { .. } => SelKind::Text,
                 ObjData::Image { .. } => SelKind::Images,
+                ObjData::Audio { .. } => SelKind::Audio,
                 ObjData::Portal { .. } => SelKind::Portals,
             },
         });
@@ -1418,6 +1435,7 @@ impl App {
                 ObjData::Shape { style, .. } | ObjData::Portal { style, .. } => s.shape = *style,
                 ObjData::Text { style, .. } | ObjData::Table { style, .. } => s.text = *style,
                 ObjData::Image { opacity, .. } => s.opacity = *opacity,
+                ObjData::Audio { .. } => {}
             },
             None => {}
         }
@@ -1522,6 +1540,7 @@ impl App {
                             seed,
                         }
                     }
+                    d @ ObjData::Audio { .. } => d,
                     ObjData::Image {
                         id,
                         geom,

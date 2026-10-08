@@ -489,7 +489,7 @@ impl App {
                 .filter_map(|s| map.get(s).copied())
                 .collect();
             if strokes.len() == g.strokes.len() && !strokes.is_empty() {
-                if let crate::objects::ObjData::Image { id, .. } = g.data {
+                if let Some(id) = g.data.blob_id() {
                     if let Some(a) = self.objs.images.get(&id).filter(|_| images) {
                         objs.images.insert(id, a.clone());
                     }

@@ -20,6 +20,17 @@ pub struct Asset {
     pub h: u32,
 }
 
+/// Whether `b` is a sound file an audio clip keeps: WebM / Matroska, Ogg,
+/// MP4 / M4A, WAV or MP3.
+pub fn is_audio(b: &[u8]) -> bool {
+    b.starts_with(&[0x1a, 0x45, 0xdf, 0xa3])
+        || b.starts_with(b"OggS")
+        || (b.len() > 12 && &b[4..8] == b"ftyp")
+        || (b.starts_with(b"RIFF") && b.len() > 12 && &b[8..12] == b"WAVE")
+        || b.starts_with(b"ID3")
+        || (b.len() > 1 && b[0] == 0xff && b[1] & 0xe0 == 0xe0)
+}
+
 /// Content hash (FNV-1a, 64 bit): the same picture pasted twice is stored once.
 pub fn id_of(bytes: &[u8]) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
@@ -63,6 +74,14 @@ pub fn prepare(bytes: Vec<u8>) -> Result<Asset, String> {
 
 /// A stored picture (from a file): only its header is read here.
 pub fn load(bytes: Vec<u8>) -> Result<Asset, String> {
+    // Audio clips' sounds share this store (no size: nothing to draw).
+    if is_audio(&bytes) {
+        return Ok(Asset {
+            bytes: Arc::new(bytes),
+            w: 0,
+            h: 0,
+        });
+    }
     let (w, h) = image::ImageReader::new(std::io::Cursor::new(&bytes))
         .with_guessed_format()
         .map_err(|e| e.to_string())?

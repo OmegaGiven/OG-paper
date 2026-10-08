@@ -1178,7 +1178,7 @@ impl App {
     fn ask_images(&mut self, conn: u64) {
         let mut want: Vec<u64> = Vec::new();
         for g in &self.objs.groups {
-            if let crate::objects::ObjData::Image { id, .. } = g.data {
+            if let Some(id) = g.data.blob_id() {
                 if !self.objs.images.contains_key(&id) && !want.contains(&id) {
                     want.push(id);
                 }

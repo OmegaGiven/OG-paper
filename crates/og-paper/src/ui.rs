@@ -165,6 +165,8 @@ pub enum SelKind {
     /// Texts and tables.
     Text,
     Images,
+    /// Audio clips.
+    Audio,
     Portals,
     Mixed,
 }
@@ -219,6 +221,9 @@ pub struct PluginView {
     pub name: String,
     pub info: String,
     pub buttons: Vec<(i32, String)>,
+    /// What it asks to use (as the panel says it), and whether allowed.
+    pub asks: Vec<String>,
+    pub allowed: bool,
 }
 
 /// A page on this device, as Pages lists it.
@@ -625,6 +630,8 @@ pub struct UiState {
     pub layout_open: bool,
     pub plugins_open: bool,
     pub plugins: Vec<PluginView>,
+    /// The app's own plugins: name, installed.
+    pub plugins_bundled: Vec<(String, bool)>,
     pub local_pages: Vec<LocalPage>,
     /// Pages: renaming page k here (the name being typed).
     pub page_rename: Option<(usize, String)>,
@@ -712,6 +719,8 @@ pub struct UiState {
     pub text_size: f32,
     /// The selection, for the panel (app fills it; panel edits it).
     pub sel: SelStyle,
+    /// The selection's Details tab: label, value rows.
+    pub sel_details: Vec<(String, String)>,
     /// A picture is being cropped.
     pub cropping: bool,
     /// Desktop library: open, and its stickers (name, thumbnail pixels,
@@ -859,6 +868,7 @@ impl Default for UiState {
             layout_open: false,
             plugins_open: false,
             plugins: Vec::new(),
+            plugins_bundled: Vec::new(),
             local_pages: Vec::new(),
             page_rename: None,
             page_new: None,
@@ -900,6 +910,7 @@ impl Default for UiState {
             text: TextStyle::default(),
             text_size: 24.0,
             sel: SelStyle::default(),
+            sel_details: Vec::new(),
             egui_fonts: Default::default(),
             text_edit: None,
             overlay: Overlay::default(),
@@ -1164,6 +1175,10 @@ pub enum Action {
     PluginInstall,
     /// Plugin, button id.
     PluginPress(usize, i32),
+    /// Allow (or stop allowing) what plugin i asks for.
+    PluginAllow(usize, bool),
+    /// Install the app's own plugin i (see `plugin::BUNDLED`).
+    PluginInstallBundled(usize),
     PluginRemove(usize),
     /// Save the toolbars and inventory as a pack.
     PackExport,
@@ -1236,6 +1251,8 @@ pub enum Action {
     CropDone,
     CropCancel,
     EditText,
+    /// Play the selected audio clip.
+    AudioPlay,
     /// Load a font file of your own.
     AddFont,
     /// Insert a picture from a file.
@@ -2983,6 +3000,8 @@ pub enum PanelTab {
     Shape,
     Font,
     Text,
+    /// A selection's details and history (see `details`).
+    Details,
 }
 
 impl PanelTab {
@@ -3000,6 +3019,7 @@ impl PanelTab {
             PanelTab::Shape => "Shape",
             PanelTab::Font => "Font",
             PanelTab::Text => "Size & align",
+            PanelTab::Details => "Details",
         }
     }
 }
@@ -3037,11 +3057,12 @@ fn panel_tabs(st: &UiState) -> (&'static str, &'static [PanelTab]) {
         Tool::Bucket => ("fill", &[Color, Gaps]),
         Tool::Shapes => ("shape", SHAPE),
         Tool::Text => ("text", TEXT),
+        // A selection: its settings, then its Details.
         Tool::Select | Tool::Lasso => match st.sel.kind {
-            SelKind::Ink if st.sel.ink.is_some() => ("ink", INK),
-            SelKind::Shapes | SelKind::Portals => ("shape", SHAPE),
-            SelKind::Text => ("text", TEXT),
-            _ => ("", &[]),
+            SelKind::Ink if st.sel.ink.is_some() => ("sel-ink", &[Color, Style, Details]),
+            SelKind::Shapes | SelKind::Portals => ("sel-shape", &[Shape, Style, Color, Details]),
+            SelKind::Text => ("sel-text", &[Font, Text, Color, Details]),
+            _ => ("sel", &[Details]),
         },
         _ => ("", &[]),
     }
@@ -3773,6 +3794,25 @@ fn tool_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) 
     }
 }
 
+/// The Details tab: label, value rows.
+fn details_grid(ui: &mut egui::Ui, rows: &[(String, String)]) {
+    egui::Grid::new("sel_details")
+        .num_columns(2)
+        .spacing([12.0, 6.0])
+        .striped(true)
+        .show(ui, |ui| {
+            for (label, value) in rows {
+                ui.label(
+                    egui::RichText::new(label)
+                        .small()
+                        .color(Color32::from_gray(110)),
+                );
+                ui.add(egui::Label::new(value.as_str()).wrap());
+                ui.end_row();
+            }
+        });
+}
+
 /// The tool's settings for the tab being drawn (see [`part`]); true when the
 /// color dial's eyedropper was tapped.
 fn panel_body(
@@ -3799,7 +3839,26 @@ fn panel_body(
             &st.egui_fonts,
             actions,
         ),
-        Tool::Select | Tool::Lasso => match st.sel.kind {
+        Tool::Select | Tool::Lasso => {
+            if part(PanelTab::Details) {
+                details_grid(ui, &st.sel_details);
+            }
+            sel_body(ui, st, touch, dial_hue, actions)
+        }
+        _ => false,
+    }
+}
+
+/// A selection's settings for the tab being drawn.
+fn sel_body(
+    ui: &mut egui::Ui,
+    st: &mut UiState,
+    touch: bool,
+    dial_hue: &mut f32,
+    actions: &mut Vec<Action>,
+) -> bool {
+    {
+        match st.sel.kind {
             SelKind::Ink => match st.sel.ink.as_mut() {
                 Some(ink) => ink_section(ui, ink, Tool::Texture, touch, dial_hue, false),
                 None => false,
@@ -3840,8 +3899,7 @@ fn panel_body(
                 shape_section(ui, &mut st.sel.shape, &mut st.color_target, touch, dial_hue)
             }
             _ => false,
-        },
-        _ => false,
+        }
     }
 }
 
@@ -4420,6 +4478,14 @@ fn select_actions(
         }
         if kind == SelKind::Text && ui.button("Edit text").clicked() {
             actions.push(Action::EditText);
+        }
+        if kind == SelKind::Audio
+            && ui
+                .button("▶ Play")
+                .on_hover_text("Play (again: stop)")
+                .clicked()
+        {
+            actions.push(Action::AudioPlay);
         }
         if ui
             .button("Add to library")
@@ -6737,10 +6803,44 @@ fn plugins_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action
                         if !p.info.is_empty() {
                             ui.label(egui::RichText::new(&p.info).small().weak());
                         }
+                        if !p.asks.is_empty() {
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label(
+                                    egui::RichText::new(format!("Asks to use {}", p.asks.join(", ")))
+                                        .small()
+                                        .color(if p.allowed { Color32::from_rgb(30, 130, 80) } else { ACCENT }),
+                                );
+                                if p.allowed {
+                                    if ui.small_button("Stop allowing").clicked() {
+                                        actions.push(Action::PluginAllow(i, false));
+                                    }
+                                } else if ui.small_button("Allow").clicked() {
+                                    actions.push(Action::PluginAllow(i, true));
+                                }
+                            });
+                        }
                         ui.horizontal_wrapped(|ui| {
                             for (id, label) in &p.buttons {
                                 if ui.button(label).clicked() {
                                     actions.push(Action::PluginPress(i, *id));
+                                }
+                            }
+                        });
+                    }
+                    let more: Vec<(usize, &String)> = st
+                        .plugins_bundled
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, (_, installed))| !installed)
+                        .map(|(i, (n, _))| (i, n))
+                        .collect();
+                    if !more.is_empty() {
+                        ui.add_space(8.0);
+                        ui.label(egui::RichText::new("Comes with the app").small().weak());
+                        ui.horizontal_wrapped(|ui| {
+                            for (i, n) in more {
+                                if ui.button(format!("Install {n}")).clicked() {
+                                    actions.push(Action::PluginInstallBundled(i));
                                 }
                             }
                         });

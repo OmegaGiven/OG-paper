@@ -31,6 +31,14 @@ points, colors `#rrggbb` or `#rrggbbaa`.
   line, arrow), `x`, `y`, `w`, `h` (a line or arrow runs from x,y to
   x+w,y+h), `color` (outline), `fill`, `width`, `neat` (false for a
   hand-drawn look).
+- `add: audio` — an audio clip (a small player anyone on the page can
+  play): `x`, `y` (top left), `w`, `h`, and either `data` (a sound file,
+  base64: WebM, Ogg, MP4/M4A, WAV or MP3, at most 2 MB) with an optional
+  `duration_ms`, or `"record": true` with `max_seconds` (1–120, default
+  30): the app records from the microphone, with a bar to stop or cancel,
+  and puts the clip in the middle of the screen when the person stops.
+  Recording needs the `microphone` permission (below) and works in the
+  web app for now; the desktop and mobile apps keep and show clips.
 - `get: texts` — every text on the page: `{"text", "x", "y", "size"}`.
 - `say` — shows a short message.
 
@@ -83,6 +91,20 @@ The manifest:
  "description": "Example plugin: a dot grid, a spiral and a text count",
  "buttons": [{"id": 1, "label": "Dot grid here"}, {"id": 2, "label": "Spiral"}]}
 ```
+
+### Permissions
+
+A plugin that needs more than drawing lists it in its manifest:
+`"permissions": ["microphone"]` (the only one so far). The plugin itself
+still gets no access to anything: the app does the work (here, recording
+with its own bar to stop or cancel), and only once the person has allowed
+it in Plugins (Allow / Stop allowing, kept per plugin). Until then the
+command fails with a message saying what to allow. Automations (the
+server API) never get permissions.
+
+The app comes with two plugins, ready to install from Plugins: **Audio
+notes** (`plugins/examples/audio-notes`: record a voice note, 30 s or
+2 min) and the **Starter kit**.
 
 The input to `og_run`:
 

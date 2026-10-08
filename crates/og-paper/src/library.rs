@@ -215,7 +215,7 @@ impl App {
                     }
                     let d = to_cam(&grp.cell, &grp.data, &self.cam);
                     d.extent().iter().for_each(|&q| grow(q, 0.0));
-                    if let ObjData::Image { id, .. } = d {
+                    if let Some(id) = d.blob_id() {
                         if let Some(a) = self.objs.images.get(&id) {
                             if !images.iter().any(|(i, _)| *i == id) {
                                 images.push((id, a.clone()));

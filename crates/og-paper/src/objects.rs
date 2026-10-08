@@ -75,6 +75,15 @@ pub enum ObjData {
         size: f64,
         seed: u32,
     },
+    /// An audio clip: a small player; its sound is in [`Objects::images`]
+    /// (the store pictures use, by content hash), `dur_ms` long. Older apps
+    /// read it as a rounded box (see `audio_as_shape` and `snapshot`).
+    Audio {
+        id: u64,
+        geom: Geom,
+        dur_ms: u32,
+        seed: u32,
+    },
     /// A window onto another view of the canvas: an outline (a shape's, or
     /// freehand when `geom.pts` holds a loop) and what shows inside it.
     Portal {
@@ -284,12 +293,21 @@ fn geom_map(g: &Geom, f: impl Fn([f64; 2]) -> [f64; 2], k: f64) -> Geom {
 }
 
 impl ObjData {
+    /// The file it shows or plays, kept with the pictures (by id).
+    pub fn blob_id(&self) -> Option<u64> {
+        match self {
+            ObjData::Image { id, .. } | ObjData::Audio { id, .. } => Some(*id),
+            _ => None,
+        }
+    }
+
     pub fn geom(&self) -> &Geom {
         match self {
             ObjData::Shape { geom, .. }
             | ObjData::Text { geom, .. }
             | ObjData::Image { geom, .. }
             | ObjData::Table { geom, .. }
+            | ObjData::Audio { geom, .. }
             | ObjData::Portal { geom, .. } => geom,
         }
     }
@@ -344,6 +362,17 @@ impl ObjData {
                 style: *style,
                 geom: geom_map(geom, &f, k),
                 size: size * k,
+                seed: *seed,
+            },
+            ObjData::Audio {
+                id,
+                geom,
+                dur_ms,
+                seed,
+            } => ObjData::Audio {
+                id: *id,
+                geom: geom_map(geom, &f, k),
+                dur_ms: *dur_ms,
                 seed: *seed,
             },
             ObjData::Portal {
@@ -423,6 +452,17 @@ impl ObjData {
                     seed: *seed,
                 }
             }
+            ObjData::Audio {
+                id,
+                geom,
+                dur_ms,
+                seed,
+            } => ObjData::Audio {
+                id: *id,
+                geom: op.geom(geom),
+                dur_ms: *dur_ms,
+                seed: *seed,
+            },
             ObjData::Portal {
                 style,
                 geom,
@@ -479,6 +519,7 @@ impl ObjData {
                 seed,
                 ..
             } => portal_pieces(style, geom, *width, *seed),
+            ObjData::Audio { geom, seed, .. } => audio_pieces(geom, *seed),
         }
     }
 
@@ -505,6 +546,35 @@ impl ObjData {
             width: *width,
             seed: *seed,
         })
+    }
+
+    /// An audio clip as a plain shape: the player's rounded box. Older apps
+    /// read clips as this (see `snapshot`).
+    pub fn audio_as_shape(&self) -> Option<ObjData> {
+        let ObjData::Audio { geom, seed, .. } = self else {
+            return None;
+        };
+        Some(ObjData::Shape {
+            style: audio_box_style(),
+            geom: geom.clone(),
+            width: geom.half[1] * 0.08,
+            seed: *seed,
+        })
+    }
+
+    /// A shape made an audio clip (see `audio_as_shape`).
+    pub fn into_audio(self, id: u64, dur_ms: u32) -> ObjData {
+        match self {
+            ObjData::Shape { geom, seed, .. } | ObjData::Audio { geom, seed, .. } => {
+                ObjData::Audio {
+                    id,
+                    geom,
+                    dur_ms,
+                    seed,
+                }
+            }
+            other => other,
+        }
     }
 
     /// A shape made a portal onto `view` (see `portal_as_shape`).
@@ -574,6 +644,92 @@ pub fn portal_outline(style: &ShapeStyle, geom: &Geom) -> Vec<[f64; 2]> {
 
 /// A portal's strokes: first the window (a fill the renderer draws the
 /// view into), then the outline.
+/// The audio player's box: rounded, light, with a dark outline.
+fn audio_box_style() -> ShapeStyle {
+    ShapeStyle {
+        kind: shapes::ShapeKind::Rect,
+        stroke: u32::from_le_bytes([60, 64, 84, 255]),
+        fill: u32::from_le_bytes([236, 240, 252, 255]),
+        fill_style: shapes::FillStyle::Solid,
+        sloppiness: shapes::Sloppiness::Architect,
+        round: true,
+        ..ShapeStyle::default()
+    }
+}
+
+/// Where the play button and the wave go in an audio player (box-local,
+/// before rotation): the play circle's centre and radius, and the wave's
+/// left and right ends.
+pub fn audio_layout(geom: &Geom) -> ([f64; 2], f64, f64, f64) {
+    let [hw, hh] = geom.half;
+    let r = hh * 0.62;
+    let play = [-hw + hh, 0.0];
+    (play, r, -hw + 2.0 * hh, hw - hh * 0.5)
+}
+
+/// An audio player: its box, a play triangle and a row of wave bars.
+fn audio_pieces(geom: &Geom, seed: u32) -> Vec<Piece> {
+    let mut out = shapes::pieces(&audio_box_style(), geom, geom.half[1] * 0.08, seed);
+    let place = |p: [f64; 2]| {
+        let (s, c) = geom.rot.sin_cos();
+        [
+            geom.center[0] + p[0] * c - p[1] * s,
+            geom.center[1] + p[0] * s + p[1] * c,
+        ]
+    };
+    let ink = u32::from_le_bytes([60, 64, 84, 255]);
+    let (play, r, w0, w1) = audio_layout(geom);
+    // The play button: a disc with a triangle.
+    let disc: Vec<[f64; 2]> = (0..24)
+        .map(|i| {
+            let a = i as f64 / 24.0 * std::f64::consts::TAU;
+            place([play[0] + r * a.cos(), play[1] + r * a.sin()])
+        })
+        .collect();
+    out.push(Piece {
+        pts: disc,
+        width: 0.0,
+        brush: Brush::Fill,
+        dash: Dash::Solid,
+        color: u32::from_le_bytes([200, 40, 90, 255]),
+        bridges: vec![],
+    });
+    let t = r * 0.5;
+    out.push(Piece {
+        pts: vec![
+            place([play[0] - t * 0.6, play[1] - t]),
+            place([play[0] + t, play[1]]),
+            place([play[0] - t * 0.6, play[1] + t]),
+        ],
+        width: 0.0,
+        brush: Brush::Fill,
+        dash: Dash::Solid,
+        color: u32::from_le_bytes([255, 255, 255, 255]),
+        bridges: vec![],
+    });
+    // The wave: bars of a steady made-up height pattern (from the seed).
+    let n = 14;
+    let step = (w1 - w0) / n as f64;
+    for i in 0..n {
+        let h = (seed
+            .wrapping_mul(2_654_435_761)
+            .wrapping_add(i as u32 * 40_503)
+            >> 8)
+            % 100;
+        let h = geom.half[1] * (0.18 + 0.5 * h as f64 / 100.0);
+        let x = w0 + step * (i as f64 + 0.5);
+        out.push(Piece {
+            pts: vec![place([x, -h]), place([x, h])],
+            width: (step * 0.45).max(geom.half[1] * 0.04),
+            brush: Brush::Marker,
+            dash: Dash::Solid,
+            color: ink,
+            bridges: vec![],
+        });
+    }
+    out
+}
+
 fn portal_pieces(style: &ShapeStyle, geom: &Geom, width: f64, seed: u32) -> Vec<Piece> {
     let poly = portal_outline(style, geom);
     if poly.len() < 3 {

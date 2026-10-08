@@ -31,6 +31,9 @@
 //!   moment's start and time (ms i64 each; start i64::MIN = everything).
 //! - v8 public views: count u32; each: bookmark index u32, id u128, public
 //!   u8 (see `views`).
+//! - v9 audio clips: count u32; each: group index u32, sound id u64,
+//!   length ms u32. The group itself is stored as the rounded box older
+//!   apps show in its place; the sound is kept with the pictures.
 //!
 //! Compatibility: a newer version may only add at the end (a new section
 //! after the last; never a field inside an existing record), so an older
@@ -49,9 +52,11 @@ use crate::shapes::{ArrowType, FillStyle, Geom, Head, ShapeKind, ShapeStyle, Slo
 use crate::timeline::{Bookmark, Event, Timeline};
 
 const MAGIC: &[u8; 4] = b"OGPT";
-const VERSION: u8 = 8;
+const VERSION: u8 = 9;
 /// Marks a portal's view after its shape in a lone object's bytes.
 const PORTAL_TAG: &[u8; 4] = b"OGPV";
+/// After a lone object's bytes: an audio clip's sound id and length.
+const AUDIO_TAG: &[u8; 4] = b"OGPA";
 
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 pub struct Snapshot {
@@ -84,7 +89,7 @@ pub struct Snapshot {
 /// Geometry: centre f64 x2, half size f64 x2, rotation f64, point count u32,
 /// points f64 x2. All lengths in the group cell's units.
 pub fn put_data(b: &mut Vec<u8>, d: &ObjData) {
-    if let Some(shape) = d.portal_as_shape() {
+    if let Some(shape) = d.portal_as_shape().or_else(|| d.audio_as_shape()) {
         return put_data(b, &shape);
     }
     let geom = |b: &mut Vec<u8>, g: &Geom| {
@@ -161,7 +166,7 @@ pub fn put_data(b: &mut Vec<u8>, d: &ObjData) {
                 }
             }
         }
-        ObjData::Portal { .. } => unreachable!("written as its shape"),
+        ObjData::Portal { .. } | ObjData::Audio { .. } => unreachable!("written as its shape"),
         ObjData::Table {
             cells,
             style,
@@ -204,9 +209,16 @@ fn put_portal(b: &mut Vec<u8>, v: &crate::objects::PortalView) {
 pub fn get_data(bytes: &[u8]) -> Result<ObjData, String> {
     let mut r = Reader { b: bytes, at: 0 };
     let d = r.data()?;
-    if r.b.len() - r.at >= 4 && r.take(4)? == PORTAL_TAG {
-        if let Ok(v) = r.portal() {
-            return Ok(d.into_portal(v));
+    if r.b.len() - r.at >= 4 {
+        let tag = r.take(4)?;
+        if tag == PORTAL_TAG {
+            if let Ok(v) = r.portal() {
+                return Ok(d.into_portal(v));
+            }
+        } else if tag == AUDIO_TAG && r.b.len() - r.at >= 12 {
+            let id = u64::from_le_bytes(r.take(8)?.try_into().expect("8 bytes"));
+            let dur = r.u32()?;
+            return Ok(d.into_audio(id, dur));
         }
     }
     Ok(d)
@@ -220,6 +232,11 @@ pub fn data_bytes(d: &ObjData) -> Vec<u8> {
     if let ObjData::Portal { view, .. } = d {
         b.extend_from_slice(PORTAL_TAG);
         put_portal(&mut b, view);
+    }
+    if let ObjData::Audio { id, dur_ms, .. } = d {
+        b.extend_from_slice(AUDIO_TAG);
+        b.extend_from_slice(&id.to_le_bytes());
+        b.extend_from_slice(&dur_ms.to_le_bytes());
     }
     b
 }
@@ -341,6 +358,21 @@ pub fn encode(
         b.extend_from_slice(&(i as u32).to_le_bytes());
         b.extend_from_slice(&m.id.to_le_bytes());
         b.push(m.public as u8);
+    }
+    let clips: Vec<(usize, u64, u32)> = objs
+        .groups
+        .iter()
+        .enumerate()
+        .filter_map(|(i, g)| match g.data {
+            ObjData::Audio { id, dur_ms, .. } => Some((i, id, dur_ms)),
+            _ => None,
+        })
+        .collect();
+    b.extend_from_slice(&(clips.len() as u32).to_le_bytes());
+    for (i, id, dur) in clips {
+        b.extend_from_slice(&(i as u32).to_le_bytes());
+        b.extend_from_slice(&id.to_le_bytes());
+        b.extend_from_slice(&dur.to_le_bytes());
     }
     b
 }
@@ -609,6 +641,17 @@ pub fn decode(bytes: &[u8], base_px: f64) -> Result<Snapshot, String> {
                 if let Some(m) = bookmarks.get_mut(i) {
                     m.id = id;
                     m.public = public;
+                }
+            }
+        }
+        if v >= 9 && r.at < bytes.len() {
+            let n = r.u32()? as usize;
+            for _ in 0..n.min(objs.groups.len()) {
+                let i = r.u32()? as usize;
+                let id = u64::from_le_bytes(r.take(8)?.try_into().expect("8 bytes"));
+                let dur = r.u32()?;
+                if let Some(g) = objs.groups.get_mut(i) {
+                    g.data = g.data.clone().into_audio(id, dur);
                 }
             }
         }
