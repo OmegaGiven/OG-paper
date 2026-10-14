@@ -11,6 +11,7 @@
 //     title: 'Fold bookmarks into a bar',    // the demo's opening caption
 //     async run(t) { ... }                   // see lib.mjs (class T)
 //   };
+// A file with `demoOnly: true` (a long showcase) runs only when named.
 //
 // Writes out/ui-report.json and out/ui-report.md; exits 1 if a test fails.
 
@@ -30,7 +31,9 @@ const tests = [];
 for (const f of readdirSync(dir).filter(f => f.endsWith('.mjs')).sort()) {
   const t = (await import(pathToFileURL(join(dir, f)))).default;
   t.file = f;
-  if (!filters.length || filters.some(x => t.name.includes(x))) tests.push(t);
+  // Long showcase demos (demoOnly) run only when named.
+  const named = filters.some(x => t.name.includes(x));
+  if (t.demoOnly ? named : !filters.length || named) tests.push(t);
 }
 if (!tests.length) { console.error('no tests match'); process.exit(2); }
 

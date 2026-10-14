@@ -16,6 +16,8 @@
 //! services (see `docs/PLUGINS.md`). Its first message is
 //! `{"auth": "<server key>"}`; then `pages`, `new_page`, `rename_page`,
 //! `delete_page`, `run` (commands, see `script`), `texts` and `watch`.
+//! `/mcp` puts the same requests behind the Model Context Protocol, for AI
+//! assistants (see `mcp`).
 //!
 //! The directory has its own key, made on first start (`DIR/server.key`,
 //! or the `OGP_SERVER_KEY` environment variable) and printed as a server
@@ -186,6 +188,8 @@ pub fn run(dir: PathBuf, port: u16, public: Option<String>) {
     // The page a browser sees at the server's address (see `hubpage`), and
     // the sign-in console under /console (see `hubconsole`).
     let console = Arc::new(Mutex::new(Console::load(&dir)));
+    // MCP requests come in on the web thread; pages live on this one.
+    let (mcp_tx, mcp_rx) = std::sync::mpsc::channel::<crate::mcp::Job>();
     if std::env::var("OGP_WEB").map_or(true, |v| v != "off") {
         let (d, edit, view, public) = (
             dir.clone(),
@@ -206,9 +210,13 @@ pub fn run(dir: PathBuf, port: u16, public: Option<String>) {
             println!("Web app: served at /app/ (from {})", p.display());
         }
         let has_web_app = web_app.is_some();
+        let (mcp_edit, mcp_view, mcp_jobs) = (token.clone(), keys.view_token(), mcp_tx.clone());
         console.lock().unwrap_or_else(|e| e.into_inner()).web_app = has_web_app;
         server.set_web(move |req| {
             let path = req.target.split('?').next().unwrap_or("/");
+            if path.trim_end_matches('/') == "/mcp" {
+                return crate::mcp::handle(req, (&mcp_edit, &mcp_view), &mcp_jobs, &name);
+            }
             if path == "/login"
                 || path == "/logout"
                 || path == "/console"
@@ -281,6 +289,18 @@ pub fn run(dir: PathBuf, port: u16, public: Option<String>) {
                     }
                 }
             }
+        }
+        while let Ok(job) = mcp_rx.try_recv() {
+            let (mut edit, mut watch) = (Some(job.can_edit), HashSet::new());
+            let reply = api(
+                &dir,
+                (&token, &view_token),
+                &server,
+                &mut pages,
+                (&mut edit, &mut watch),
+                job.msg.to_string().as_bytes(),
+            );
+            let _ = job.reply.send(reply);
         }
         for ev in server.poll() {
             match ev {
@@ -524,6 +544,9 @@ fn read_index_cached(dir: &Path) -> HashMap<u128, String> {
 fn open_page(dir: &Path, canvas: u128, server: &Server) -> Page {
     let mut app = App::new(None);
     app.headless = true;
+    // Edits through the API keep diagrams joined: lines follow the things
+    // they are linked to (see `diagram`).
+    app.ui.diagram = true;
     app.open_file(page_path(dir, canvas));
     if let Some(name) = read_index(dir)
         .into_iter()
@@ -769,11 +792,11 @@ fn api(
                 } else {
                     m.get("commands").cloned().unwrap_or(Value::Null)
                 };
-                let adds = match &cmds {
-                    Value::Array(a) => a.iter().any(|c| c.get("add").is_some()),
-                    v => v.get("add").is_some(),
+                let changes = match &cmds {
+                    Value::Array(a) => a.iter().any(crate::script::changes_page),
+                    v => crate::script::changes_page(v),
                 };
-                if adds && !can_edit {
+                if changes && !can_edit {
                     need_edit()
                 } else {
                     let p = pages.entry(c).or_insert_with(|| {

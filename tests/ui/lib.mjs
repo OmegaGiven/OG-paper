@@ -96,7 +96,9 @@ function findBrowser() {
 
 /** A browser with one page, sized for `size`. */
 export async function launch(size, { demo = false } = {}) {
-  if (demo) SIZE_SET = DEMO_SIZES;
+  // UI_DEMO_SIZE=1: lay out at the demo size without the demo's pace (a
+  // quick look at how a demo will frame).
+  if (demo || process.env.UI_DEMO_SIZE) SIZE_SET = DEMO_SIZES;
   const port = await freePort();
   const prof = mkdtempSync(join(tmpdir(), 'ogp-ui-'));
   const s = sizeOf(size);

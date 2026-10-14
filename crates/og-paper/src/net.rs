@@ -1532,7 +1532,7 @@ pub(crate) mod native {
     type Web = Arc<Mutex<Option<Arc<WebFn>>>>;
 
     /// Largest request body a web page may send (forms).
-    const WEB_BODY_MAX: usize = 1 << 20;
+    const WEB_BODY_MAX: usize = 4 << 20;
 
     /// A plain web request (not a WebSocket upgrade): answered by `web` and
     /// closed. True when it was one.

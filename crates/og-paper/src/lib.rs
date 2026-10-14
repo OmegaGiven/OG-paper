@@ -34,6 +34,8 @@ mod import;
 mod joints;
 mod layout;
 mod library;
+#[cfg(desktop)]
+mod mcp;
 mod net;
 mod objects;
 mod pack;
@@ -227,6 +229,10 @@ pub struct App {
     local_paths: Vec<PathBuf>,
     /// Serving with no window (`--serve`): no view to share.
     headless: bool,
+    /// The view's size (px) while a picture of the canvas is made with no
+    /// window (see `script`'s `get: picture`).
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    size_override: Option<[f64; 2]>,
     /// The address guests use, when it is not this machine's own (a proxy,
     /// a container): links are built from it.
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
@@ -331,6 +337,7 @@ impl App {
         ui.radial_bar = prefs.get("radialbar").is_some_and(|v| v == "on");
         ui.dark = prefs.get("dark").is_some_and(|v| v == "on");
         ui.hints = prefs.get("hints").is_none_or(|v| v != "off");
+        ui.basics_open = prefs.get("basictools").is_none_or(|v| v != "closed");
         ui.ui_scale = prefs
             .get("uiscale")
             .and_then(|v| v.parse::<f32>().ok())
@@ -367,6 +374,7 @@ impl App {
             #[cfg(not(target_arch = "wasm32"))]
             local_paths: Vec::new(),
             headless: false,
+            size_override: None,
             public_addr: None,
             #[cfg(not(target_arch = "wasm32"))]
             folder: None,
@@ -461,6 +469,9 @@ impl App {
     }
 
     fn size(&self) -> [f64; 2] {
+        if let Some(s) = self.size_override {
+            return s;
+        }
         self.gpu
             .as_ref()
             .map(|g| [g.config.width as f64, g.config.height as f64])
@@ -2898,7 +2909,11 @@ impl App {
             }
             Cmd::Run(json) => {
                 if let Ok(v) = serde_json::from_str::<serde_json::Value>(&json) {
-                    self.run_commands(&v);
+                    let r = self.run_commands(&v);
+                    #[cfg(target_arch = "wasm32")]
+                    crate::web::set_last_run(r.to_string());
+                    #[cfg(not(target_arch = "wasm32"))]
+                    let _ = r;
                 }
             }
             Cmd::RelayShare(key) => {
@@ -3547,6 +3562,12 @@ impl ApplicationHandler for App {
                 self.cursor = p;
                 if self.gesture != Gesture::None {
                     self.moved(from, p, 1.0);
+                } else if self.ui.diagram
+                    && self.ui.tool == Tool::Shapes
+                    && self.ui.shape.kind.is_linear()
+                {
+                    // The connection points under the pointer follow it.
+                    self.redraw();
                 }
             }
             WindowEvent::MouseInput { state, button, .. } => match (state, button) {

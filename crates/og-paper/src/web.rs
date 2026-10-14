@@ -655,6 +655,21 @@ pub fn og_run(json: String) {
     push(Cmd::Run(json));
 }
 
+thread_local! {
+    /// The results of the last commands run (`ogPaper.results()`).
+    static LAST_RUN: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+}
+
+pub(crate) fn set_last_run(results: String) {
+    LAST_RUN.with(|r| *r.borrow_mut() = results);
+}
+
+/// The results of the last `ogPaper.run` (JSON), once it has run.
+#[wasm_bindgen]
+pub fn og_last_run() -> String {
+    LAST_RUN.with(|r| r.borrow().clone())
+}
+
 /// Add a page server by its link (the app was opened with `#server=`).
 #[wasm_bindgen]
 pub fn og_add_server(link: String, account: String) {

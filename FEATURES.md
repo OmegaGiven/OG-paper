@@ -26,7 +26,7 @@ reports features without tests and tests named here that don't exist.
 | DRAW-06 | Text with bundled and your own fonts | Tool button › Text; tool panel › Add your own font | W D M | ui:tools-tour, rust:font::tests::bundled_fonts_parse_and_draw, rust:font::tests::user_fonts_register_by_family_name, rust:objects::tests::text_scales_with_resize |
 | DRAW-07 | Bucket fill (closes small gaps) | Tool button › Bucket | W D M | ui:tools-tour, rust:bucket::tests::floods_inside_and_refuses_outside, rust:bucket::tests::gap_closing_bridges_a_small_gap |
 | DRAW-08 | Colour picker (eyedropper) | Tool panel › eyedropper | W D M | todo |
-| DRAW-09 | Diagram mode (shapes join with connectors) | Menu › Diagram | W D M | rust:diagram::tests::outlines |
+| DRAW-09 | Diagram mode: lines and arrows join shapes, texts and pictures, onto green connection points (fixed) or the outline (floating, faces the other end); every edit of joined things (moving several at once, resizing, turning, restyling, editing a text) re-routes them in the same undo step, on screen or not | Menu › Diagram; Shapes › Line or Arrow | W D M S | ui:diagram-links, rust:diagram::tests::outlines, rust:diagram::tests::lines_on_connection_points_stay_on_them, rust:diagram::tests::moving_both_ends_objects_moves_the_whole_line, rust:diagram::tests::floating_ends_turn_to_face_each_other, rust:diagram::tests::a_text_growing_keeps_its_lines, rust:diagram::tests::lines_merely_near_a_small_thing_do_not_follow_it, rust:diagram::tests::far_from_the_view_lines_still_follow, rust:diagram::tests::drawn_ends_take_connection_points_or_float, rust:diagram::tests::ports_and_links |
 
 ## Editing
 
@@ -102,6 +102,8 @@ reports features without tests and tests named here that don't exist.
 | SRV-04 | Console pages as folders: make, rename, move, delete (tagged), restore | server › Pages | S | rust:hubconsole::tests::roles_decide_what_the_console_allows |
 | SRV-05 | Users and roles: admin, subadmin, user, viewer; reset and change passwords | server › Users; server › Password | S | rust:hubconsole::tests::roles_decide_what_the_console_allows |
 | SRV-06 | Automation API (JSON over WebSocket at /api; JS and Python clients) | `ws://server/api` | S | todo |
+| SRV-08 | AI assistants over MCP (`/mcp`): list, read, look at, draw on and edit pages; design and review prompts; the view key gives read-only tools | `http://server/mcp?k=…` (see docs/MCP.md) | S | rust:mcp::tests::keys_decide_who_gets_in_and_what_they_may_do, rust:mcp::tests::it_speaks_the_protocol, rust:mcp::tests::tools_become_api_requests |
+| SRV-09 | Commands for scripts, plugins and assistants: things listed with ids and boxes, a picture of a page, move / set / order / delete by id, tables | `get: objects`, `get: picture`, `move`, `set`, `order`, `delete`, `add: table` | W D S | rust:script::tests::things_added_are_listed_with_ids_and_boxes, rust:script::tests::edits_move_restyle_reorder_and_delete_by_id, rust:script::tests::a_picture_shows_the_page |
 | SRV-07 | Signed in, you get your account's rights: the app signs open pages in with a Pages sign-in (a view-only page can draw at once), and "Open in the web app" from a signed-in browser opens with that account | Pages › server › Sign in; the server's home page | W D M S | ui:sign-in-upgrade, rust:hub::tests::page_sign_in_gives_drawing_rights_but_not_to_viewers, rust:hubpage::tests::signed_in_the_web_app_link_carries_the_account |
 
 ## Layout and settings
@@ -111,7 +113,7 @@ reports features without tests and tests named here that don't exist.
 | UI-01 | Menu (gear, top right) grouped in sections | gear button | W D M | ui:menu |
 | UI-02 | Tool fan (undo, redo, tools) | Tool button (bottom right) | W D M | ui:draw-undo |
 | UI-03 | Quick toolbar with numbered slots and a hold slot per toolbar (the main toolbar’s is in use; tap it to use its tool; set it from the inventory) | Menu › UI settings › Quick toolbar | W D M | ui:tools-tour, ui:hold-slot, rust:hotbar::tests::slots_round_trip, rust:hotbar::tests::names_and_many_toolbars_survive |
-| UI-04 | Inventory: drag tools between slots; drag onto the trash to delete; on phones a fixed row of basic tools to assign from | Quick toolbar › bag | W D M | rust:hotbar::tests::inventory_keeps_a_free_row, todo, ui:basic-tools |
+| UI-04 | Inventory: drag tools between slots; drag onto the trash to delete; a row of basic tools (every tool at its defaults) to drag or tap onto a toolbar or the inventory, folded away with its title | Quick toolbar › bag | W D M | rust:hotbar::tests::inventory_keeps_a_free_row, todo, ui:basic-tools |
 | UI-05 | Radial toolbar; page shaded only under an open fan | Menu › UI settings › Radial toolbar | W D M | rust:layout::tests::fans_open_toward_the_middle, todo |
 | UI-06 | Edit layout (move the buttons) | Menu › UI settings › Edit layout | W D M | rust:layout::tests::layouts_round_trip, todo |
 | UI-07 | UI size | Menu › UI settings › UI size | W D M | todo |

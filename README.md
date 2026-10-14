@@ -113,6 +113,10 @@ VPN or Tailscale is safer than opening the port to the internet.
 Open the server's address in a browser (`http://<server>:8991/`) for a page
 that shows people how to connect, with the link to copy.
 
+To let an AI assistant work on your pages, add
+`http://<server>:8991/mcp?k=<server key>` to it as an MCP server; see
+[`docs/MCP.md`](docs/MCP.md).
+
 ## Connect to a page
 
 Every way works from the ⚙ settings menu:
@@ -156,7 +160,8 @@ same time and how the end-to-end encryption works, is in
 - **Try mode** (web): a demo canvas with 15 worlds nested inside dots, down to 10^45, an endless street (a portal at its far end loops the zoom forever), and a guided checklist.
 - **Sharing and sync:** every copy of a canvas merges with the others — Merge copy, Save changes, a shared sync folder, live drawing with a host (desktop, headless `og-paper --serve`, or Docker), with no server between browsers (WebRTC), or through a relay (`og-paper --relay`) for people who come and go. Offline work applies when you reconnect; frames are sealed end to end and view links cannot edit. See [`docs/SHARING.md`](docs/SHARING.md).
 - **Portals:** the Portal tool draws a window (a shape or freehand) that shows another view of the canvas, live: pick This view or a bookmark in the tool panel, then draw the window anywhere. Zoom into a portal and the view stays sharp; a portal that shows itself makes a tunnel (three deep). Zoom into a portal until it fills the screen and you go through it, seamlessly, into its view: a portal at the end of a street that shows the street itself is an endless zoom (try it: Try mode > Bookmarks > Endless street). Select one and press Go there to fly into its view. Portals save, sync and export (SVG, PNG, PDF); older apps show them as an empty frame.
-- **Plugins, packs and automations:** install a pack (toolbars, brushes and stickers, no code) or a WebAssembly plugin that adds buttons, sealed off from files and the network, from Settings ⚙ > Plugins, and share your own toolbars as a pack; scripts and services can add to and watch pages on a server through its JSON API. See [`docs/PLUGINS.md`](docs/PLUGINS.md).
+- **Plugins, packs and automations:** install a pack (toolbars, brushes and stickers, no code) or a WebAssembly plugin that adds buttons, sealed off from files and the network, from Settings ⚙ > Plugins, and share your own toolbars as a pack; scripts and services can read, add to, edit and watch pages on a server through its JSON API. See [`docs/PLUGINS.md`](docs/PLUGINS.md).
+- **AI assistants:** a page server is also an MCP server (`/mcp`): connect Claude (Claude Code, or a custom connector in the Claude apps) or another assistant and it can see your pages, explain them, and draw or tidy designs with you, live. See [`docs/MCP.md`](docs/MCP.md).
 - **Import canvas, dark mode:** bring another saved canvas in and drag it into place (exact at any depth); flip the whole screen dark.
 
 File formats (`.ogp` 0.3, shapes, text, tables and pictures, the timeline log, bookmarks, `.ogpt` v3) are documented in [`docs/DESIGN.md`](docs/DESIGN.md#implemented-today-ogp-format-03).

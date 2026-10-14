@@ -749,6 +749,8 @@ pub struct UiState {
     /// Renaming the active toolbar: the text being edited.
     pub bar_rename: Option<String>,
     pub bag_open: bool,
+    /// The inventory's basic tools row is open (else folded to its title).
+    pub basics_open: bool,
     /// A saved tool picked up in the inventory, to put in another slot.
     pub held: Option<Preset>,
     /// The basic tools row's slots, refilled every frame (see `Slots::Basic`).
@@ -929,6 +931,7 @@ impl Default for UiState {
             bar_menu: false,
             bar_rename: None,
             bag_open: false,
+            basics_open: true,
             held: None,
             hold: None,
             drag_src: None,
@@ -2190,13 +2193,11 @@ fn inventory_at(
     }
     let inner = area.width() - 24.0;
     let cols = ((inner + gap) / (s + gap)).floor().max(2.0) as usize;
-    // Phones: a fixed row of the basic tools along the bottom, to assign
-    // from even with an empty inventory.
-    let basics = st.touch_ui;
-    let footer = if basics { s + 26.0 } else { 0.0 };
-    if basics {
-        st.basic = basic_presets().iter().map(|p| Some(*p)).collect();
-    }
+    // A row of every tool at its defaults along the bottom, to drag onto
+    // a toolbar or the inventory even when both are empty. It folds away
+    // to its title.
+    let footer = if st.basics_open { s + 34.0 } else { 30.0 };
+    st.basic = basic_presets().iter().map(|p| Some(*p)).collect();
     // Fill the panel with empty slots, like a game's inventory grid.
     let fit = (((area.height() - 90.0 - footer) + gap) / (s + gap))
         .floor()
@@ -2288,9 +2289,29 @@ fn inventory_at(
                             slot(ui, st, r, Slots::Inventory, i, fx);
                         }
                     });
-                    if basics {
-                        ui.add_space(4.0);
-                        ui.label(egui::RichText::new("Basic tools — tap one, then a slot").small().weak());
+                    ui.add_space(4.0);
+                    let title = match (st.basics_open, narrow) {
+                        (true, true) => "⏷ Basic tools",
+                        (true, false) => "⏷ Basic tools — drag one onto a slot",
+                        (false, _) => "⏵ Basic tools",
+                    };
+                    let fold = ui
+                        .add(egui::Button::new(egui::RichText::new(title).strong()).frame(false))
+                        .on_hover_text(if st.basics_open {
+                            "Fold the basic tools away"
+                        } else {
+                            "Show every tool, to drag onto a toolbar or the inventory"
+                        });
+                    if fold.clicked() {
+                        st.basics_open = !st.basics_open;
+                        let mut p = crate::prefs::load();
+                        p.insert(
+                            "basictools".into(),
+                            if st.basics_open { "open" } else { "closed" }.into(),
+                        );
+                        crate::prefs::save(&p);
+                    }
+                    if st.basics_open {
                         egui::ScrollArea::horizontal()
                             .id_salt("basic_tools")
                             .auto_shrink([false, true])
@@ -3437,6 +3458,7 @@ fn tool_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) 
                     if resp.clicked() {
                         st.panel_open = Some(true);
                     }
+                    named(&resp, format!("{} settings", tool.name()));
                     resp.on_hover_text(format!("{} settings", tool.name()));
                 });
         }
@@ -4103,6 +4125,7 @@ fn chips<T: Copy + PartialEq>(
                 *cur = it;
                 changed = true;
             }
+            named(&resp, tip(it));
             resp.on_hover_text(tip(it));
         }
     });
@@ -6123,6 +6146,10 @@ fn color_dial(
             if *color == col {
                 p.circle_stroke(pc, rr + 3.0, Stroke::new(2.0, ACCENT));
             }
+            named(
+                &resp,
+                format!("Color #{:02x}{:02x}{:02x}", col.r(), col.g(), col.b()),
+            );
             if resp.clicked() {
                 *color = col;
             }

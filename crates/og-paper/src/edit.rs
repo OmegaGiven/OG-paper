@@ -39,7 +39,7 @@ pub struct SelDrag {
     pub orig: Vec<(u32, Vec<Point>)>,
     /// Diagram mode: connectors with ends on the selection (drawn following
     /// it), and their strokes, hidden meanwhile.
-    pub att: Vec<(u32, ObjData, [bool; 2])>,
+    pub att: Vec<crate::diagram::Attached>,
     pub hidden: Vec<u32>,
 }
 
@@ -493,7 +493,17 @@ impl App {
         };
         // In the camera the text was started in, whatever it is now.
         let now = std::mem::replace(&mut self.cam, t.cam.clone());
-        let (g, ids) = self.add_group(&data, z);
+        let att = t
+            .group
+            .map_or(vec![], |g| self.attached_to(&[ObjRef::Group(g)]));
+        let (g, mut ids) = self.add_group(&data, z);
+        // Lines linked to the old text follow its new box.
+        if let Some(old) = t.group {
+            for (o, n) in self.reroute(&att, &[(old, g)]) {
+                removed.extend(o);
+                ids.extend(n);
+            }
+        }
         self.cam = now;
         if t.group.is_some() {
             self.edit.selection = vec![ObjRef::Group(g)];
@@ -571,7 +581,7 @@ impl App {
         Some(self.objs.obj_of(top))
     }
 
-    fn sel_alive(&mut self) {
+    pub(crate) fn sel_alive(&mut self) {
         let objs = &self.objs;
         let scene = &self.scene;
         self.edit.selection.retain(|r| objs.alive(scene, r));
@@ -897,7 +907,7 @@ impl App {
             }
             if let Some(op) = op {
                 let op = self.op_to_cam(&op);
-                self.apply_op_with(&op, d.att);
+                self.apply_op(&op);
             }
         }
         let fill_tap = self.edit.fill_tap.take();
@@ -1036,10 +1046,13 @@ impl App {
     ) {
         self.sel_alive();
         let sel = self.edit.selection.clone();
+        // Diagram mode: lines linked to the selection follow it.
+        let att = self.attached_to(&sel);
         let mut removed = Vec::new();
         let mut added = Vec::new();
         let mut new_sel = Vec::new();
         let mut pairs = Vec::new();
+        let mut groups = Vec::new();
         for r in sel {
             let old: Vec<u32> = self.objs.strokes(&r).to_vec();
             if let Some(n) = edit(self, r) {
@@ -1048,9 +1061,17 @@ impl App {
                 pairs.push((old.clone(), new));
                 removed.extend(old);
                 new_sel.push(n);
+                if let (ObjRef::Group(a), ObjRef::Group(b)) = (r, n) {
+                    groups.push((a, b));
+                }
             } else {
                 new_sel.push(r);
             }
+        }
+        for (old, new) in self.reroute(&att, &groups) {
+            removed.extend_from_slice(&old);
+            added.extend_from_slice(&new);
+            pairs.push((old, new));
         }
         self.edit.selection = new_sel;
         self.note_replaced(&pairs);
@@ -1058,7 +1079,7 @@ impl App {
     }
 
     /// A copy of a freehand stroke with its points edited, at draw order `z`.
-    fn ink_copy(
+    pub(crate) fn ink_copy(
         &mut self,
         id: u32,
         op: Option<&Op>,
@@ -1094,7 +1115,7 @@ impl App {
     }
 
     /// A copy of a group with its data edited (camera units), at draw orders `z`.
-    fn group_copy(
+    pub(crate) fn group_copy(
         &mut self,
         g: u32,
         f: impl FnOnce(ObjData) -> ObjData,
@@ -1107,34 +1128,16 @@ impl App {
         ObjRef::Group(ng)
     }
 
+    /// Apply `op` to the selection (in diagram mode the lines linked to it
+    /// follow, in the same undo step; see `replace_selection`).
     pub(crate) fn apply_op(&mut self, op: &Op) {
-        let att = self.attached_to(&self.edit.selection);
-        self.apply_op_with(op, att);
-    }
-
-    /// Apply `op` to the selection; in diagram mode the connectors in `att`
-    /// follow it, in the same undo step.
-    fn apply_op_with(&mut self, op: &Op, att: Vec<(u32, ObjData, [bool; 2])>) {
         let op = *op;
-        self.sel_alive();
-        let n = self.edit.selection.len();
-        self.edit
-            .selection
-            .extend(att.iter().map(|(g, _, _)| ObjRef::Group(*g)));
-        let mut k: usize = 0;
         self.replace_selection(|app, r| {
-            let i = k;
-            k += 1;
-            if let Some((g, d, ends)) = i.checked_sub(n).and_then(|j| att.get(j)) {
-                let nd = App::follow(d, *ends, &op);
-                return Some(app.group_copy(*g, |_| nd, None));
-            }
             Some(match r {
                 ObjRef::Ink(id) => app.ink_copy(id, Some(&op), None, None),
                 ObjRef::Group(g) => app.group_copy(g, |d| d.edited(&op), None),
             })
         });
-        self.edit.selection.truncate(n);
     }
 
     /// Strokes of the selection in draw order, with the objects they belong to.
@@ -1152,7 +1155,7 @@ impl App {
         v
     }
 
-    fn reorder(&mut self, front: bool) {
+    pub(crate) fn reorder(&mut self, front: bool) {
         self.sel_alive();
         let order = self.sel_sorted();
         let total: usize = order.iter().map(|r| self.objs.strokes(r).len()).sum();
@@ -1202,7 +1205,7 @@ impl App {
         self.record_edit(vec![], added);
     }
 
-    fn delete_selection(&mut self) {
+    pub(crate) fn delete_selection(&mut self) {
         self.sel_alive();
         let mut removed = Vec::new();
         for r in std::mem::take(&mut self.edit.selection) {
@@ -1711,6 +1714,7 @@ impl App {
             let op = self.drag_op(d).map(|o| self.op_to_cam(&o));
             self.follow_preview(&d.att, op.as_ref(), &mut ov);
         }
+        self.port_overlay(&mut ov);
         let joints = self.edit.sel_drag.is_none()
             && self.ui.tool.selects()
             && (self.edit.joint.is_some() || self.sel_connector().is_some());

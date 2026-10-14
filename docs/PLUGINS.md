@@ -39,13 +39,47 @@ points, colors `#rrggbb` or `#rrggbbaa`.
   and puts the clip in the middle of the screen when the person stops.
   Recording needs the `microphone` permission (below) and works in the
   web app for now; the desktop and mobile apps keep and show clips.
+- `add: table` — `x`, `y` (top left), `cells` (rows: `[["Name", "Qty"],
+  ["Pens", 4]]`), `size`, `color`, `font`.
+- Texts also take `font` (a name from `get: fonts`) and `align` (left,
+  center, right); shapes `dash` (solid, dashed, dotted), `round` and
+  `opacity` (0–1); strokes `dash`.
 - `get: texts` — every text on the page: `{"text", "x", "y", "size"}`.
+- `get: objects` — everything on the page, bottom to top: each thing's
+  `id`, `kind` (text, shape, table, ink, fill, image, audio, portal), box
+  (`x`, `y`, `w`, `h`) and details (text, colors, sizes, shape kind,
+  cells, …), plus `bounds` (the box around everything) and `total`.
+  Optional: a region (`x`, `y`, `w`, `h`: only things touching it),
+  `kinds` (a list) and `limit` (default 500, at most 5000).
+- `get: picture` — a PNG of the page (base64 in `png`, with the `frame`
+  it shows): everything, a region (`x`, `y`, `w`, `h`) or some things
+  (`ids`), `px` pixels on its longer side (default 1024, at most 2048).
+  Page server and desktop app only.
+- `get: fonts` — the fonts texts can use.
 - `say` — shows a short message.
 
-One run is one undo step, and syncs to everyone on the page like any
-other edit. Each command gets a result in order: `{"ok": true}` (plus
-`"texts"` for `get`) or `{"ok": false, "error": "…"}`. A view-only copy
-refuses `add`.
+Every `add` answers with the new thing's `id` and box. Ids are hex and
+stay the same across reloads and devices, until the thing is edited:
+editing makes a new thing (that is how undo and sync stay simple), so
+edits answer with the new `ids`, in order.
+
+- `move: [ids]` — `dx`, `dy`.
+- `set: id` (or a list) — any of: `x`, `y` (new top left), `w`, `h` (new
+  size), `rotate` (degrees), `text`, `cells`, `size`, `color`, `fill`
+  (`#rrggbb` or `none`), `width`, `font`, `align`, `dash`, `round`,
+  `opacity`, `kind` (shape kind; lines and arrows stay lines and arrows).
+- `order: [ids]` — `to`: front or back.
+- `delete: [ids]`.
+
+On a page server, and in the app in diagram mode, lines and arrows
+linked to the things an edit changes follow them (see DRAW-09 in
+FEATURES.md); put a line's ends on a connection point (the middle or
+quarters of a side) to keep them there.
+
+The adds of one run are one undo step; each edit is its own. Everything
+syncs to everyone on the page like any other edit. Each command gets a
+result in order: `{"ok": true}` (plus what it answers) or `{"ok": false,
+"error": "…"}`. A view-only copy refuses adds and edits.
 
 ## Packs
 
@@ -146,6 +180,7 @@ snippets, bookmarklets and extensions:
 
 ```js
 ogPaper.run([{ add: 'text', x: 0, y: 0, text: 'Hello' }]);
+ogPaper.results();   // what the last run answered, once the app has run it
 ```
 
 ## Automations (the server API)
@@ -188,3 +223,9 @@ print(await og.texts(page))
 ```
 
 Use `wss://` behind a TLS proxy when the server is reachable from outside.
+
+## AI assistants
+
+The same server answers the Model Context Protocol at `/mcp`, so Claude
+and other assistants can read, look at, draw on and edit pages with these
+commands. See [`MCP.md`](MCP.md).
