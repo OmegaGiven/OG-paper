@@ -662,6 +662,12 @@ pub struct UiState {
     /// frame; and whether that section is open.
     pub view_items: Vec<Option<Preset>>,
     pub views_open: bool,
+    /// Naming a new saved view (the inventory's Views "+"): the name so far.
+    pub view_naming: Option<String>,
+    /// The name box just opened (focus it, select its name).
+    pub view_naming_new: bool,
+    /// The name a `SaveView` saves under.
+    pub view_save: String,
     /// Quick bar slots past the toolbar, added with "+" (no keys).
     pub extras: Vec<Option<Preset>>,
     pub fly_to: Option<String>,
@@ -946,6 +952,9 @@ impl Default for UiState {
             bookmark_views: Vec::new(),
             view_items: Vec::new(),
             views_open: true,
+            view_naming: None,
+            view_naming_new: false,
+            view_save: String::new(),
             extras: Vec::new(),
             inventory: vec![None; hotbar::INVENTORY],
             toolbars: vec![hotbar::empty_bar("Toolbar 1")],
@@ -1280,6 +1289,8 @@ pub enum Action {
     GoToPeer(u64, bool),
     /// Stop riding along with someone's view.
     StopFollowing,
+    /// Save the current view under `UiState::view_save` (a bookmark, in Views).
+    SaveView,
     /// The name typed in Share live becomes the one others see.
     SetName,
     ImportPlace,
@@ -2630,7 +2641,8 @@ fn inventory_at(
             (false, _) => 30.0,
             (true, 0) => 52.0,
             (true, r) => r as f32 * (s + gap) - gap + 34.0,
-        };
+        }
+        + if st.view_naming.is_some() { 40.0 } else { 0.0 };
     // Fill the panel with empty slots, like a game's inventory grid.
     let fit = (((area.height() - 90.0 - footer) + gap) / (s + gap))
         .floor()
@@ -2765,26 +2777,81 @@ fn inventory_at(
                         (true, false) => "⏷ Views — drag one onto a slot to fly there",
                         (false, _) => "⏵ Views",
                     };
-                    let fold = ui
-                        .add(egui::Button::new(egui::RichText::new(title).strong()).frame(false))
-                        .on_hover_text(if st.views_open {
-                            "Fold the views away"
-                        } else {
-                            "Show this canvas's saved views, to put in a slot"
+                    ui.horizontal(|ui| {
+                        let fold = ui
+                            .add(egui::Button::new(egui::RichText::new(title).strong()).frame(false))
+                            .on_hover_text(if st.views_open {
+                                "Fold the views away"
+                            } else {
+                                "Show this canvas's saved views, to put in a slot"
+                            });
+                        if fold.clicked() {
+                            st.views_open = !st.views_open;
+                            let mut p = crate::prefs::load();
+                            p.insert(
+                                "invviews".into(),
+                                if st.views_open { "open" } else { "closed" }.into(),
+                            );
+                            crate::prefs::save(&p);
+                        }
+                        let add = ui
+                            .small_button("+")
+                            .on_hover_text("Save the current view (you name it)");
+                        named(&add, "Save this view");
+                        if add.clicked() {
+                            st.view_naming = match st.view_naming {
+                                Some(_) => None,
+                                None => {
+                                    st.view_naming_new = true;
+                                    Some(format!("View {}", st.bookmark_views.len() + 1))
+                                }
+                            };
+                            st.views_open = true;
+                        }
+                    });
+                    // Naming the view to save: Enter or Save keeps it.
+                    if let Some(mut name) = st.view_naming.take() {
+                        let mut keep = true;
+                        ui.horizontal(|ui| {
+                            let w = (ui.available_width() - 90.0).max(60.0);
+                            let edit = ui.add(
+                                egui::TextEdit::singleline(&mut name)
+                                    .id(Id::new("view_name"))
+                                    .hint_text("Name this view")
+                                    .desired_width(w),
+                            );
+                            named(&edit, "View name");
+                            // Just opened: focused, its name selected, so
+                            // typing replaces it.
+                            if std::mem::take(&mut st.view_naming_new) {
+                                let id = edit.id;
+                                let mut state =
+                                    egui::text_edit::TextEditState::load(ui.ctx(), id).unwrap_or_default();
+                                state.cursor.set_char_range(Some(egui::text::CCursorRange::two(
+                                    egui::text::CCursor::new(0),
+                                    egui::text::CCursor::new(name.chars().count()),
+                                )));
+                                state.store(ui.ctx(), id);
+                                edit.request_focus();
+                            }
+                            let enter = edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                            if ui.button("Save").clicked() || enter {
+                                st.view_save = name.clone();
+                                st.queued.push(Action::SaveView);
+                                keep = false;
+                            }
+                            if ui.small_button("×").on_hover_text("Don't save").clicked() {
+                                keep = false;
+                            }
                         });
-                    if fold.clicked() {
-                        st.views_open = !st.views_open;
-                        let mut p = crate::prefs::load();
-                        p.insert(
-                            "invviews".into(),
-                            if st.views_open { "open" } else { "closed" }.into(),
-                        );
-                        crate::prefs::save(&p);
+                        if keep {
+                            st.view_naming = Some(name);
+                        }
                     }
                     if st.views_open {
                         let n = st.view_items.len();
                         if n == 0 {
-                            help(ui, "No saved views yet: save one in Menu › Views.");
+                            help(ui, "No saved views yet: + saves the current one.");
                         } else {
                             let (all, _) = ui.allocate_exact_size(
                                 vec2(inner, view_rows as f32 * (s + gap) - gap),

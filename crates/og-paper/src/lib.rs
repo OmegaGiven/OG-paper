@@ -1838,6 +1838,11 @@ impl App {
             #[cfg(not(target_arch = "wasm32"))]
             Action::SetPolicy(code) => self.set_policy(code),
             Action::GoToPeer(peer, follow) => self.go_to_peer(peer, follow),
+            Action::SaveView => {
+                let name = std::mem::take(&mut self.ui.view_save);
+                self.bookmark_add(name);
+                self.redraw();
+            }
             Action::StopFollowing => {
                 if self.follow.take().is_some() {
                     self.say("Stopped following");
