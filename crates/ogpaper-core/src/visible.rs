@@ -154,7 +154,7 @@ impl Ctx<'_> {
             // 1 of the cell); anything smaller draws nothing.
             if inside && side_px >= 4.0 {
                 for &s in &n.strokes {
-                    if !self.scene.strokes[s as usize].deleted {
+                    if self.scene.shown(s) {
                         out.strokes.push(self.inst(s, origin, side));
                     }
                 }
@@ -162,7 +162,7 @@ impl Ctx<'_> {
             return;
         }
         for &s in &n.strokes {
-            if !self.scene.strokes[s as usize].deleted {
+            if self.scene.shown(s) {
                 out.strokes.push(self.inst(s, origin, side));
             }
         }
@@ -290,7 +290,7 @@ pub fn query(scene: &Scene, cam: &Camera, vw: f64, vh: f64, params: Params, out:
                         o[1] + INK_AFTER * s,
                     ) {
                         for &st in &n.strokes {
-                            if !scene.strokes[st as usize].deleted {
+                            if scene.shown(st) {
                                 out.strokes.push(ctx.inst(st, o, s));
                             }
                         }

@@ -158,7 +158,7 @@ impl App {
             self.objs.images.entry(id).or_insert(a);
         }
         // Above everything here, in the order it had.
-        let z0 = self.scene.z_top + 1.0 - imp.scene.z_bottom;
+        let z0 = self.scene.top() + 1.0 - imp.scene.z_bottom;
         let grouped: HashSet<u32> = imp
             .objs
             .groups

@@ -129,6 +129,22 @@ pub struct Stroke {
 /// in by the scene, used for dashes).
 pub type Point = [f32; 4];
 
+/// Layers: draw orders come in bands, one per layer. Layer `k` holds the
+/// z values nearest `k * LAYER_SPAN`, so a stroke's layer travels with its
+/// z (files, sync, undo, the timeline and exports need nothing new), and
+/// layer `k + 1` draws above layer `k`. Existing canvases are all layer 0.
+pub const LAYER_SPAN: f64 = 1_099_511_627_776.0; // 2^40: exact steps of 1 to 2^53
+
+/// The layer draw order `z` is in.
+pub fn layer_of(z: f64) -> i32 {
+    (z / LAYER_SPAN).round() as i32
+}
+
+/// The middle of layer `k`'s band (where its first stroke goes).
+pub fn layer_base(k: i32) -> f64 {
+    k as f64 * LAYER_SPAN
+}
+
 #[derive(Default)]
 pub struct Scene {
     pub nodes: Vec<Node>,
@@ -139,9 +155,17 @@ pub struct Scene {
     pub points: Vec<Point>,
     /// Brush engine parameters of `Brush::Dabs` strokes (`Stroke::ext`).
     pub brushes: Vec<BrushParams>,
-    /// Highest and lowest z in use (new strokes go above `z_top`).
+    /// Highest and lowest z in use (across every layer).
     pub z_top: f64,
     pub z_bottom: f64,
+    /// The layer new strokes go on (on its top).
+    pub layer: i32,
+    /// Layers not drawn (nor picked: picking goes by what is drawn).
+    pub hidden_layers: Vec<i32>,
+    /// Layers that can't be picked, erased or drawn on.
+    pub locked_layers: Vec<i32>,
+    /// Lowest and highest z in use in each layer.
+    layer_z: std::collections::BTreeMap<i32, (f64, f64)>,
 }
 
 impl Scene {
@@ -295,7 +319,7 @@ impl Scene {
         self.add_stroke_with(addr, pts, style, uid)
     }
 
-    /// Add a stroke on top of everything else.
+    /// Add a stroke on top of the active layer.
     pub fn add_stroke_with(
         &mut self,
         addr: &CellAddr,
@@ -303,7 +327,7 @@ impl Scene {
         style: Style,
         uid: u128,
     ) -> u32 {
-        let z = self.z_top + 1.0;
+        let z = self.top() + 1.0;
         self.add_stroke_at(addr, pts, style, uid, z)
     }
 
@@ -366,6 +390,53 @@ impl Scene {
             self.z_top = self.z_top.max(z);
             self.z_bottom = self.z_bottom.min(z);
         }
+        let t = self.layer_z.entry(layer_of(z)).or_insert((z, z));
+        *t = (t.0.min(z), t.1.max(z));
+    }
+
+    /// Highest z in layer `k` (its middle when empty).
+    pub fn layer_top(&self, k: i32) -> f64 {
+        self.layer_z.get(&k).map_or(layer_base(k), |t| t.1)
+    }
+
+    /// Lowest z in layer `k` (its middle when empty).
+    pub fn layer_bottom(&self, k: i32) -> f64 {
+        self.layer_z.get(&k).map_or(layer_base(k), |t| t.0)
+    }
+
+    /// Highest z in the active layer: new strokes go just above it.
+    pub fn top(&self) -> f64 {
+        self.layer_top(self.layer)
+    }
+
+    /// Whether stroke `id` is drawn: not deleted, not on a hidden layer.
+    pub fn shown(&self, id: u32) -> bool {
+        let s = &self.strokes[id as usize];
+        !s.deleted
+            && (self.hidden_layers.is_empty() || !self.hidden_layers.contains(&layer_of(s.z)))
+    }
+
+    /// Whether stroke `id` can be picked, erased or changed: drawn, and not
+    /// on a locked layer.
+    pub fn editable(&self, id: u32) -> bool {
+        self.shown(id)
+            && (self.locked_layers.is_empty()
+                || !self
+                    .locked_layers
+                    .contains(&layer_of(self.strokes[id as usize].z)))
+    }
+
+    /// The layers that hold strokes still on the page, bottom first.
+    pub fn layers_in_use(&self) -> Vec<i32> {
+        let mut v: Vec<i32> = self
+            .strokes
+            .iter()
+            .filter(|s| !s.deleted)
+            .map(|s| layer_of(s.z))
+            .collect();
+        v.sort_unstable();
+        v.dedup();
+        v
     }
 
     /// The style a stroke was drawn with.

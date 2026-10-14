@@ -494,7 +494,7 @@ impl App {
         let z = if z.is_finite() {
             z - 0.5
         } else {
-            self.scene.z_top + 1.0
+            self.scene.top() + 1.0
         };
         // Trace tile by tile into polygons, back in camera units.
         let ink = self.ui.fill;

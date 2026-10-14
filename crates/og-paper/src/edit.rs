@@ -230,7 +230,7 @@ impl App {
     ) -> (u32, Vec<u32>) {
         let (cell, data) = home(data_cam, &self.cam);
         let n = data.pieces().len().max(1) as f64;
-        let z = z.unwrap_or((self.scene.z_top + 1.0, self.scene.z_top + n));
+        let z = z.unwrap_or((self.scene.top() + 1.0, self.scene.top() + n));
         let ids = objects::emit(&mut self.scene, &cell, &data, z);
         let g = self.objs.add(Group {
             cell,
@@ -535,6 +535,10 @@ impl App {
             if !self.objs.alive(&self.scene, &ObjRef::Group(g as u32)) {
                 continue;
             }
+            // Hidden or locked layers' texts stay as they are.
+            if !grp.strokes.first().is_some_and(|&s| self.scene.editable(s)) {
+                continue;
+            }
             let cam_data = to_cam(&grp.cell, &grp.data, &self.cam);
             // Only texts whose letters are a sensible size on screen: zoomed
             // far into a big text (or out past a tiny one), a tap starts a
@@ -571,13 +575,17 @@ impl App {
             [p[0] as f32, p[1] as f32],
             (crate::PICK_PT * self.ppp()) as f32,
         );
-        let top = ids.into_iter().max_by(|&a, &b| {
-            let (za, zb) = (
-                self.scene.strokes[a as usize].z,
-                self.scene.strokes[b as usize].z,
-            );
-            za.total_cmp(&zb).then(a.cmp(&b))
-        })?;
+        // The topmost not on a locked layer.
+        let top = ids
+            .into_iter()
+            .filter(|&id| self.scene.editable(id))
+            .max_by(|&a, &b| {
+                let (za, zb) = (
+                    self.scene.strokes[a as usize].z,
+                    self.scene.strokes[b as usize].z,
+                );
+                za.total_cmp(&zb).then(a.cmp(&b))
+            })?;
         Some(self.objs.obj_of(top))
     }
 
@@ -991,7 +999,7 @@ impl App {
         );
         for inst in &fine.strokes {
             let id = inst.stroke;
-            if self.scene.strokes[id as usize].deleted {
+            if !self.scene.editable(id) {
                 continue;
             }
             let r = self.objs.obj_of(id);
@@ -1159,10 +1167,17 @@ impl App {
         self.sel_alive();
         let order = self.sel_sorted();
         let total: usize = order.iter().map(|r| self.objs.strokes(r).len()).sum();
+        // To the front or back of the layer the selection is on.
+        let layer = order
+            .first()
+            .and_then(|r| self.objs.strokes(r).first())
+            .map_or(self.scene.layer, |&s| {
+                ogpaper_core::layer_of(self.scene.strokes[s as usize].z)
+            });
         let mut z = if front {
-            self.scene.z_top + 1.0
+            self.scene.layer_top(layer) + 1.0
         } else {
-            self.scene.z_bottom - total as f64 - 1.0
+            self.scene.layer_bottom(layer) - total as f64 - 1.0
         };
         let mut removed = Vec::new();
         let mut added = Vec::new();
@@ -1193,7 +1208,7 @@ impl App {
         let mut new_sel = Vec::new();
         for r in refs.iter().copied() {
             let n = self.objs.strokes(&r).len() as f64;
-            let z = self.scene.z_top + 1.0;
+            let z = self.scene.top() + 1.0;
             let nr = match r {
                 ObjRef::Ink(id) => self.ink_copy(id, Some(&op), None, Some(z)),
                 ObjRef::Group(g) => self.group_copy(g, |d| d.edited(&op), Some((z, z + n))),

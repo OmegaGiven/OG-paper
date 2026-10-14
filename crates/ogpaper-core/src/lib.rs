@@ -20,7 +20,7 @@ pub use addr::{CellAddr, Level};
 pub use brush::{BrushParams, Dab, Pattern, Tip};
 pub use camera::Camera;
 pub use history::{Change, History};
-pub use scene::{Brush, Dash, Point, Scene, Stroke, Style};
+pub use scene::{layer_base, layer_of, Brush, Dash, Point, Scene, Stroke, Style, LAYER_SPAN};
 pub use visible::{query, DotInst, DrawList, Params, StrokeInst, TileInst};
 
 #[cfg(test)]

@@ -32,6 +32,7 @@ mod hubpage;
 mod images;
 mod import;
 mod joints;
+mod layers;
 mod layout;
 mod library;
 #[cfg(desktop)]
@@ -211,6 +212,13 @@ pub struct App {
     sent: presence::Sent,
     /// Riding along with someone's view.
     follow: Option<u64>,
+    /// The canvas whose layer names and states are loaded (see `layers`).
+    layers_for: Option<u128>,
+    layer_meta: std::collections::BTreeMap<i32, layers::LayerMeta>,
+    /// Layer moves in the undo and redo histories: (undo steps with it
+    /// done, the two layers), so their names follow on undo and redo.
+    layer_undo: Vec<(usize, i32, i32)>,
+    layer_redo: Vec<(usize, i32, i32)>,
     /// Joined with a view link: looking, not changing.
     view_only: bool,
     /// The tool to go back to when a hold-tool gesture ends.
@@ -368,6 +376,10 @@ impl App {
             peers: HashMap::new(),
             sent: Default::default(),
             follow: None,
+            layers_for: None,
+            layer_meta: Default::default(),
+            layer_undo: Vec::new(),
+            layer_redo: Vec::new(),
             view_only: false,
             hold_restore: None,
             plugins: Vec::new(),
@@ -664,9 +676,9 @@ impl App {
             [p[0] as f32, p[1] as f32],
             (ERASER_PT * self.ppp()) as f32,
         );
-        // A shape or text goes as a whole.
+        // A shape or text goes as a whole (not on a locked layer).
         let mut ids = Vec::new();
-        for id in hits {
+        for id in hits.into_iter().filter(|&id| self.scene.editable(id)) {
             ids.extend_from_slice(self.objs.strokes(&self.objs.obj_of(id)));
         }
         for id in ids {
@@ -735,6 +747,14 @@ impl App {
             Tool::Text => Gesture::Text(p),
             _ => Gesture::Ink,
         };
+        // Nothing new on a hidden or locked layer: say so, and pan instead.
+        let draws = matches!(
+            self.gesture,
+            Gesture::Ink | Gesture::Shape | Gesture::Portal | Gesture::Bucket(_)
+        ) || self.ui.tool == Tool::Text;
+        if draws && !self.space && self.import.is_none() && self.layer_blocks_drawing() {
+            self.gesture = Gesture::Pan;
+        }
         // A placing plugin tool in hand, unless another tool was picked since.
         match self.ui.plugin_tool {
             Some((_, _, t)) if t == self.ui.tool && !self.space && self.import.is_none() => {
@@ -987,11 +1007,19 @@ impl App {
             self.say("Close the timeline to undo or redo");
             return;
         }
+        // Steps undone and then replaced by new edits: their layer moves
+        // can't be redone.
+        if !self.history.can_redo() {
+            self.layer_redo.clear();
+        }
+        let depth = self.history.undo_len();
         let changed = if redo {
             self.history.redo(&mut self.scene)
         } else {
             self.history.undo(&mut self.scene)
         };
+        // A layer move's names follow its strokes.
+        self.layer_undo_redo(redo, if redo { self.history.undo_len() } else { depth });
         let changed = changed.unwrap_or_default();
         #[cfg(target_arch = "wasm32")]
         if !changed.is_empty() {
@@ -1838,6 +1866,23 @@ impl App {
             #[cfg(not(target_arch = "wasm32"))]
             Action::SetPolicy(code) => self.set_policy(code),
             Action::GoToPeer(peer, follow) => self.go_to_peer(peer, follow),
+            Action::LayersPanel => {
+                self.ui.layers_open = !self.ui.layers_open;
+                self.ui.close_menus();
+                self.redraw();
+            }
+            Action::LayerNew => self.layer_new(),
+            Action::LayerPick(k) => self.layer_pick(k),
+            Action::LayerHide(k) => self.layer_toggle_hidden(k),
+            Action::LayerLock(k) => self.layer_toggle_locked(k),
+            Action::LayerMove(k, up) => self.layer_move(k, up),
+            Action::LayerDelete(k) => self.layer_delete(k),
+            Action::LayerRename(k) => {
+                if let Some((_, name)) = self.ui.layer_editing.take() {
+                    self.layer_rename(k, name);
+                }
+            }
+            Action::LayerTakeSelection(k) => self.layer_take_selection(k),
             Action::SaveView => {
                 let name = std::mem::take(&mut self.ui.view_save);
                 self.bookmark_add(name);
@@ -3102,9 +3147,12 @@ impl App {
             -99.0
         };
         web::set_status(format!(
-            "{{\"ready\":true,\"zoom\":{:.3},\"strokes\":{},\"drawn\":{},\"erased\":{},\"undos\":{},\"deepDraw\":{:.2},\"flying\":{},\"dirty\":{},\"bookmarks\":[{}],\"timeline\":{},\"dark\":{},\"canvas\":\"{:032x}\",\"peer\":\"{:016x}\",\"net\":{},\"name\":{},\"passes\":{},\"hints\":{},\"tool\":{},\"hold\":{},\"viewOnly\":{},\"shared\":[{}],\"delKnob\":{},\"selected\":{},\"clips\":{}}}",
+            "{{\"ready\":true,\"zoom\":{:.3},\"strokes\":{},\"shown\":{},\"drawn\":{},\"erased\":{},\"undos\":{},\"deepDraw\":{:.2},\"flying\":{},\"dirty\":{},\"bookmarks\":[{}],\"timeline\":{},\"dark\":{},\"canvas\":\"{:032x}\",\"peer\":\"{:016x}\",\"net\":{},\"name\":{},\"passes\":{},\"hints\":{},\"tool\":{},\"hold\":{},\"viewOnly\":{},\"shared\":[{}],\"delKnob\":{},\"selected\":{},\"clips\":{}}}",
             self.cam.log10_zoom(),
             self.scene.strokes.iter().filter(|s| !s.deleted).count(),
+            (0..self.scene.strokes.len() as u32)
+                .filter(|&i| self.scene.shown(i))
+                .count(),
             st.drawn,
             st.erased,
             st.undos,
@@ -3269,6 +3317,14 @@ impl App {
                 .any(|(n, b)| *n != b.name)
         {
             self.ui.bookmark_names = self.bookmarks.iter().map(|b| b.name.clone()).collect();
+        }
+        // Layers: this canvas's names and states, and the panel's rows.
+        if self.layers_for != Some(self.share.canvas) {
+            self.layers_load();
+        }
+        self.ui.sel_count = self.edit.selection.len();
+        if self.ui.layers_open {
+            self.ui.layer_rows = self.layer_rows();
         }
         // The people strip: everyone else here, in a steady order.
         let mut people: Vec<(u64, String, egui::Color32)> = self

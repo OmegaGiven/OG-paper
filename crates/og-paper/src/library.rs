@@ -274,7 +274,7 @@ impl App {
         let mut added = Vec::new();
         let mut sel = Vec::new();
         for it in &s.items {
-            let z = self.scene.z_top + 1.0;
+            let z = self.scene.top() + 1.0;
             match it {
                 Item::Ink { style, pts } => {
                     let cam_pts: Vec<[f64; 2]> = pts

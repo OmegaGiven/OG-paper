@@ -45,6 +45,11 @@ impl History {
         }
     }
 
+    /// How many steps there are to undo.
+    pub fn undo_len(&self) -> usize {
+        self.undo.len()
+    }
+
     pub fn can_undo(&self) -> bool {
         !self.undo.is_empty()
     }

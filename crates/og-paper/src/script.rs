@@ -540,7 +540,7 @@ impl App {
         }
         let color = color_at(c, "color")?;
         let ppc = cam.ppc();
-        let z = self.scene.z_top + 1.0;
+        let z = self.scene.top() + 1.0;
         let s = |k: &str| c.get(k).and_then(Value::as_str);
         let text_style = |color: Option<u32>| -> Result<TextStyle, String> {
             let d = TextStyle::default();

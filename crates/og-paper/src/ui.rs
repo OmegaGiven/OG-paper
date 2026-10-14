@@ -344,6 +344,8 @@ pub enum AppItem {
     Library,
     /// Diagram mode: lines and arrows stick to objects.
     Diagram,
+    /// Layers: show, hide, lock, order and pick the one to draw on.
+    Layers,
     /// Move the controls around (now inside the Layout window).
     #[allow(dead_code)]
     Layout,
@@ -400,6 +402,7 @@ const APP_SECTIONS: [(&str, &[AppItem]); 5] = [
             AppItem::Library,
             AppItem::Import,
             AppItem::Diagram,
+            AppItem::Layers,
         ],
     ),
     (
@@ -468,6 +471,7 @@ impl AppItem {
             AppItem::Paste => "Paste",
             AppItem::Library => "Library",
             AppItem::Diagram => "Diagram",
+            AppItem::Layers => "Layers",
             AppItem::Layout => "Edit layout",
             AppItem::Hotkeys => "Hotkeys",
             AppItem::RadialBar => "Radial toolbar",
@@ -504,6 +508,7 @@ impl AppItem {
             AppItem::Paste => Action::Paste,
             AppItem::Library => Action::Library,
             AppItem::Diagram => Action::Diagram,
+            AppItem::Layers => Action::LayersPanel,
             AppItem::Layout => Action::EditLayout,
             AppItem::Hotkeys => Action::Hotkeys,
             AppItem::RadialBar => Action::RadialBar,
@@ -633,6 +638,12 @@ pub struct UiState {
     pub pages_open: bool,
     pub layout_open: bool,
     pub plugins_open: bool,
+    /// The Layers panel: open, its rows (top first), a name being edited,
+    /// and how many things are selected (for "Move selection here").
+    pub layers_open: bool,
+    pub layer_rows: Vec<crate::layers::LayerRow>,
+    pub layer_editing: Option<(i32, String)>,
+    pub sel_count: usize,
     /// A placing plugin tool waiting for a tap on the canvas: plugin,
     /// button, and the tool that was in hand (picking another disarms it).
     pub plugin_tool: Option<(usize, i32, Tool)>,
@@ -863,6 +874,7 @@ impl Default for UiState {
                 AppItem::LayoutMenu,
                 AppItem::Plugins,
                 AppItem::Diagram,
+                AppItem::Layers,
                 AppItem::Hotkeys,
             ],
             hide_tools: false,
@@ -897,6 +909,10 @@ impl Default for UiState {
             pages_open: false,
             layout_open: false,
             plugins_open: false,
+            layers_open: false,
+            layer_rows: Vec::new(),
+            layer_editing: None,
+            sel_count: 0,
             plugin_tool: None,
             plugins: Vec::new(),
             plugins_bundled: Vec::new(),
@@ -1289,6 +1305,18 @@ pub enum Action {
     GoToPeer(u64, bool),
     /// Stop riding along with someone's view.
     StopFollowing,
+    /// Layers: open or close the panel; new; draw on; show or hide; lock or
+    /// unlock; move up (true) or down; delete; rename (to `layer_editing`'s
+    /// name); move the selection onto.
+    LayersPanel,
+    LayerNew,
+    LayerPick(i32),
+    LayerHide(i32),
+    LayerLock(i32),
+    LayerMove(i32, bool),
+    LayerDelete(i32),
+    LayerRename(i32),
+    LayerTakeSelection(i32),
     /// Save the current view under `UiState::view_save` (a bookmark, in Views).
     SaveView,
     /// The name typed in Share live becomes the one others see.
@@ -1975,6 +2003,9 @@ pub fn draw(ctx: &egui::Context, st: &mut UiState) -> Vec<Action> {
     }
     if st.plugins_open {
         plugins_panel(ctx, st, &mut actions);
+    }
+    if st.layers_open {
+        layers_panel(ctx, st, &g, &mut actions);
     }
     actions.append(&mut st.queued);
 
@@ -5951,6 +5982,19 @@ fn app_icon(
             ]);
             line(&[vec2(0.1, 0.55), vec2(0.1, 0.1), vec2(0.55, 0.1)]);
         }
+        AppItem::Layers => {
+            // Three sheets, stacked.
+            for k in 0..3 {
+                let dy = -0.55 + k as f32 * 0.5;
+                line(&[
+                    vec2(-0.95, dy),
+                    vec2(0.0, dy - 0.38),
+                    vec2(0.95, dy),
+                    vec2(0.0, dy + 0.38),
+                    vec2(-0.95, dy),
+                ]);
+            }
+        }
         AppItem::Diagram => {
             // Two boxes joined by an arrow.
             line(&[
@@ -7593,6 +7637,136 @@ fn brush_section(
 /// Settings > Hotkeys: every tool, look and command with its key; tap a key
 /// to change it (then press the new one), × to clear it.
 /// Plugins: their buttons, installing plugins and packs, sharing yours.
+/// The Layers panel, top right under the settings button: the layers top
+/// first, each with show / hide, lock, its name (tap: draw on it; double
+/// tap: rename), up, down and delete; then New layer, and Move selection
+/// here when something is selected.
+fn layers_panel(ctx: &egui::Context, st: &mut UiState, g: &Geo, actions: &mut Vec<Action>) {
+    let screen = ctx.content_rect();
+    let w = 300.0f32.min(screen.width() - 24.0);
+    let x = (g.app.x - g.r - 12.0).min(screen.right() - 12.0);
+    let y = (g.app.y + g.r + 34.0).max(screen.top() + 8.0);
+    egui::Area::new(Id::new("layers"))
+        .order(Order::Foreground)
+        .pivot(Align2::RIGHT_TOP)
+        .fixed_pos(pos2(x, y))
+        .show(ctx, |ui| {
+            ui.style_mut().visuals = egui::Visuals::light();
+            egui::Frame::new()
+                .fill(FACE)
+                .stroke(Stroke::new(1.0, EDGE))
+                .corner_radius(12.0)
+                .inner_margin(10.0)
+                .shadow(egui::Shadow { offset: [0, 3], blur: 14, spread: 0, color: Color32::from_black_alpha(45) })
+                .show(ui, |ui| {
+                    ui.set_width(w);
+                    ui.horizontal(|ui| {
+                        ui.strong("Layers");
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button("×").on_hover_text("Close").clicked() {
+                                st.layers_open = false;
+                            }
+                            let add = ui.button("+ New").on_hover_text("A new layer on top, to draw on");
+                            named(&add, "New layer");
+                            if add.clicked() {
+                                actions.push(Action::LayerNew);
+                            }
+                        });
+                    });
+                    ui.add_space(4.0);
+                    let rows = st.layer_rows.clone();
+                    let n = rows.len();
+                    egui::ScrollArea::vertical()
+                        .max_height((screen.height() * 0.55).max(120.0))
+                        .show(ui, |ui| {
+                            for (i, r) in rows.iter().enumerate() {
+                                let fill = if r.active { Color32::from_rgb(252, 228, 236) } else { Color32::TRANSPARENT };
+                                egui::Frame::new().fill(fill).corner_radius(6.0).inner_margin(3.0).show(ui, |ui| {
+                                    ui.horizontal(|ui| {
+                                        let eye_text = if r.hidden {
+                                            egui::RichText::new("👁").color(Color32::from_gray(170)).strikethrough()
+                                        } else {
+                                            egui::RichText::new("👁")
+                                        };
+                                        let eye = ui
+                                            .add(egui::Button::new(eye_text).frame(false))
+                                            .on_hover_text(if r.hidden { "Show it" } else { "Hide it" });
+                                        named(&eye, format!("{} {}", if r.hidden { "Show" } else { "Hide" }, r.name));
+                                        if eye.clicked() {
+                                            actions.push(Action::LayerHide(r.layer));
+                                        }
+                                        let lock = ui
+                                            .add(egui::Button::new(if r.locked { "🔒" } else { "🔓" }).frame(false))
+                                            .on_hover_text(if r.locked { "Unlock it" } else { "Lock it: nothing on it can be picked, erased or drawn" });
+                                        named(&lock, format!("{} {}", if r.locked { "Unlock" } else { "Lock" }, r.name));
+                                        if lock.clicked() {
+                                            actions.push(Action::LayerLock(r.layer));
+                                        }
+                                        let editing = st.layer_editing.as_ref().is_some_and(|e| e.0 == r.layer);
+                                        if editing {
+                                            let (_, name) = st.layer_editing.as_mut().expect("editing");
+                                            let edit = ui.add(egui::TextEdit::singleline(name).desired_width(w * 0.45));
+                                            named(&edit, "Layer name");
+                                            if !edit.has_focus() && !edit.lost_focus() {
+                                                edit.request_focus();
+                                            }
+                                            if edit.lost_focus() {
+                                                actions.push(Action::LayerRename(r.layer));
+                                            }
+                                        } else {
+                                            let label = format!(
+                                                "{}{}",
+                                                r.name,
+                                                if r.count > 0 { format!("  ·  {}", r.count) } else { String::new() }
+                                            );
+                                            let pick = ui
+                                                .add(egui::Button::new(egui::RichText::new(label).color(if r.hidden { Color32::from_gray(150) } else { INKY })).frame(false))
+                                                .on_hover_text(if r.active { "Drawing on this layer (double tap to rename)" } else { "Tap to draw on this layer (double tap to rename)" });
+                                            named(&pick, format!("Layer {}", r.name));
+                                            if pick.double_clicked() {
+                                                st.layer_editing = Some((r.layer, r.name.clone()));
+                                            } else if pick.clicked() {
+                                                actions.push(Action::LayerPick(r.layer));
+                                            }
+                                        }
+                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                            let del = ui.add_enabled(n > 1, egui::Button::new("🗑").frame(false)).on_hover_text("Delete it and what is on it (undo brings it back)");
+                                            named(&del, format!("Delete {}", r.name));
+                                            if del.clicked() {
+                                                actions.push(Action::LayerDelete(r.layer));
+                                            }
+                                            let down = ui.add_enabled(i + 1 < n, egui::Button::new("⏷").frame(false)).on_hover_text("Move it down");
+                                            named(&down, format!("Move {} down", r.name));
+                                            if down.clicked() {
+                                                actions.push(Action::LayerMove(r.layer, false));
+                                            }
+                                            let up = ui.add_enabled(i > 0, egui::Button::new("⏶").frame(false)).on_hover_text("Move it up");
+                                            named(&up, format!("Move {} up", r.name));
+                                            if up.clicked() {
+                                                actions.push(Action::LayerMove(r.layer, true));
+                                            }
+                                        });
+                                    });
+                                });
+                            }
+                        });
+                    if st.sel_count > 0 {
+                        ui.add_space(4.0);
+                        if let Some(active) = rows.iter().find(|r| r.active) {
+                            let take = ui
+                                .button(format!("Move the selection to {}", active.name))
+                                .on_hover_text("Puts what is selected on top of this layer");
+                            named(&take, "Move selection here");
+                            if take.clicked() {
+                                actions.push(Action::LayerTakeSelection(active.layer));
+                            }
+                        }
+                    }
+                    help(ui, "Tap a layer to draw on it; double tap to rename. Hidden layers aren't drawn; locked ones can't be changed.");
+                });
+        });
+}
+
 fn plugins_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) {
     let screen = ctx.content_rect();
     let w = 380.0f32.min(screen.width() - 24.0);
