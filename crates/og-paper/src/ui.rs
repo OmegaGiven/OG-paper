@@ -1230,6 +1230,9 @@ pub enum Action {
     PluginPress(usize, i32),
     /// A placing plugin tool picked: the next tap on the canvas runs it.
     PluginArm(usize, i32),
+    /// Save the current view as a bookmark and put it on the quick bar
+    /// as an extra slot ("+" › right click).
+    ViewToExtra,
     /// A toolbar slot's plugin tool: plugin key and button.
     PluginTool(u64, i32),
     /// Allow (or stop allowing) what plugin i asks for.
@@ -2160,6 +2163,10 @@ fn quick_bar(ctx: &egui::Context, st: &mut UiState, g: &Geo) {
 fn add_extra(ui: &mut egui::Ui, st: &mut UiState, rect: Rect, fx: &mut SlotFx) {
     let resp = ui.interact(rect, Id::new("extra_add"), Sense::click());
     named(&resp, "Add a slot");
+    // Held down: keep drawing, so a press and hold opens its menu.
+    if resp.is_pointer_button_down_on() {
+        ui.ctx().request_repaint();
+    }
     let over = ui
         .input(|i| i.pointer.interact_pos())
         .is_some_and(|p| rect.contains(p));
@@ -2224,10 +2231,53 @@ fn add_extra(ui: &mut egui::Ui, st: &mut UiState, rect: Rect, fx: &mut SlotFx) {
         }
         fx.changed = true;
     }
-    resp.on_hover_text(if st.bag_open {
-        "Drop a tool here for another quick bar slot (tap only, no key); drag one onto 🗑 to remove it"
+    let resp = resp.on_hover_text(if st.bag_open {
+        "Drop a tool here for another quick bar slot (tap only, no key); drag one onto 🗑 to remove it. Right click for more"
     } else {
-        "Add the current tool as another quick bar slot (tap only, no key)"
+        "Add the current tool as another quick bar slot (tap only, no key). Right click for more"
+    });
+    // Right click (or press and hold): add this view, or the current tool.
+    resp.context_menu(|ui| {
+        if full {
+            ui.label("The quick bar has enough extra slots");
+        } else if ui
+            .button("Add this view as a bookmark")
+            .on_hover_text("Saves it in Views and adds a slot that flies back to it")
+            .clicked()
+        {
+            st.queued.push(Action::ViewToExtra);
+            ui.close();
+        }
+        if !full
+            && ui
+                .button(format!("Add the current tool ({})", describe(&fx.current)))
+                .clicked()
+        {
+            st.extras.push(Some(fx.current));
+            fx.say = Some(format!(
+                "Added {} to the quick bar (tap it to use it)",
+                describe(&fx.current)
+            ));
+            fx.changed = true;
+            ui.close();
+        }
+        if let Some(Some(last)) = st.extras.last().copied() {
+            let what = match last.view {
+                Some(v) => st
+                    .view_of(v)
+                    .map_or("a view".into(), |v| format!("view {}", v.name)),
+                None => describe(&last),
+            };
+            if ui
+                .button(format!("Remove the last extra slot ({what})"))
+                .clicked()
+            {
+                st.extras.pop();
+                fx.say = Some(format!("Removed {what} from the quick bar"));
+                fx.changed = true;
+                ui.close();
+            }
+        }
     });
 }
 
@@ -3005,6 +3055,10 @@ fn slot(ui: &mut egui::Ui, st: &mut UiState, rect: Rect, which: Slots, i: usize,
             _ => format!("Slot {}", i + 1),
         },
     );
+    // Held down: keep drawing, so a press and hold opens its menu.
+    if resp.is_pointer_button_down_on() {
+        ui.ctx().request_repaint();
+    }
     if st.bag_open && resp.drag_started() && st.held.is_none() {
         if let Some(it) = slot_mut(st, which, i).take() {
             st.held = Some(st.held_from(which, it));
@@ -3182,7 +3236,12 @@ fn slot(ui: &mut egui::Ui, st: &mut UiState, rect: Rect, which: Slots, i: usize,
                 ui.close();
             }
         }
-        if item.is_some() && ui.button("Empty this slot").clicked() {
+        let empty = if which == Slots::Extra {
+            "Remove from the quick bar"
+        } else {
+            "Empty this slot"
+        };
+        if item.is_some() && ui.button(empty).clicked() {
             *slot_mut(st, which, i) = None;
             fx.changed = true;
             ui.close();

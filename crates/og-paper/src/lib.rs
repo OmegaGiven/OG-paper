@@ -1626,6 +1626,21 @@ impl App {
                 self.plugins_to_ui();
             }
             Action::PluginPress(p, b) => self.plugin_press(p, b, None),
+            Action::ViewToExtra => {
+                self.bookmark_add(String::new());
+                if let Some(b) = self.bookmarks.last() {
+                    let view = hotbar::View {
+                        name: b.name.clone(),
+                        cam: hotbar::cam_text(&b.cam, b.view_px),
+                    };
+                    let name = view.name.clone();
+                    let id = self.ui.add_view(view);
+                    self.ui.extras.push(Some(hotbar::Preset::view(id)));
+                    self.ui.presets_dirty = true;
+                    self.say(format!("Saved \"{name}\" in Views and on the quick bar"));
+                }
+                self.redraw();
+            }
             Action::PluginTool(k, b) => {
                 let found = self.plugins.iter().enumerate().find_map(|(i, p)| {
                     (plugin::key(&p.name) == k)
