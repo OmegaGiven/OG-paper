@@ -1332,6 +1332,9 @@ pub enum Action {
     ToBack,
     FlipH,
     FlipV,
+    /// Line the selection up, or spread it out across (true) or down.
+    Align(crate::arrange::Align),
+    Distribute(bool),
     /// Toggle diagram mode.
     Diagram,
     /// Start moving the controls around.
@@ -5245,6 +5248,28 @@ fn select_actions(
         for (a, label, tip) in items {
             if ui.button(label).on_hover_text(tip).clicked() {
                 actions.push(a);
+            }
+        }
+        if count >= 2 {
+            ui.end_row();
+            for (how, name, glyph) in crate::arrange::ALIGNS {
+                let b = ui.button(glyph).on_hover_text(name);
+                named(&b, name);
+                if b.clicked() {
+                    actions.push(Action::Align(how));
+                }
+            }
+            if count >= 3 {
+                for (across, name, glyph) in [
+                    (true, "Spread out across", "⇿"),
+                    (false, "Spread out down", "⇕"),
+                ] {
+                    let b = ui.button(glyph).on_hover_text(name);
+                    named(&b, name);
+                    if b.clicked() {
+                        actions.push(Action::Distribute(across));
+                    }
+                }
             }
         }
         if kind == SelKind::Text && ui.button("Edit text").clicked() {

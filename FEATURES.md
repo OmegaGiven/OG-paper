@@ -43,6 +43,7 @@ reports features without tests and tests named here that don't exist.
 | EDIT-08 | Delete button on a selection (a ✕ off its top right corner, clear of the handles) | Select › ✕ | W D M | ui:delete-button |
 | EDIT-09 | Details tab for a selection: what it is, made when and by whom, how often it changed, facts by kind | Select › Details | W D M | ui:details-tab, rust:details::tests::a_new_shape_was_made_by_you_and_never_changed |
 | EDIT-10 | Drag-select favours what is picked out (a bucket fill only when wholly inside); copying texts gives other apps their plain text | Select › drag; Ctrl+C | W D M | ui:select-texts |
+| EDIT-11 | Arrange: line the selection up (left, centres, right, tops, middles, bottoms), spread it out evenly across or down; a dragged selection snaps its edges and centre to what is around, with a pink guide (Alt: no snapping) | Selection panel › ⇤ ⇹ ⇥ ⤒ ⇳ ⤓ ⇿ ⇕; drag | W D M | ui:arrange, rust:arrange::tests::align_lines_things_up, rust:arrange::tests::distribute_makes_gaps_equal, rust:arrange::tests::snapping_pulls_edges_onto_targets |
 
 ## Navigating the endless canvas
 

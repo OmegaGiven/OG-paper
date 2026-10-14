@@ -20,7 +20,7 @@ use crate::ui::{self, Action, SelKind, SelStyle, Tool};
 use crate::{uid, App, Gesture};
 
 /// What a drag on the selection does.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum DragKind {
     Move,
     /// Corner index (0 top-left, clockwise).
@@ -37,6 +37,8 @@ pub struct SelDrag {
     pub rot0: f64,
     /// Original points of every selected stroke (restored before committing).
     pub orig: Vec<(u32, Vec<Point>)>,
+    /// Moving: what the selection snaps to (see `arrange`).
+    pub snap: Option<crate::arrange::Snap>,
     /// Diagram mode: connectors with ends on the selection (drawn following
     /// it), and their strokes, hidden meanwhile.
     pub att: Vec<crate::diagram::Attached>,
@@ -771,6 +773,7 @@ impl App {
         }
         let att = self.attached_to(&self.edit.selection);
         let hidden = self.hide_attached(&att);
+        let snap = (kind == DragKind::Move).then(|| self.snap_targets());
         self.edit.sel_drag = Some(SelDrag {
             att,
             hidden,
@@ -780,6 +783,7 @@ impl App {
             box0,
             rot0,
             orig,
+            snap,
         });
     }
 
@@ -792,7 +796,10 @@ impl App {
         ];
         match d.kind {
             DragKind::Move => {
-                let v = [c[0] - s[0], c[1] - s[1]];
+                let mut v = [c[0] - s[0], c[1] - s[1]];
+                if let Some(sn) = &d.snap {
+                    v = self.snap_move(sn, v).0;
+                }
                 (v[0] != 0.0 || v[1] != 0.0).then_some(Op::Move(v))
             }
             DragKind::Rotate => {
@@ -1728,6 +1735,26 @@ impl App {
         if let Some(d) = self.edit.sel_drag.as_ref().filter(|d| !d.att.is_empty()) {
             let op = self.drag_op(d).map(|o| self.op_to_cam(&o));
             self.follow_preview(&d.att, op.as_ref(), &mut ov);
+        }
+        // Snap guides: what a dragged selection lined up with.
+        if let Some((d, sn)) = self
+            .edit
+            .sel_drag
+            .as_ref()
+            .and_then(|d| Some((d, d.snap.as_ref()?)))
+        {
+            let raw = [d.cur[0] - d.start[0], d.cur[1] - d.start[1]];
+            let (_, g) = self.snap_move(sn, raw);
+            let [w, h] = self.size();
+            let pink = egui::Color32::from_rgb(230, 40, 130);
+            if let Some(x) = g[0] {
+                ov.lines
+                    .push((vec![to_pt([x, 0.0]), to_pt([x, h])], 1.0, pink, false));
+            }
+            if let Some(y) = g[1] {
+                ov.lines
+                    .push((vec![to_pt([0.0, y]), to_pt([w, y])], 1.0, pink, false));
+            }
         }
         self.port_overlay(&mut ov);
         let joints = self.edit.sel_drag.is_none()

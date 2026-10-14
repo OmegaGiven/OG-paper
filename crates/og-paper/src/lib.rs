@@ -5,6 +5,7 @@
 
 //! OG Paper: an open-source infinite canvas.
 
+mod arrange;
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 mod artwork;
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
@@ -1373,6 +1374,8 @@ impl App {
             | Action::FlipH
             | Action::FlipV
             | Action::EditText => self.sel_action(a),
+            Action::Align(how) => self.align(how),
+            Action::Distribute(across) => self.distribute(across),
             Action::AudioPlay => self.audio_play_selected(),
             Action::SaveSticker => self.save_sticker(),
             #[cfg(target_arch = "wasm32")]
