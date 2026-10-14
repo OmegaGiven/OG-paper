@@ -2731,15 +2731,24 @@ fn toolbar_menu(
                 .show(ui, |ui| {
                     if vert {
                         // As wide as its columns (at least the header), but
-                        // never wider than the room right of the bar.
-                        // Up to four columns wide; more scroll sideways.
-                        let cols = st.toolbars.len().min(4) as f32 * (s + gap) - gap;
+                        // never wider than the room beside the bar, less
+                        // what the inventory needs to stay on the screen
+                        // (three slots across). More toolbars than that
+                        // scroll sideways.
                         let room_w = if side == Side::Left {
                             at.x - screen.left() - 12.0 - 20.0
                         } else {
                             screen.right() - at.x - 12.0 - 20.0
                         };
-                        ui.set_max_width(cols.max(2.0 * (s + gap)).min(room_w));
+                        let inv_min = if st.bag_open {
+                            3.0 * (s + gap) + 24.0 + 30.0
+                        } else {
+                            0.0
+                        };
+                        let fit =
+                            (((room_w - inv_min + gap) / (s + gap)).floor() as usize).clamp(1, 4);
+                        let cols = st.toolbars.len().min(fit) as f32 * (s + gap) - gap;
+                        ui.set_max_width(cols.max(s).min(room_w));
                     }
                     ui.horizontal(|ui| {
                         if ui
