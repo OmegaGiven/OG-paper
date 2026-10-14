@@ -4,8 +4,10 @@
 // Copyright (c) 2026 OmegaGiven and contributors
 
 //! Audio notes: an OG Paper plugin (see docs/PLUGINS.md) that records a
-//! short voice note and leaves it on the canvas as an audio clip, in the
-//! middle of what is on screen. It asks for the "microphone" permission;
+//! voice note (up to 2 min) and leaves it on the canvas as an audio clip.
+//! Its one button is a tool, Voice note, that places the clip where the
+//! person taps (or in the middle of the screen, pressed in Plugins). It
+//! asks for the "microphone" permission;
 //! the app does the recording (with a bar to stop it) only once the person
 //! allows that in Plugins. Build with
 //! `cargo build --release --target wasm32-unknown-unknown`.
@@ -33,8 +35,7 @@ pub extern "C" fn og_manifest() -> i64 {
         r#"{"name": "Audio notes", "version": "1.0",
             "description": "Record a voice note and leave it on the canvas as a clip anyone on the page can play",
             "permissions": ["microphone"],
-            "buttons": [{"id": 1, "label": "Record a note (up to 30 s)"},
-                        {"id": 2, "label": "Record a long note (up to 2 min)"}]}"#
+            "buttons": [{"id": 1, "label": "Voice note", "icon": "mic", "place": true}]}"#
             .into(),
     )
 }
@@ -61,13 +62,18 @@ pub extern "C" fn og_run(button: i32, ptr: i32, len: i32) -> i64 {
     let input = std::str::from_utf8(input).unwrap_or("{}");
     let view = input.find("\"view\"").map_or(input, |i| &input[i..]);
     let (x, y, w, h) = (num(view, "x"), num(view, "y"), num(view, "w"), num(view, "h"));
-    // A player a quarter of the screen's smaller side wide, in the middle.
-    let pw = w.min(h) * 0.45;
+    // A player a quarter of the screen's smaller side wide: where the
+    // person tapped (the voice note tool places it), else in the middle.
+    let pw = w.min(h) * 0.3;
     let ph = pw * 0.24;
-    let max = if button == 2 { 120 } else { 30 };
+    let (cx, cy) = match input.find("\"at\"").map(|i| &input[i..]) {
+        Some(at) => (num(at, "x"), num(at, "y")),
+        None => (x + w / 2.0, y + h / 2.0),
+    };
+    let max = if button == 2 { 30 } else { 120 };
     give(format!(
         r#"[{{"add": "audio", "record": true, "x": {}, "y": {}, "w": {pw}, "h": {ph}, "max_seconds": {max}}}]"#,
-        x + (w - pw) / 2.0,
-        y + (h - ph) / 2.0
+        cx - pw / 2.0,
+        cy - ph / 2.0
     ))
 }

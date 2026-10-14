@@ -14,14 +14,18 @@
 //! - `og_alloc(len) -> ptr`: room for `len` bytes of input.
 //! - `og_manifest() -> (ptr << 32) | len`: UTF-8 JSON
 //!   `{"name": "…", "version": "…", "description": "…",
-//!   "buttons": [{"id": 1, "label": "…"}]}`.
+//!   "buttons": [{"id": 1, "label": "…", "icon": "mic", "place": true}]}`.
+//!   Each button is a tool in the tool fan (and a button in Plugins). With
+//!   `"place": true` picking it waits for a tap on the canvas, and the
+//!   input says where (`"at"`).
 //! - `og_run(button, ptr, len) -> (ptr << 32) | len`: given the input JSON,
 //!   the commands to run (see `script`), as a JSON array, or
 //!   `{"commands": [...]}`.
 //!
 //! The input is `{"button": id, "view": {"x", "y", "w", "h"}, "texts":
-//! [...]}`: the part of the canvas on screen, in the home-view points
-//! commands use, and the texts on the page. See `docs/PLUGINS.md`.
+//! [...]}` (and `"at": {"x", "y"}` for a placing tool): the part of the
+//! canvas on screen, in the home-view points commands use, and the texts
+//! on the page. See `docs/PLUGINS.md`.
 
 use serde_json::{json, Value};
 use wasmi::{Config, Engine, Linker, Memory, Module, Store, StoreLimits, StoreLimitsBuilder};
@@ -41,29 +45,36 @@ pub struct Plugin {
     pub name: String,
     pub version: String,
     pub description: String,
-    /// Button id and label.
-    pub buttons: Vec<(i32, String)>,
+    pub buttons: Vec<Button>,
     /// What it asks to use beyond drawing (only these are known:
     /// "microphone"). Nothing is used until the person allows it.
     pub permissions: Vec<String>,
     pub bytes: Vec<u8>,
 }
 
+/// A plugin's button: a tool in the tool fan.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Button {
+    pub id: i32,
+    pub label: String,
+    /// Its icon in the fan: one of `ICONS` (else a puzzle piece).
+    pub icon: String,
+    /// Picking it waits for a tap on the canvas, and runs it there.
+    pub place: bool,
+}
+
+/// Icons a button may name.
+pub const ICONS: &[&str] = &["mic", "puzzle", "star", "grid", "spiral", "text", "pin"];
+
 /// Permissions a plugin may ask for, and how they read in the panel.
 pub const PERMISSIONS: &[(&str, &str)] =
     &[("microphone", "the microphone (to record audio clips)")];
 
 /// Plugins that come with the app, ready to install: name, file.
-pub const BUNDLED: &[(&str, &[u8])] = &[
-    (
-        "Audio notes",
-        include_bytes!("../../../plugins/examples/audio-notes.wasm"),
-    ),
-    (
-        "Starter kit",
-        include_bytes!("../../../plugins/examples/starter.wasm"),
-    ),
-];
+pub const BUNDLED: &[(&str, &[u8])] = &[(
+    "Audio notes",
+    include_bytes!("../../../plugins/examples/audio-notes.wasm"),
+)];
 
 /// Whether the person allowed plugin `name` what it asks for.
 pub fn allowed(name: &str) -> bool {
@@ -181,10 +192,18 @@ impl Plugin {
                 a.iter()
                     .take(32)
                     .filter_map(|b| {
-                        Some((
-                            b.get("id")?.as_i64()? as i32,
-                            b.get("label")?.as_str()?.chars().take(60).collect(),
-                        ))
+                        let icon = b.get("icon").and_then(Value::as_str).unwrap_or("");
+                        Some(Button {
+                            id: b.get("id")?.as_i64()? as i32,
+                            label: b.get("label")?.as_str()?.chars().take(60).collect(),
+                            icon: if ICONS.contains(&icon) {
+                                icon
+                            } else {
+                                "puzzle"
+                            }
+                            .into(),
+                            place: b.get("place").and_then(Value::as_bool).unwrap_or(false),
+                        })
                     })
                     .collect()
             })
@@ -229,6 +248,15 @@ pub fn plugin_dir() -> Option<std::path::PathBuf> {
 impl App {
     /// Install a plugin from its file (keeping it for next time).
     pub(crate) fn plugin_install(&mut self, bytes: Vec<u8>, quiet: bool) {
+        // A copy of a plugin that comes with the app, kept from an older
+        // version: this version's instead (new tools, fixes).
+        let bytes = match Plugin::load(bytes.clone()) {
+            Ok(p) if quiet => BUNDLED
+                .iter()
+                .find(|(n, b)| *n == p.name && *b != bytes.as_slice())
+                .map_or(bytes, |(_, b)| b.to_vec()),
+            _ => bytes,
+        };
         match Plugin::load(bytes) {
             Ok(p) => {
                 #[cfg(not(target_arch = "wasm32"))]
@@ -251,7 +279,7 @@ impl App {
                 }
                 if !quiet {
                     self.say(if p.permissions.is_empty() || allowed(&p.name) {
-                        format!("Plugin {} installed: its buttons are in Plugins", p.name)
+                        format!("Plugin {} installed: its tools are in the tool menu", p.name)
                     } else {
                         format!(
                             "Plugin {} installed: it asks to use the microphone — allow it in Plugins",
@@ -383,12 +411,23 @@ impl App {
         })
     }
 
-    /// Press a plugin's button: run it and do what it answers.
-    pub(crate) fn plugin_press(&mut self, plugin: usize, button: i32) {
+    /// Press a plugin's button: run it and do what it answers. `at`: the
+    /// screen point (px) a placing tool was tapped at.
+    pub(crate) fn plugin_press(&mut self, plugin: usize, button: i32, at: Option<[f64; 2]>) {
         let Some(p) = self.plugins.get(plugin).cloned() else {
             return;
         };
-        let input = self.plugin_input(button);
+        let mut input = self.plugin_input(button);
+        if let Some(px) = at {
+            // The tapped point in the home-view points commands use.
+            let home = crate::home_camera();
+            let o = self.cam.cell.origin_in(&home.cell);
+            let side = self.cam.cell.side_in(&home.cell);
+            let k = home.ppc();
+            let q = self.px_to_cam(px);
+            let c = [o[0] + q[0] * side, o[1] + q[1] * side];
+            input["at"] = json!({"x": (c[0] - home.off[0]) * k, "y": (c[1] - home.off[1]) * k});
+        }
         match p.press(button, &input) {
             Ok(cmds) => {
                 // What it asked for, if the person allowed it.
@@ -449,11 +488,25 @@ mod tests {
         let p = Plugin::load(BUNDLED[0].1.to_vec()).unwrap();
         assert_eq!(p.name, "Audio notes");
         assert_eq!(p.permissions, vec!["microphone".to_string()]);
-        let input =
-            json!({"button": 1, "view": {"x": -100, "y": -50, "w": 200, "h": 100}, "texts": []});
+        // One tool, a mic, that places the note where it's tapped.
+        assert_eq!(p.buttons.len(), 1);
+        assert_eq!(
+            (p.buttons[0].icon.as_str(), p.buttons[0].place),
+            ("mic", true)
+        );
+        let input = json!({"at": {"x": 300, "y": 40}, "button": 1,
+                           "view": {"x": -100, "y": -50, "w": 200, "h": 100}, "texts": []});
         let cmds = p.press(1, &input).unwrap();
         assert_eq!(cmds[0]["add"], "audio");
         assert_eq!(cmds[0]["record"], true);
+        let (x, w) = (
+            cmds[0]["x"].as_f64().unwrap(),
+            cmds[0]["w"].as_f64().unwrap(),
+        );
+        assert!(
+            (x + w / 2.0 - 300.0).abs() < 1e-6,
+            "centred on the tap: {cmds}"
+        );
 
         let mut app = App::new(None);
         // Without the microphone allowed, recording is refused.

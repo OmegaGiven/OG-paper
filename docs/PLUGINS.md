@@ -5,7 +5,7 @@ There are three ways to add to OG Paper, from no code to full programs:
 | | What it adds | Code | Where |
 | --- | --- | --- | --- |
 | **Pack** (`.ogpack`) | toolbars, tools (brushes with all their settings, shapes, text styles), stickers | none | Settings ⚙ > Plugins > Install |
-| **Plugin** (`.wasm`) | buttons that draw or arrange things | any language that builds WebAssembly | Settings ⚙ > Plugins > Install |
+| **Plugin** (`.wasm`) | tools in the tool menu that draw, arrange or record things | any language that builds WebAssembly | Settings ⚙ > Plugins > Install |
 | **Automation** | anything a script or service does to pages on a server | any language with WebSockets | the server's `/api` |
 
 Plugins and automations hand the app the same JSON **commands**.
@@ -121,10 +121,18 @@ A plugin exports `memory` and three functions:
 The manifest:
 
 ```json
-{"name": "Starter kit", "version": "1.0",
- "description": "Example plugin: a dot grid, a spiral and a text count",
- "buttons": [{"id": 1, "label": "Dot grid here"}, {"id": 2, "label": "Spiral"}]}
+{"name": "Audio notes", "version": "1.0",
+ "description": "Record a voice note and leave it on the canvas",
+ "permissions": ["microphone"],
+ "buttons": [{"id": 1, "label": "Voice note", "icon": "mic", "place": true}]}
 ```
+
+Each button is a **tool in the tool menu** (the tool button's fan, after
+the app's own tools), with its `label` and an `icon`: `mic`, `puzzle`
+(the default), `star`, `grid`, `spiral`, `text` or `pin`. A button runs
+when it's picked; one with `"place": true` waits for a tap on the canvas
+instead, and the input says where (`"at"`). Its buttons are in Settings ⚙
+> Plugins too.
 
 ### Permissions
 
@@ -136,26 +144,29 @@ it in Plugins (Allow / Stop allowing, kept per plugin). Until then the
 command fails with a message saying what to allow. Automations (the
 server API) never get permissions.
 
-The app comes with two plugins, ready to install from Plugins: **Audio
-notes** (`plugins/examples/audio-notes`: record a voice note, 30 s or
-2 min) and the **Starter kit**.
+The app comes with **Audio notes** (`plugins/examples/audio-notes`),
+ready to install from Plugins: its Voice note tool records a note (up to
+2 min) where you tap and leaves a clip anyone on the page can play.
 
 The input to `og_run`:
 
 ```json
 {"button": 2,
+ "at": {"x": 120, "y": -40},
  "view": {"x": -683, "y": -384, "w": 1366, "h": 768},
  "texts": [{"text": "Hello", "x": 0, "y": 0, "size": 24}]}
 ```
 
 `view` is the part of the canvas on screen, in command coordinates, so a
-plugin can draw where the person is looking. The answer is a JSON array of
+plugin can draw where the person is looking; `at` (placing tools only) is
+where they tapped. The answer is a JSON array of
 commands, or `{"commands": [...]}`.
 
 ### Example
 
 [`plugins/examples/starter`](../plugins/examples/starter) is a complete
-plugin in plain Rust with no dependencies (dot grid, spiral, text count);
+plugin in plain Rust with no dependencies (dot grid, spiral, text count),
+for plugin authors (the app doesn't offer it);
 the built file is [`plugins/examples/starter.wasm`](../plugins/examples/starter.wasm).
 
 ```

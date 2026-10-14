@@ -133,7 +133,7 @@ reports features without tests and tests named here that don't exist.
 | ID | Feature | Where | Platforms | Tests |
 |---|---|---|---|---|
 | PLUG-01 | WASM plugins | Menu › Plugins | W D | rust:plugin::tests::the_example_plugin_loads_and_answers |
-| PLUG-04 | Plugin permissions (asked for, allowed in Plugins) and audio clips: the Audio notes plugin records a voice note into a clip anyone on the page can play | Menu › Plugins › Install Audio notes › Allow | W | ui:audio-notes, rust:plugin::tests::audio_notes_asks_for_the_microphone, rust:audio::tests::base64_and_clock |
+| PLUG-04 | Plugins' tools in the tool menu (icons; placing tools wait for a tap), plugin permissions (asked for, allowed in Plugins) and audio clips: the Audio notes plugin's Voice note tool records a note where you tap, into a clip anyone on the page can play | Menu › Plugins › Install Audio notes › Allow; Tools › Voice note | W | ui:audio-notes, rust:plugin::tests::audio_notes_asks_for_the_microphone, rust:audio::tests::base64_and_clock |
 | PLUG-02 | .ogpack packs (toolbars, tools, stickers) | Menu › Plugins › Install pack | W D | rust:pack::tests::packs_read_toolbars_tools_and_stickers |
 | PLUG-03 | Scripts (automation inside the app) | Menu › Plugins; `window.ogPaper.run` | W D | rust:script::tests::colors_parse, todo |
 

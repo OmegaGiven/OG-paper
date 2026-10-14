@@ -181,6 +181,9 @@ enum Gesture {
     Import,
     /// Drawing a portal's window.
     Portal,
+    /// A placing plugin tool's tap: where it went down (runs on release,
+    /// unless it moved: then it pans).
+    Place([f64; 2]),
 }
 
 pub struct App {
@@ -731,6 +734,14 @@ impl App {
             Tool::Text => Gesture::Text(p),
             _ => Gesture::Ink,
         };
+        // A placing plugin tool in hand, unless another tool was picked since.
+        match self.ui.plugin_tool {
+            Some((_, _, t)) if t == self.ui.tool && !self.space && self.import.is_none() => {
+                self.gesture = Gesture::Place(p);
+            }
+            Some(_) => self.ui.plugin_tool = None,
+            None => {}
+        }
         if self.tl_view.is_some()
             && (matches!(
                 self.gesture,
@@ -807,7 +818,7 @@ impl App {
                 }
             }
             // Past a tap's slop it is a pan, from where it went down.
-            Gesture::Text(a) => {
+            Gesture::Text(a) | Gesture::Place(a) => {
                 if dist(a, to) > TAP_SLOP_PT * self.ppp() {
                     self.gesture = Gesture::Pan;
                     self.cam.pan_px(to[0] - a[0], to[1] - a[1]);
@@ -957,6 +968,11 @@ impl App {
             Gesture::Select => self.select_end(cancel),
             Gesture::Bucket(p) if !cancel && self.tl_view.is_none() => self.bucket_fill(p),
             Gesture::Text(p) if !cancel && self.tl_view.is_none() => self.text_begin(p),
+            Gesture::Place(p) if !cancel && self.tl_view.is_none() => {
+                if let Some((plugin, button, _)) = self.ui.plugin_tool.take() {
+                    self.plugin_press(plugin, button, Some(p));
+                }
+            }
             _ => {}
         }
         self.gesture = Gesture::None;
@@ -1608,7 +1624,17 @@ impl App {
                 self.ui.menu = ui::Menu::None;
                 self.plugins_to_ui();
             }
-            Action::PluginPress(p, b) => self.plugin_press(p, b),
+            Action::PluginPress(p, b) => self.plugin_press(p, b, None),
+            Action::PluginArm(p, b) => {
+                self.ui.plugin_tool = Some((p, b, self.ui.tool));
+                self.ui.plugins_open = false;
+                let label = self
+                    .plugins
+                    .get(p)
+                    .and_then(|pl| pl.buttons.iter().find(|x| x.id == b))
+                    .map_or(String::new(), |x| x.label.clone());
+                self.say(format!("{label}: tap where it goes"));
+            }
             Action::PluginAllow(i, yes) => self.plugin_allow(i, yes),
             Action::PluginInstallBundled(i) => self.plugin_install_bundled(i),
             Action::PluginRemove(i) => self.plugin_remove(i),

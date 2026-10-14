@@ -220,7 +220,7 @@ pub struct Overlay {
 pub struct PluginView {
     pub name: String,
     pub info: String,
-    pub buttons: Vec<(i32, String)>,
+    pub buttons: Vec<crate::plugin::Button>,
     /// What it asks to use (as the panel says it), and whether allowed.
     pub asks: Vec<String>,
     pub allowed: bool,
@@ -629,6 +629,9 @@ pub struct UiState {
     pub pages_open: bool,
     pub layout_open: bool,
     pub plugins_open: bool,
+    /// A placing plugin tool waiting for a tap on the canvas: plugin,
+    /// button, and the tool that was in hand (picking another disarms it).
+    pub plugin_tool: Option<(usize, i32, Tool)>,
     pub plugins: Vec<PluginView>,
     /// The app's own plugins: name, installed.
     pub plugins_bundled: Vec<(String, bool)>,
@@ -874,6 +877,7 @@ impl Default for UiState {
             pages_open: false,
             layout_open: false,
             plugins_open: false,
+            plugin_tool: None,
             plugins: Vec::new(),
             plugins_bundled: Vec::new(),
             local_pages: Vec::new(),
@@ -1186,6 +1190,8 @@ pub enum Action {
     PluginInstall,
     /// Plugin, button id.
     PluginPress(usize, i32),
+    /// A placing plugin tool picked: the next tap on the canvas runs it.
+    PluginArm(usize, i32),
     /// Allow (or stop allowing) what plugin i asks for.
     PluginAllow(usize, bool),
     /// Install the app's own plugin i (see `plugin::BUNDLED`).
@@ -1450,6 +1456,7 @@ pub fn draw(ctx: &egui::Context, st: &mut UiState) -> Vec<Action> {
                 .into_iter()
                 .any(|r| on_widget(Id::new(("ur", r))))
             || (0..TOOLS.len()).any(|i| on_widget(Id::new(("tool", i))))
+            || (0..64).any(|i| on_widget(Id::new(("ptool", i))))
             || (0..st.app_items.len() + 4).any(|i| on_widget(Id::new(("app_item", i))))
             || (0..hotbar::BAR + 4).any(|i| on_widget(Id::new(("rbar", i))))
             || (0..st.toolbars.len())
@@ -1502,8 +1509,15 @@ pub fn draw(ctx: &egui::Context, st: &mut UiState) -> Vec<Action> {
     let sq = |c: Pos2, r: f32| Rect::from_center_size(c, Vec2::splat(2.0 * r));
     let mut bbox = sq(g.tool, g.r);
     let mut tool_halo = 0.0;
-    // Undo and redo lead the fan, then the tools.
-    let tool_slots = ring_slots(TOOLS.len() + 2, g.r, g.tool_arc.1);
+    // Undo and redo lead the fan, then the tools, then plugins' tools.
+    let ptools: Vec<(usize, crate::plugin::Button)> = st
+        .plugins
+        .iter()
+        .enumerate()
+        .flat_map(|(i, p)| p.buttons.iter().map(move |b| (i, b.clone())))
+        .take(64)
+        .collect();
+    let tool_slots = ring_slots(TOOLS.len() + 2 + ptools.len(), g.r, g.tool_arc.1);
     if t > 0.0 {
         let reach = fan_reach(&tool_slots, g.r) * t + g.r * 1.2;
         tool_halo = reach + g.r * 0.6;
@@ -1601,6 +1615,7 @@ pub fn draw(ctx: &egui::Context, st: &mut UiState) -> Vec<Action> {
                             label(&p, pc + out * (rr + 16.0) + vec2(0.0, 2.0), tool.name());
                         }
                         if resp.clicked() {
+                            st.plugin_tool = None;
                             if selected && tool.has_panel() {
                                 // Picking the current brush again brings its panel back.
                                 st.panel_open = Some(true);
@@ -1616,6 +1631,45 @@ pub fn draw(ctx: &egui::Context, st: &mut UiState) -> Vec<Action> {
                     }
                 }
 
+                // ---- plugins' tools
+                if t > 0.0 {
+                    for (j, (pi, b)) in ptools.iter().enumerate() {
+                        let (radius, frac) = tool_slots[TOOLS.len() + 2 + j];
+                        let a = g.tool_arc.0 + g.tool_arc.1 * frac;
+                        let pc = g.tool + Vec2::angled(a) * radius * t;
+                        let rr = g.r * 0.9 * t.max(0.3);
+                        let resp = ui.interact(
+                            Rect::from_center_size(pc, Vec2::splat(2.0 * rr)),
+                            Id::new(("ptool", j)),
+                            Sense::click(),
+                        );
+                        named(&resp, b.label.clone());
+                        let armed = st
+                            .plugin_tool
+                            .is_some_and(|(p, id, _)| p == *pi && id == b.id);
+                        disc(
+                            &p,
+                            pc,
+                            rr,
+                            if resp.hovered() { Color32::WHITE } else { FACE },
+                            armed,
+                        );
+                        plugin_icon(&p, pc, rr, &b.icon, INKY);
+                        if t > 0.9 {
+                            let out = Vec2::angled(a);
+                            label(&p, pc + out * (rr + 16.0) + vec2(0.0, 2.0), &b.label);
+                        }
+                        if resp.clicked() {
+                            st.menu = Menu::None;
+                            actions.push(if b.place {
+                                Action::PluginArm(*pi, b.id)
+                            } else {
+                                Action::PluginPress(*pi, b.id)
+                            });
+                        }
+                    }
+                }
+
                 // ---- main buttons
                 let tool_resp = ui.interact(
                     Rect::from_center_size(g.tool, Vec2::splat(2.0 * g.r)),
@@ -1625,7 +1679,18 @@ pub fn draw(ctx: &egui::Context, st: &mut UiState) -> Vec<Action> {
                 named(&tool_resp, "Tools");
                 disc(&p, g.tool, g.r, FACE, st.menu == Menu::Tools);
                 let cur_color = tool_color(st, st.tool);
-                tool_icon(&p, g.tool, g.r, st.tool, cur_color);
+                // A placing plugin tool in hand shows on the button.
+                match st.plugin_tool.and_then(|(pi, id, _)| {
+                    st.plugins
+                        .get(pi)?
+                        .buttons
+                        .iter()
+                        .find(|b| b.id == id)
+                        .cloned()
+                }) {
+                    Some(b) => plugin_icon(&p, g.tool, g.r, &b.icon, ACCENT),
+                    None => tool_icon(&p, g.tool, g.r, st.tool, cur_color),
+                }
                 if tool_resp.clicked() {
                     st.menu = if st.menu == Menu::Tools {
                         Menu::None
@@ -5647,6 +5712,79 @@ impl Barrel {
 
 /// Drawn icons, sized relative to the button radius: outlined barrels with
 /// the current ink color where the ink is (tip, cap or swipe).
+/// A plugin tool's icon (see `plugin::ICONS`).
+fn plugin_icon(p: &egui::Painter, c: Pos2, r: f32, icon: &str, ink: Color32) {
+    let s = r * 0.5;
+    let st = Stroke::new((r * 0.09).max(1.5), ink);
+    match icon {
+        "mic" => {
+            // A capsule, its cradle and stand.
+            let body = Rect::from_center_size(c + vec2(0.0, -s * 0.35), vec2(s * 0.62, s * 1.15));
+            p.rect_filled(body, s * 0.31, ink);
+            let pts: Vec<Pos2> = (0..=12)
+                .map(|i| {
+                    let a = std::f32::consts::PI * i as f32 / 12.0;
+                    c + vec2(-a.cos() * s * 0.55, -s * 0.2 + a.sin() * s * 0.55)
+                })
+                .collect();
+            p.add(egui::Shape::line(pts, st));
+            p.line_segment([c + vec2(0.0, s * 0.35), c + vec2(0.0, s * 0.72)], st);
+            p.line_segment(
+                [c + vec2(-s * 0.3, s * 0.72), c + vec2(s * 0.3, s * 0.72)],
+                st,
+            );
+        }
+        "star" => {
+            let pts: Vec<Pos2> = (0..10)
+                .map(|i| {
+                    let a = std::f32::consts::PI * i as f32 / 5.0 - std::f32::consts::FRAC_PI_2;
+                    let rr = if i % 2 == 0 { s * 0.85 } else { s * 0.38 };
+                    c + Vec2::angled(a) * rr
+                })
+                .collect();
+            p.add(egui::Shape::closed_line(pts, st));
+        }
+        "grid" => {
+            for i in 0..3 {
+                for j in 0..3 {
+                    let q = c + vec2((i as f32 - 1.0) * s * 0.55, (j as f32 - 1.0) * s * 0.55);
+                    p.circle_filled(q, s * 0.12, ink);
+                }
+            }
+        }
+        "spiral" => {
+            let pts: Vec<Pos2> = (0..60)
+                .map(|i| {
+                    let a = i as f32 * 0.26;
+                    c + Vec2::angled(a) * (s * 0.08 + s * 0.013 * i as f32)
+                })
+                .collect();
+            p.add(egui::Shape::line(pts, st));
+        }
+        "text" => {
+            p.text(
+                c,
+                egui::Align2::CENTER_CENTER,
+                "Aa",
+                egui::FontId::proportional(r * 0.75),
+                ink,
+            );
+        }
+        "pin" => {
+            p.circle_stroke(c + vec2(0.0, -s * 0.3), s * 0.38, st);
+            p.line_segment([c + vec2(-s * 0.3, -s * 0.05), c + vec2(0.0, s * 0.8)], st);
+            p.line_segment([c + vec2(s * 0.3, -s * 0.05), c + vec2(0.0, s * 0.8)], st);
+        }
+        // A puzzle piece.
+        _ => {
+            let b = Rect::from_center_size(c + vec2(-s * 0.08, s * 0.1), vec2(s * 1.1, s * 1.1));
+            p.rect_stroke(b, s * 0.12, st, egui::StrokeKind::Middle);
+            p.circle_filled(b.center_top() + vec2(0.0, -s * 0.05), s * 0.22, ink);
+            p.circle_filled(b.right_center() + vec2(s * 0.05, 0.0), s * 0.22, ink);
+        }
+    }
+}
+
 fn tool_icon(p: &egui::Painter, c: Pos2, r: f32, tool: Tool, ink: Color32) {
     let line = Stroke::new((r * 0.075).max(1.2), INKY);
     match tool {
@@ -6990,9 +7128,13 @@ fn plugins_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action
                             });
                         }
                         ui.horizontal_wrapped(|ui| {
-                            for (id, label) in &p.buttons {
-                                if ui.button(label).clicked() {
-                                    actions.push(Action::PluginPress(i, *id));
+                            for b in &p.buttons {
+                                if ui.button(&b.label).clicked() {
+                                    actions.push(if b.place {
+                                        Action::PluginArm(i, b.id)
+                                    } else {
+                                        Action::PluginPress(i, b.id)
+                                    });
                                 }
                             }
                         });

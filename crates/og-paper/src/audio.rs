@@ -23,9 +23,8 @@ pub const MAX_RECORD_MS: u32 = 120_000;
 /// Largest sound a clip may hold.
 pub const MAX_BYTES: usize = 2 << 20;
 
-/// Where a clip from data goes (home-view points, as commands use), and
-/// how long a recording may run (a recording goes in the middle of the
-/// screen when it stops).
+/// Where a clip goes (home-view points, as commands use), and how long a
+/// recording may run.
 #[derive(Clone, Copy, Debug)]
 pub struct RecRequest {
     pub x: f64,
@@ -120,13 +119,12 @@ impl App {
         }
     }
 
-    /// The recording stopped: place it in the middle of what is on screen
-    /// now (a recording can take a while; the person may have moved), as
-    /// one undo step, selected.
+    /// The recording stopped: place it where its command asked (a voice
+    /// note tool: where the person tapped), as one undo step, selected.
     pub(crate) fn audio_recorded(&mut self, bytes: Vec<u8>, dur_ms: u32) {
-        if self.audio_rec.take().is_none() {
+        let Some(r) = self.audio_rec.take() else {
             return;
-        }
+        };
         if bytes.is_empty() {
             self.say("Nothing was recorded");
             return;
@@ -138,21 +136,12 @@ impl App {
                 return;
             }
         };
-        let s = self.size();
-        let w = s[0].min(s[1]) * 0.45;
-        let ppc = self.cam.ppc();
-        let center = self.px_to_cam([s[0] * 0.5, s[1] * 0.5]);
-        self.insert(ObjData::Audio {
-            id,
-            geom: Geom {
-                center,
-                half: [w * 0.5 / ppc, w * 0.12 / ppc],
-                rot: 0.0,
-                pts: vec![],
-            },
-            dur_ms: dur_ms.min(MAX_RECORD_MS),
-            seed: crate::uid::new() as u32,
-        });
+        // The request is in home-view points: place it in that frame.
+        let home = crate::home_camera();
+        let saved = std::mem::replace(&mut self.cam, home.clone());
+        let data = self.audio_data(&home, id, dur_ms.min(MAX_RECORD_MS), &r);
+        self.insert(data);
+        self.cam = saved;
         #[cfg(target_arch = "wasm32")]
         crate::web::touch();
         self.say(format!("Recorded {}", clock(dur_ms)));
