@@ -1884,14 +1884,18 @@ fn basic_presets() -> &'static [Preset] {
     static P: std::sync::OnceLock<Vec<Preset>> = std::sync::OnceLock::new();
     P.get_or_init(|| {
         let mut d = UiState::default();
-        TOOLS
-            .iter()
-            .chain([Tool::Picker].iter())
-            .map(|&t| {
-                d.tool = t;
-                d.preset()
-            })
-            .collect()
+        // As the tool menu has them: undo and redo first, then the tools
+        // (and the eyedropper, which lives in the color dials there).
+        [
+            Preset::cmd(hotbar::SlotCmd::Undo),
+            Preset::cmd(hotbar::SlotCmd::Redo),
+        ]
+        .into_iter()
+        .chain(TOOLS.iter().chain([Tool::Picker].iter()).map(|&t| {
+            d.tool = t;
+            d.preset()
+        }))
+        .collect()
     })
 }
 
@@ -3049,6 +3053,7 @@ fn slot(ui: &mut egui::Ui, st: &mut UiState, rect: Rect, which: Slots, i: usize,
         match which {
             Slots::Hold(_) => "Hold slot".to_string(),
             Slots::Basic => match basic_presets().get(i) {
+                Some(p) if p.cmd.is_some() => format!("Basic {}", describe(p)),
                 Some(p) => format!("Basic {}", p.tool.name()),
                 None => format!(
                     "Basic {}",

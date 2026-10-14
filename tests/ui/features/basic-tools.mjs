@@ -14,6 +14,7 @@ export default {
     await t.tap('Toolbar 1');
     await t.find('Basic Eraser');
     t.check(true, 'the basic tools row is there');
+    t.check(await t.has('Basic Undo') && await t.has('Basic Redo'), 'undo and redo are basic tools too');
     const holds = (await t.nodes()).filter(n => n.w > 0 && [n.label, n.value].includes('Hold slot')).length;
     t.check(holds >= 1, 'the hold slot shows in the toolbar list');
     await t.shot('basics');
