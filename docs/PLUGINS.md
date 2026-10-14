@@ -131,8 +131,10 @@ Each button is a **tool in the tool menu** (the tool button's fan, after
 the app's own tools), with its `label` and an `icon`: `mic`, `puzzle`
 (the default), `star`, `grid`, `spiral`, `text` or `pin`. A button runs
 when it's picked; one with `"place": true` waits for a tap on the canvas
-instead, and the input says where (`"at"`). Its buttons are in Settings ⚙
-> Plugins too.
+instead, and the input says where (`"at"`). Plugin tools are also in the
+inventory's Basic tools, to drag into any toolbar slot (the slot keeps
+the plugin's name and button, so it works again once the plugin is
+installed), and in Settings ⚙ > Plugins.
 
 ### Permissions
 

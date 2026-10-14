@@ -63,6 +63,32 @@ pub struct Button {
     pub place: bool,
 }
 
+/// A plugin's key in toolbar slots: a stable hash (FNV-1a) of its name.
+pub fn key(name: &str) -> u64 {
+    name.bytes().fold(0xcbf2_9ce4_8422_2325, |h, b| {
+        (h ^ b as u64).wrapping_mul(0x0100_0000_01b3)
+    })
+}
+
+/// The installed plugins' tools, by (plugin key, button), for drawing and
+/// naming toolbar slots that hold them.
+static TOOLS: std::sync::Mutex<Vec<(u64, Button)>> = std::sync::Mutex::new(Vec::new());
+
+/// The installed plugin tool a slot holds, if it is installed.
+pub fn tool(plugin: u64, button: i32) -> Option<Button> {
+    TOOLS
+        .lock()
+        .ok()?
+        .iter()
+        .find(|(k, b)| *k == plugin && b.id == button)
+        .map(|(_, b)| b.clone())
+}
+
+/// Every installed plugin tool.
+pub fn tools() -> Vec<(u64, Button)> {
+    TOOLS.lock().map(|t| t.clone()).unwrap_or_default()
+}
+
 /// Icons a button may name.
 pub const ICONS: &[&str] = &["mic", "puzzle", "star", "grid", "spiral", "text", "pin"];
 
@@ -335,6 +361,13 @@ impl App {
     }
 
     pub(crate) fn plugins_to_ui(&mut self) {
+        if let Ok(mut t) = TOOLS.lock() {
+            *t = self
+                .plugins
+                .iter()
+                .flat_map(|p| p.buttons.iter().map(|b| (key(&p.name), b.clone())))
+                .collect();
+        }
         self.ui.plugins = self
             .plugins
             .iter()

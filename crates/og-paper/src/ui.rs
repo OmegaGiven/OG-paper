@@ -997,10 +997,13 @@ impl UiState {
 
     /// Switch to a saved tool (or fly to a saved view).
     pub fn apply(&mut self, p: &Preset) {
+        // Whatever is picked now replaces a plugin tool waiting for a tap.
+        self.plugin_tool = None;
         if let Some(c) = p.cmd {
             self.queued.push(match c {
                 hotbar::SlotCmd::Undo => Action::Undo,
                 hotbar::SlotCmd::Redo => Action::Redo,
+                hotbar::SlotCmd::Plugin(k, b) => Action::PluginTool(k, b),
             });
             return;
         }
@@ -1192,6 +1195,8 @@ pub enum Action {
     PluginPress(usize, i32),
     /// A placing plugin tool picked: the next tap on the canvas runs it.
     PluginArm(usize, i32),
+    /// A toolbar slot's plugin tool: plugin key and button.
+    PluginTool(u64, i32),
     /// Allow (or stop allowing) what plugin i asks for.
     PluginAllow(usize, bool),
     /// Install the app's own plugin i (see `plugin::BUNDLED`).
@@ -2261,8 +2266,25 @@ fn inventory_at(
     // A row of every tool at its defaults along the bottom, to drag onto
     // a toolbar or the inventory even when both are empty. It folds away
     // to its title.
-    let footer = if st.basics_open { s + 34.0 } else { 30.0 };
-    st.basic = basic_presets().iter().map(|p| Some(*p)).collect();
+    // Then every installed plugin's tools.
+    st.basic = basic_presets()
+        .iter()
+        .copied()
+        .chain(
+            crate::plugin::tools()
+                .into_iter()
+                .map(|(k, b)| Preset::cmd(hotbar::SlotCmd::Plugin(k, b.id))),
+        )
+        .map(Some)
+        .collect();
+    // It wraps onto as many lines as it needs (a row that scrolled sideways
+    // couldn't be swiped: a drag there picks a tool up).
+    let basic_rows = st.basic.len().div_ceil(cols).max(1);
+    let footer = if st.basics_open {
+        basic_rows as f32 * (s + gap) - gap + 34.0
+    } else {
+        30.0
+    };
     // Fill the panel with empty slots, like a game's inventory grid.
     let fit = (((area.height() - 90.0 - footer) + gap) / (s + gap))
         .floor()
@@ -2377,20 +2399,18 @@ fn inventory_at(
                         crate::prefs::save(&p);
                     }
                     if st.basics_open {
-                        egui::ScrollArea::horizontal()
-                            .id_salt("basic_tools")
-                            .auto_shrink([false, true])
-                            .show(ui, |ui| {
-                                let n = st.basic.len();
-                                let (all, _) = ui.allocate_exact_size(
-                                    vec2(n as f32 * (s + gap) - gap, s),
-                                    Sense::hover(),
-                                );
-                                for i in 0..n {
-                                    let r = Rect::from_min_size(all.min + vec2(i as f32 * (s + gap), 0.0), Vec2::splat(s));
-                                    slot(ui, st, r, Slots::Basic, i, fx);
-                                }
-                            });
+                        let n = st.basic.len();
+                        let (all, _) = ui.allocate_exact_size(
+                            vec2(inner, basic_rows as f32 * (s + gap) - gap),
+                            Sense::hover(),
+                        );
+                        for i in 0..n {
+                            let r = Rect::from_min_size(
+                                all.min + vec2((i % cols) as f32 * (s + gap), (i / cols) as f32 * (s + gap)),
+                                Vec2::splat(s),
+                            );
+                            slot(ui, st, r, Slots::Basic, i, fx);
+                        }
                     }
                 });
         });
@@ -2771,7 +2791,13 @@ fn slot(ui: &mut egui::Ui, st: &mut UiState, rect: Rect, which: Slots, i: usize,
         &resp,
         match which {
             Slots::Hold(_) => "Hold slot".to_string(),
-            Slots::Basic => format!("Basic {}", basic_presets()[i].tool.name()),
+            Slots::Basic => match basic_presets().get(i) {
+                Some(p) => format!("Basic {}", p.tool.name()),
+                None => format!(
+                    "Basic {}",
+                    st.basic[i].map_or(String::new(), |p| describe(&p))
+                ),
+            },
             Slots::Inventory => format!("Inventory {}", i + 1),
             _ => format!("Slot {}", i + 1),
         },
@@ -2858,17 +2884,14 @@ fn slot(ui: &mut egui::Ui, st: &mut UiState, rect: Rect, which: Slots, i: usize,
             .map_or("A view".to_string(), |v| v.name.clone())
     });
     match (&item, &view_name) {
-        (Some(it), _) if it.cmd.is_some() => {
-            let redo = it.cmd == Some(hotbar::SlotCmd::Redo);
-            let on = if redo { st.can_redo } else { st.can_undo };
-            undo_icon(
-                p,
-                rect.center(),
-                rect.width() * 0.4,
-                redo,
-                if on { INKY } else { Color32::from_gray(190) },
-            );
-        }
+        (Some(it), _) if it.cmd.is_some() => cmd_icon(
+            p,
+            rect.center(),
+            rect.width() * 0.5,
+            it.cmd.unwrap(),
+            st,
+            true,
+        ),
         (Some(_), Some(name)) => view_icon(p, rect.center(), rect.width() * 0.5, name),
         (Some(it), None) => preset_icon(p, rect.center(), rect.width() * 0.5, it, &st.egui_fonts),
         _ => {}
@@ -2968,6 +2991,10 @@ fn describe(p: &Preset) -> String {
     match p.cmd {
         Some(hotbar::SlotCmd::Undo) => return "Undo".into(),
         Some(hotbar::SlotCmd::Redo) => return "Redo".into(),
+        Some(hotbar::SlotCmd::Plugin(k, b)) => {
+            return crate::plugin::tool(k, b)
+                .map_or("A plugin's tool (not installed)".into(), |b| b.label)
+        }
         None => {}
     }
     if let Some(i) = p.ink {
@@ -5712,6 +5739,23 @@ impl Barrel {
 
 /// Drawn icons, sized relative to the button radius: outlined barrels with
 /// the current ink color where the ink is (tip, cap or swipe).
+/// A command slot's icon: undo, redo (greyed when there's nothing to undo,
+/// with `dim`), or a plugin's tool (greyed when not installed).
+fn cmd_icon(p: &egui::Painter, c: Pos2, r: f32, cmd: hotbar::SlotCmd, st: &UiState, dim: bool) {
+    let grey = Color32::from_gray(190);
+    match cmd {
+        hotbar::SlotCmd::Undo | hotbar::SlotCmd::Redo => {
+            let redo = cmd == hotbar::SlotCmd::Redo;
+            let on = !dim || if redo { st.can_redo } else { st.can_undo };
+            undo_icon(p, c, r * 0.8, redo, if on { INKY } else { grey });
+        }
+        hotbar::SlotCmd::Plugin(k, b) => match crate::plugin::tool(k, b) {
+            Some(b) => plugin_icon(p, c, r, &b.icon, INKY),
+            None => plugin_icon(p, c, r, "puzzle", grey),
+        },
+    }
+}
+
 /// A plugin tool's icon (see `plugin::ICONS`).
 fn plugin_icon(p: &egui::Painter, c: Pos2, r: f32, icon: &str, ink: Color32) {
     let s = r * 0.5;
@@ -8801,8 +8845,7 @@ fn radial_bar(ctx: &egui::Context, st: &mut UiState, g: &Geo) {
                         disc(&p, pc, rr, if hover { Color32::WHITE } else { FACE }, on);
                         match item {
                             Some(it) if it.cmd.is_some() => {
-                                let redo = it.cmd == Some(hotbar::SlotCmd::Redo);
-                                undo_icon(&p, pc, rr * 0.8, redo, INKY);
+                                cmd_icon(&p, pc, rr, it.cmd.unwrap(), st, false)
                             }
                             Some(it) if it.view.is_some() => {
                                 let name = it
@@ -8838,7 +8881,7 @@ fn radial_bar(ctx: &egui::Context, st: &mut UiState, g: &Geo) {
                             match item {
                                 Some(it) => {
                                     st.apply(&it);
-                                    if it.cmd.is_none() {
+                                    if !it.keeps_menu() {
                                         st.menu = Menu::None;
                                     }
                                 }
@@ -8916,13 +8959,9 @@ fn radial_bar(ctx: &egui::Context, st: &mut UiState, g: &Geo) {
                         item.is_some_and(|it| it == current),
                     );
                     match item {
-                        Some(it) if it.cmd.is_some() => undo_icon(
-                            &p,
-                            pc,
-                            rr * 0.8,
-                            it.cmd == Some(hotbar::SlotCmd::Redo),
-                            INKY,
-                        ),
+                        Some(it) if it.cmd.is_some() => {
+                            cmd_icon(&p, pc, rr, it.cmd.unwrap(), st, false)
+                        }
                         Some(it) if it.view.is_some() => {
                             let name = it
                                 .view
@@ -8965,7 +9004,7 @@ fn radial_bar(ctx: &egui::Context, st: &mut UiState, g: &Geo) {
                         match item {
                             Some(it) => {
                                 st.apply(&it);
-                                if it.cmd.is_none() {
+                                if !it.keeps_menu() {
                                     st.menu = Menu::None;
                                 }
                             }

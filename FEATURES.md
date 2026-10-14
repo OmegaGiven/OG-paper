@@ -113,7 +113,7 @@ reports features without tests and tests named here that don't exist.
 | UI-01 | Menu (gear, top right) grouped in sections | gear button | W D M | ui:menu |
 | UI-02 | Tool fan (undo, redo, tools) | Tool button (bottom right) | W D M | ui:draw-undo |
 | UI-03 | Quick toolbar with numbered slots and a hold slot per toolbar (the main toolbar’s is in use; tap it to use its tool; set it from the inventory) | Menu › UI settings › Quick toolbar | W D M | ui:tools-tour, ui:hold-slot, rust:hotbar::tests::slots_round_trip, rust:hotbar::tests::names_and_many_toolbars_survive |
-| UI-04 | Inventory: drag tools between slots; drag onto the trash to delete; a row of basic tools (every tool at its defaults) to drag or tap onto a toolbar or the inventory, folded away with its title | Quick toolbar › bag | W D M | rust:hotbar::tests::inventory_keeps_a_free_row, todo, ui:basic-tools |
+| UI-04 | Inventory: drag tools between slots; drag onto the trash to delete; basic tools (every tool at its defaults, then every plugin's tools; wrapping onto more lines as needed) to drag or tap onto a toolbar or the inventory, folded away with its title | Quick toolbar › bag | W D M | rust:hotbar::tests::inventory_keeps_a_free_row, todo, ui:basic-tools |
 | UI-05 | Radial toolbar; page shaded only under an open fan | Menu › UI settings › Radial toolbar | W D M | rust:layout::tests::fans_open_toward_the_middle, todo |
 | UI-06 | Edit layout (move the buttons) | Menu › UI settings › Edit layout | W D M | rust:layout::tests::layouts_round_trip, todo |
 | UI-07 | UI size | Menu › UI settings › UI size | W D M | todo |
@@ -133,7 +133,7 @@ reports features without tests and tests named here that don't exist.
 | ID | Feature | Where | Platforms | Tests |
 |---|---|---|---|---|
 | PLUG-01 | WASM plugins | Menu › Plugins | W D | rust:plugin::tests::the_example_plugin_loads_and_answers |
-| PLUG-04 | Plugins' tools in the tool menu (icons; placing tools wait for a tap), plugin permissions (asked for, allowed in Plugins) and audio clips: the Audio notes plugin's Voice note tool records a note where you tap, into a clip anyone on the page can play | Menu › Plugins › Install Audio notes › Allow; Tools › Voice note | W | ui:audio-notes, rust:plugin::tests::audio_notes_asks_for_the_microphone, rust:audio::tests::base64_and_clock |
+| PLUG-04 | Plugins' tools in the tool menu, the basic tools and toolbar slots (icons; placing tools wait for a tap), plugin permissions (asked for, allowed in Plugins) and audio clips: the Audio notes plugin's Voice note tool records a note where you tap, into a clip anyone on the page can play | Menu › Plugins › Install Audio notes › Allow; Tools › Voice note | W | ui:audio-notes, rust:plugin::tests::audio_notes_asks_for_the_microphone, rust:hotbar::tests::a_plugin_tool_in_a_slot_survives, rust:audio::tests::base64_and_clock |
 | PLUG-02 | .ogpack packs (toolbars, tools, stickers) | Menu › Plugins › Install pack | W D | rust:pack::tests::packs_read_toolbars_tools_and_stickers |
 | PLUG-03 | Scripts (automation inside the app) | Menu › Plugins; `window.ogPaper.run` | W D | rust:script::tests::colors_parse, todo |
 

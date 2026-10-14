@@ -58,6 +58,31 @@ export default {
     await t.wait(async () => (await t.state()).clips === 1, 'a clip is on the canvas', 8000);
     t.check(true, 'recorded a clip where it was tapped');
 
+    await t.caption('It is in the inventory\'s basic tools too: put it in a toolbar');
+    await t.tap('Toolbar 1');
+    await t.find('Basic Voice note');
+    // Slot 1 of the main toolbar: the toolbar list's last column on a
+    // phone, the quick bar along the bottom on a desktop.
+    const slot1 = async () => (await t.nodes())
+      .filter(n => n.w > 0 && [n.label, n.value].includes('Slot 1'))
+      .sort((a, b) => (t.phone ? b.x - a.x : b.y - a.y))[0];
+    if (t.phone) {
+      await t.tap('Basic Voice note');
+      await t.tap(await slot1());
+    } else {
+      const from = await t.find('Basic Voice note');
+      const to = await slot1();
+      const a = [from.x + from.w / 2, from.y + from.h / 2];
+      const b = [to.x + to.w / 2, to.y + to.h / 2];
+      await t.drag([a, [a[0] + 8, a[1] + 8], [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2], b], 900);
+    }
+    await t.shot('in-toolbar');
+    await t.tap('×');
+    await t.tap('Slot 1');
+    await t.wait(async () => /tap where it goes/.test(JSON.stringify(await t.nodes())), 'slot 1 picks the voice note tool', 4000);
+    t.check(true, 'the toolbar slot holds the voice note tool');
+    await t.tap('Slot 6');
+
     await t.caption('Tap its play button');
     // The clip is centred where it was tapped; its play button at its left.
     const w = Math.min(t.w, t.h) * 0.3;

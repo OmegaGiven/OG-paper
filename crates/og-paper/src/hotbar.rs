@@ -83,6 +83,8 @@ pub struct Preset {
 pub enum SlotCmd {
     Undo,
     Redo,
+    /// A plugin's tool: the plugin (`plugin::key` of its name) and button.
+    Plugin(u64, i32),
 }
 
 /// A saved view in a toolbar slot: its name and camera (see `cam_text`).
@@ -127,6 +129,12 @@ impl Preset {
             view: None,
             cmd: None,
         }
+    }
+
+    /// Undo and redo: the menu they're picked from stays open, to step
+    /// back several times.
+    pub fn keeps_menu(&self) -> bool {
+        matches!(self.cmd, Some(SlotCmd::Undo | SlotCmd::Redo))
     }
 
     /// A slot that runs a command.
@@ -338,12 +346,11 @@ fn put(p: &Preset) -> String {
     if let Some(v) = p.view {
         out += &format!(" view {v}");
     }
-    if let Some(c) = p.cmd {
-        out += if c == SlotCmd::Undo {
-            " cmd undo"
-        } else {
-            " cmd redo"
-        };
+    match p.cmd {
+        Some(SlotCmd::Undo) => out += " cmd undo",
+        Some(SlotCmd::Redo) => out += " cmd redo",
+        Some(SlotCmd::Plugin(k, b)) => out += &format!(" cmd plugin {k:016x} {b}"),
+        None => {}
     }
     if let Some(i) = p.ink {
         let [r, g, b, a] = i.color.to_array();
@@ -403,6 +410,10 @@ fn get(s: &str) -> Option<Preset> {
                 p.cmd = Some(match w.next()? {
                     "undo" => SlotCmd::Undo,
                     "redo" => SlotCmd::Redo,
+                    "plugin" => SlotCmd::Plugin(
+                        u64::from_str_radix(w.next()?, 16).ok()?,
+                        w.next()?.parse().ok()?,
+                    ),
                     _ => return None,
                 })
             }
@@ -687,6 +698,20 @@ mod tests {
         assert_eq!(back.active, 2);
         assert!(back.bars[1].shown && !back.bars[0].shown);
         assert_eq!(back.bars[2].slots[8], Some(Preset::tool(Tool::Picker)));
+    }
+
+    #[test]
+    fn a_plugin_tool_in_a_slot_survives() {
+        let mut saved = defaults();
+        let k = crate::plugin::key("Audio notes");
+        saved.bars[0].slots[3] = Some(Preset::cmd(SlotCmd::Plugin(k, 1)));
+        let back = decode(&encode(&saved)).unwrap();
+        assert_eq!(
+            back.bars[0].slots[3].unwrap().cmd,
+            Some(SlotCmd::Plugin(k, 1))
+        );
+        assert!(!back.bars[0].slots[3].unwrap().keeps_menu());
+        assert!(Preset::cmd(SlotCmd::Undo).keeps_menu());
     }
 
     #[test]

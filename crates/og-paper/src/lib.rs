@@ -1625,6 +1625,19 @@ impl App {
                 self.plugins_to_ui();
             }
             Action::PluginPress(p, b) => self.plugin_press(p, b, None),
+            Action::PluginTool(k, b) => {
+                let found = self.plugins.iter().enumerate().find_map(|(i, p)| {
+                    (plugin::key(&p.name) == k)
+                        .then(|| p.buttons.iter().find(|x| x.id == b).map(|x| (i, x.place)))
+                        .flatten()
+                });
+                match found {
+                    Some((i, true)) => self.ui.queued.push(Action::PluginArm(i, b)),
+                    Some((i, false)) => self.plugin_press(i, b, None),
+                    None => self.say("That plugin isn't installed: install it in Plugins"),
+                }
+                self.redraw();
+            }
             Action::PluginArm(p, b) => {
                 self.ui.plugin_tool = Some((p, b, self.ui.tool));
                 self.ui.plugins_open = false;
