@@ -133,6 +133,7 @@ impl App {
             geom: full,
             opacity: 0,
             crop: objects::FULL_CROP,
+            adjust: objects::NO_ADJUST,
         }
         .extent();
         let orig = self.scene.stroke_points(stroke).to_vec();
@@ -202,6 +203,7 @@ impl App {
                 geom,
                 opacity,
                 crop: old,
+                adjust,
             } = &grp.data
             else {
                 return None;
@@ -212,6 +214,7 @@ impl App {
                 geom: cropped_geom(&full, crop),
                 opacity: *opacity,
                 crop,
+                adjust: *adjust,
             };
             let cell = grp.cell.clone();
             let z = app.z_range(&grp.strokes.clone());

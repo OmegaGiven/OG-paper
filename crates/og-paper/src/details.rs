@@ -121,6 +121,16 @@ impl App {
                                 }),
                             ),
                         ),
+                        ObjData::Frame { name, .. } => {
+                            ("frame".to_string(), ("Frame".to_string(), name.clone()))
+                        }
+                        ObjData::Bundle { .. } => (
+                            "group".to_string(),
+                            (
+                                "Group of".to_string(),
+                                format!("{}", self.objs.members(*g as u32).len()),
+                            ),
+                        ),
                         ObjData::Audio { dur_ms, id, .. } => (
                             "audio clip".to_string(),
                             (

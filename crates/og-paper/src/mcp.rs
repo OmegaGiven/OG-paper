@@ -285,10 +285,11 @@ fn tools(can_edit: bool) -> Vec<Value> {
             "name": "add_to_page",
             "title": "Add to a page",
             "description": "Add things to a page, all in one undo step; answers with each new thing's id and box. Items:\n\
-                {\"add\": \"text\", \"x\", \"y\" (top left), \"text\", \"size\" (cap height, default 24), \"color\", \"font\", \"align\": left|center|right}\n\
-                {\"add\": \"shape\", \"kind\": rect|ellipse|diamond|triangle|star|polygon|line|arrow, \"x\", \"y\", \"w\", \"h\", \
+                {\"add\": \"text\", \"x\", \"y\" (top left), \"text\", \"size\" (cap height, default 24), \"color\", \"font\", \"align\": left|center|right, \"letter_spacing\" (extra room per letter, in letter heights), \"line_height\" (times normal), \"path\": [[x, y], …] and \"smooth\" (the words run along it)}\n\
+                {\"add\": \"shape\", \"kind\": rect|ellipse|diamond|triangle|star|polygon|line|arrow|path, \"x\", \"y\", \"w\", \"h\", \
                 \"color\" (outline), \"fill\" (#rrggbb or none), \"width\" (outline, default 3), \"dash\": solid|dashed|dotted, \
-                \"round\" (rounded corners), \"opacity\" (0-1), \"neat\" (false: hand-drawn look). Lines and arrows run from x,y to x+w,y+h.\n\
+                \"round\" (rounded corners), \"opacity\" (0-1), \"gradient\": {\"to\": #rrggbb, \"angle\" (degrees, 90 = down), \"radial\"} (fill from \"fill\" to \"to\"), \"neat\" (false: hand-drawn look). Lines and arrows run from x,y to x+w,y+h.\n\
+                {\"add\": \"shape\", \"kind\": \"path\", \"points\": [[x, y], …], \"smooth\" (curves through the points), \"closed\", plus the shape options above} (a pen path)\n\
                 {\"add\": \"table\", \"x\", \"y\", \"cells\": [[\"Name\", \"Qty\"], [\"Pens\", \"4\"]], \"size\" (default 18), \"color\"}\n\
                 {\"add\": \"stroke\", \"points\": [[x, y], …], \"width\", \"color\", \"dash\"} (freehand ink)\n\
                 Colours are #rrggbb or #rrggbbaa.",
@@ -306,9 +307,13 @@ fn tools(can_edit: bool) -> Vec<Value> {
             "description": "Change things on a page by id (from read_page or add_to_page). Edits, done in order:\n\
                 {\"move\": [ids], \"dx\", \"dy\"}\n\
                 {\"set\": id or [ids], then any of: \"x\", \"y\" (new top left), \"w\", \"h\" (new size), \"rotate\" (degrees), \
-                \"text\", \"cells\", \"size\", \"color\", \"fill\" (#rrggbb or none), \"width\", \"font\", \"align\", \"dash\", \
-                \"round\", \"opacity\", \"kind\" (shape kind)}\n\
+                \"text\", \"cells\", \"size\", \"letter_spacing\", \"line_height\", \"name\" (a frame's), \"brightness\" (-1 to 1), \"contrast\", \"saturation\" (0-3, 1 as it is; pictures), \"color\", \"fill\" (#rrggbb or none), \"width\", \"font\", \"align\", \"dash\", \
+                \"round\", \"opacity\", \"kind\" (shape kind), \"gradient\" (as in add)}\n\
                 {\"order\": [ids], \"to\": front|back}\n\
+                {\"combine\": [ids], \"op\": union|subtract|intersect|exclude} (closed shapes into one path; subtract cuts the upper from the lowest)\n\
+                {\"group\": [ids]} / {\"ungroup\": [ids]} (a group moves and changes as one)\n\
+                {\"component\": [ids]} (make them a component's main; its copies, made in the app, follow it)\n\
+                {\"remove_background\": [ids]} (pictures: their plain background made see-through)\n\
                 {\"delete\": [ids]}\n\
                 Editing a thing gives it a new id: each answer lists the new ids in order.",
             "inputSchema": {"type": "object", "properties": {

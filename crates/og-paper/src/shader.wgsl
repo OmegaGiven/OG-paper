@@ -410,6 +410,18 @@ fn fs_highlight(in: VsOut) -> @location(0) vec4<f32> {
     return vec4<f32>(tint, 1.0);
 }
 
+// Highlighter on a layer drawn on its own (see layer.wgsl): Min would
+// darken the empty layer, so it is laid over like ink, see-through.
+@fragment
+fn fs_highlight_over(in: VsOut) -> @location(0) vec4<f32> {
+    let cov = coverage(in);
+    if (cov <= 0.0) {
+        discard;
+    }
+    let a = 0.45 * cov;
+    return vec4<f32>(in.color.rgb * a, a);
+}
+
 // Occupancy tiles: a 16x16 grid of marks for a region whose content is too
 // small to read.
 struct TileOut {

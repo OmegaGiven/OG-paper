@@ -325,13 +325,42 @@ impl Align {
 /// Lay out `text` (lines split on newlines) in `font`. Returns the ink and
 /// the box size (grid units, cap height 6).
 pub fn layout(text: &str, font: FontId, align: Align, seed: u32) -> (Vec<Mark>, [f64; 2]) {
+    layout_spaced(text, font, align, seed, Spacing::default())
+}
+
+/// Extra room between letters and lines.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Spacing {
+    /// Added after each letter, in cap heights (0: the font's own).
+    pub letter: f64,
+    /// Line height, times the font's own.
+    pub line: f64,
+}
+
+impl Default for Spacing {
+    fn default() -> Self {
+        Spacing {
+            letter: 0.0,
+            line: 1.0,
+        }
+    }
+}
+
+/// `layout` with letter and line spacing.
+pub fn layout_spaced(
+    text: &str,
+    font: FontId,
+    align: Align,
+    seed: u32,
+    sp: Spacing,
+) -> (Vec<Mark>, [f64; 2]) {
     match source(font) {
         Source::Outline(bytes) => match ttf_parser::Face::parse(&bytes, 0) {
-            Ok(face) => outline_layout(&face, text, align),
-            Err(_) => stroke_layout(text, StrokeKind::Clean, align, seed),
+            Ok(face) => outline_layout(&face, text, align, sp),
+            Err(_) => stroke_layout(text, StrokeKind::Clean, align, seed, sp),
         },
-        Source::Stroke(k) => stroke_layout(text, k, align, seed),
-        Source::Missing => stroke_layout(text, StrokeKind::Clean, align, seed),
+        Source::Stroke(k) => stroke_layout(text, k, align, seed, sp),
+        Source::Missing => stroke_layout(text, StrokeKind::Clean, align, seed, sp),
     }
 }
 
@@ -412,7 +441,7 @@ impl ttf_parser::OutlineBuilder for Contours {
 /// Join a glyph's contours into one polygon: each contour closed, then a
 /// zero-width bridge to the next, and the bridges walked back at the end so
 /// they cancel. Returns the points and the bridge indexes.
-fn join(polys: Vec<Vec<[f64; 2]>>) -> (Vec<[f64; 2]>, Vec<u32>) {
+pub(crate) fn join(polys: Vec<Vec<[f64; 2]>>) -> (Vec<[f64; 2]>, Vec<u32>) {
     let mut pts = Vec::new();
     let mut bridges = Vec::new();
     let starts: Vec<[f64; 2]> = polys.iter().map(|p| p[0]).collect();
@@ -430,7 +459,12 @@ fn join(polys: Vec<Vec<[f64; 2]>>) -> (Vec<[f64; 2]>, Vec<u32>) {
     (pts, bridges)
 }
 
-fn outline_layout(face: &ttf_parser::Face, text: &str, align: Align) -> (Vec<Mark>, [f64; 2]) {
+fn outline_layout(
+    face: &ttf_parser::Face,
+    text: &str,
+    align: Align,
+    sp: Spacing,
+) -> (Vec<Mark>, [f64; 2]) {
     let upm = face.units_per_em() as f64;
     let cap = face
         .capital_height()
@@ -439,8 +473,10 @@ fn outline_layout(face: &ttf_parser::Face, text: &str, align: Align) -> (Vec<Mar
         .unwrap_or(upm * 0.7);
     let s = 6.0 / cap;
     let desc = (-(face.descender() as f64)).max(0.0) * s;
-    let line_h =
-        ((face.ascender() as f64 - face.descender() as f64 + face.line_gap() as f64) * s).max(7.0);
+    let line_h = ((face.ascender() as f64 - face.descender() as f64 + face.line_gap() as f64) * s)
+        .max(7.0)
+        * sp.line.max(0.1);
+    let extra = sp.letter * 6.0;
     let space = face
         .glyph_index(' ')
         .and_then(|g| face.glyph_hor_advance(g))
@@ -451,6 +487,7 @@ fn outline_layout(face: &ttf_parser::Face, text: &str, align: Align) -> (Vec<Mar
             .and_then(|g| face.glyph_hor_advance(g))
             .map(|a| a as f64 * s)
             .unwrap_or(space)
+            + extra
     };
     let lines: Vec<&str> = text.split('\n').collect();
     let widths: Vec<f64> = lines.iter().map(|l| l.chars().map(adv).sum()).collect();
@@ -538,14 +575,22 @@ fn advance(c: char, font: StrokeKind) -> (f64, f64) {
 
 /// Single-line layout: strokes in grid units, the box's top-left at the
 /// origin. Returns the strokes and the box size.
-fn stroke_layout(text: &str, font: StrokeKind, align: Align, seed: u32) -> (Vec<Mark>, [f64; 2]) {
+fn stroke_layout(
+    text: &str,
+    font: StrokeKind,
+    align: Align,
+    seed: u32,
+    sp: Spacing,
+) -> (Vec<Mark>, [f64; 2]) {
+    let extra = sp.letter * 6.0;
+    let line_u = LINE_UNITS * sp.line.max(0.1);
     let lines: Vec<&str> = text.split('\n').collect();
     let widths: Vec<f64> = lines
         .iter()
-        .map(|l| l.chars().map(|c| advance(c, font).0).sum::<f64>())
+        .map(|l| l.chars().map(|c| advance(c, font).0 + extra).sum::<f64>())
         .collect();
     let box_w = widths.iter().cloned().fold(0.0, f64::max).max(1.0);
-    let box_h = LINE_UNITS * lines.len() as f64 - (LINE_UNITS - 8.0);
+    let box_h = line_u * (lines.len() as f64 - 1.0) + 8.0;
     let mut rng = Rng::new(seed);
     let mut out = Vec::new();
     for (i, line) in lines.iter().enumerate() {
@@ -554,7 +599,7 @@ fn stroke_layout(text: &str, font: StrokeKind, align: Align, seed: u32) -> (Vec<
             Align::Center => (box_w - widths[i]) * 0.5,
             Align::Right => box_w - widths[i],
         };
-        let y = i as f64 * LINE_UNITS;
+        let y = i as f64 * line_u;
         for c in line.chars() {
             let (adv, shift) = advance(c, font);
             let dx = -shift;
@@ -573,7 +618,7 @@ fn stroke_layout(text: &str, font: StrokeKind, align: Align, seed: u32) -> (Vec<
                     .collect();
                 out.push(Mark::Line(pts));
             }
-            x += adv;
+            x += adv + extra;
         }
     }
     (out, [box_w, box_h])

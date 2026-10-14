@@ -22,7 +22,8 @@
 //!
 //! Each command gets a result in order: `{"ok": true}` (and `"texts"` for
 //! `get`), or `{"ok": false, "error": "…"}`. Shape kinds: rect, ellipse,
-//! diamond, triangle, star, polygon, line, arrow.
+//! diamond, triangle, star, polygon, line, arrow, and path (through
+//! "points", with "smooth" and "closed").
 //!
 //! Things on the page have ids (`add` answers with the new thing's; `get:
 //! objects` lists them): hex, the low 64 bits of the thing's first stroke's
@@ -65,7 +66,17 @@ const PICTURE_PX: f64 = 1024.0;
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 const PICTURE_MAX: f64 = 2048.0;
 /// Commands that change things already on the page.
-const EDITS: [&str; 4] = ["move", "set", "delete", "order"];
+const EDITS: [&str; 9] = [
+    "component",
+    "move",
+    "set",
+    "delete",
+    "order",
+    "combine",
+    "group",
+    "ungroup",
+    "remove_background",
+];
 
 /// `#rrggbb` or `#rrggbbaa` as the scene's packed RGBA.
 pub fn parse_color(s: &str) -> Option<u32> {
@@ -102,6 +113,7 @@ fn kind_of(s: &str) -> Option<ShapeKind> {
         "polygon" => ShapeKind::Polygon,
         "line" => ShapeKind::Line,
         "arrow" => ShapeKind::Arrow,
+        "path" | "pen" | "curve" => ShapeKind::Path,
         _ => return None,
     })
 }
@@ -116,6 +128,8 @@ fn kind_name(k: ShapeKind) -> &'static str {
         ShapeKind::Polygon => "polygon",
         ShapeKind::Line => "line",
         ShapeKind::Arrow => "arrow",
+        ShapeKind::Path => "path",
+        ShapeKind::Frame => "frame",
     }
 }
 
@@ -258,6 +272,41 @@ struct Patch {
     opacity: Option<u8>,
     kind: Option<ShapeKind>,
     cells: Option<Vec<Vec<String>>>,
+    /// A gradient fill: end color, angle (degrees), radial.
+    gradient: Option<(u32, f32, bool)>,
+    /// A frame's name.
+    name: Option<String>,
+    letter: Option<f32>,
+    line: Option<f32>,
+    /// A picture's colors.
+    brightness: Option<f32>,
+    contrast: Option<f32>,
+    saturation: Option<f32>,
+}
+
+/// `"gradient": {"to": "#rrggbb", "angle": 90, "radial": false}`.
+fn gradient_of(c: &Value) -> Result<Option<(u32, f32, bool)>, String> {
+    let Some(g) = c.get("gradient").filter(|g| !g.is_null()) else {
+        return Ok(None);
+    };
+    let to = g
+        .get("to")
+        .and_then(Value::as_str)
+        .and_then(parse_color)
+        .ok_or("gradient needs \"to\": \"#rrggbb\"")?;
+    let angle = g.get("angle").and_then(Value::as_f64).unwrap_or(90.0) as f32;
+    let radial = g.get("radial").and_then(Value::as_bool).unwrap_or(false);
+    Ok(Some((to, angle, radial)))
+}
+
+fn put_gradient(st: &mut ShapeStyle, (to, angle, radial): (u32, f32, bool)) {
+    st.fill2 = to;
+    st.grad = angle.rem_euclid(360.0);
+    st.fill_style = if radial {
+        FillStyle::Radial
+    } else {
+        FillStyle::Linear
+    };
 }
 
 impl Patch {
@@ -288,6 +337,13 @@ impl Patch {
                 .map(|k| kind_of(k).ok_or(format!("unknown shape kind: {k}")))
                 .transpose()?,
             cells: c.get("cells").map(cells_of).transpose()?,
+            gradient: gradient_of(c)?,
+            name: s("name").map(|t| t.chars().take(200).collect()),
+            letter: num(c, "letter_spacing").map(|v| v.clamp(-0.5, 5.0) as f32),
+            line: num(c, "line_height").map(|v| v.clamp(0.3, 5.0) as f32),
+            brightness: num(c, "brightness").map(|v| v.clamp(-1.0, 1.0) as f32),
+            contrast: num(c, "contrast").map(|v| v.clamp(0.0, 3.0) as f32),
+            saturation: num(c, "saturation").map(|v| v.clamp(0.0, 3.0) as f32),
         })
     }
 
@@ -304,6 +360,13 @@ impl Patch {
             && self.opacity.is_none()
             && self.kind.is_none()
             && self.cells.is_none()
+            && self.gradient.is_none()
+            && self.name.is_none()
+            && self.letter.is_none()
+            && self.line.is_none()
+            && self.brightness.is_none()
+            && self.contrast.is_none()
+            && self.saturation.is_none()
     }
 
     /// `d` (camera units) with the patch applied. Texts and tables keep
@@ -319,6 +382,8 @@ impl Patch {
             st.font = self.font.unwrap_or(st.font);
             st.align = self.align.unwrap_or(st.align);
             st.opacity = self.opacity.unwrap_or(st.opacity);
+            st.letter = self.letter.unwrap_or(st.letter);
+            st.line = self.line.unwrap_or(st.line);
         };
         let restyle_shape = |st: &mut ShapeStyle| {
             st.stroke = self.color.unwrap_or(st.stroke);
@@ -333,6 +398,9 @@ impl Patch {
             st.dash = self.dash.unwrap_or(st.dash);
             st.round = self.round.unwrap_or(st.round);
             st.opacity = self.opacity.unwrap_or(st.opacity);
+            if let Some(g) = self.gradient {
+                put_gradient(st, g);
+            }
         };
         match d {
             ObjData::Text {
@@ -345,7 +413,9 @@ impl Patch {
                 text = self.text.clone().unwrap_or(text);
                 size = self.size.unwrap_or(size);
                 restyle_text(&mut style);
-                regrow(&mut geom, objects::text_box(&text, &style, size));
+                if geom.pts.len() < 2 {
+                    regrow(&mut geom, objects::text_box(&text, &style, size));
+                }
                 ObjData::Text {
                     text,
                     style,
@@ -385,8 +455,7 @@ impl Patch {
                 restyle_shape(&mut style);
                 // Lines and arrows keep their points: no switching to or
                 // from a box shape.
-                let linear = |k| matches!(k, ShapeKind::Line | ShapeKind::Arrow);
-                if let Some(k) = self.kind.filter(|k| linear(*k) == linear(style.kind)) {
+                if let Some(k) = self.kind.filter(|k| k.same_family(style.kind)) {
                     style.kind = k;
                 }
                 ObjData::Shape {
@@ -417,13 +486,23 @@ impl Patch {
                 geom,
                 opacity,
                 crop,
+                adjust,
             } => ObjData::Image {
                 id,
                 geom,
                 opacity: self.opacity.unwrap_or(opacity),
                 crop,
+                adjust: [
+                    self.brightness.unwrap_or(adjust[0]),
+                    self.contrast.unwrap_or(adjust[1]),
+                    self.saturation.unwrap_or(adjust[2]),
+                ],
             },
-            d @ ObjData::Audio { .. } => d,
+            ObjData::Frame { geom, name } => ObjData::Frame {
+                geom,
+                name: self.name.clone().unwrap_or(name),
+            },
+            d @ (ObjData::Audio { .. } | ObjData::Bundle { .. }) => d,
         }
     }
 }
@@ -565,19 +644,62 @@ impl App {
                     .collect();
                 let (x, y) = (num(c, "x").unwrap_or(0.0), num(c, "y").unwrap_or(0.0));
                 let size = num(c, "size").unwrap_or(24.0).clamp(1.0, 10_000.0) / ppc;
-                let style = text_style(color)?;
+                let mut style = text_style(color)?;
+                if let Some(v) = num(c, "letter_spacing") {
+                    style.letter = v.clamp(-0.5, 5.0) as f32;
+                }
+                if let Some(v) = num(c, "line_height") {
+                    style.line = v.clamp(0.3, 5.0) as f32;
+                }
                 let b = objects::text_box(&text, &style, size);
                 let half = [b[0] * 0.5, b[1] * 0.5];
                 let at = to_cam(cam, x, y);
-                let data = ObjData::Text {
-                    text,
-                    style,
-                    geom: Geom {
+                // Along "path": [[x, y], …] (straight between the points,
+                // or "smooth").
+                let path: Vec<[f64; 2]> = c
+                    .get("path")
+                    .and_then(Value::as_array)
+                    .map(|a| {
+                        a.iter()
+                            .take(MAX_POINTS)
+                            .filter_map(|p| {
+                                let a = p.as_array()?;
+                                Some(to_cam(cam, a.first()?.as_f64()?, a.get(1)?.as_f64()?))
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let geom = if path.len() >= 2 {
+                    let smooth = c.get("smooth").and_then(Value::as_bool).unwrap_or(false);
+                    let pts = if smooth {
+                        let p = crate::shapes::path_through(&path, true, false);
+                        crate::shapes::subpaths(&p)
+                            .into_iter()
+                            .next()
+                            .map(|q| q.0)
+                            .unwrap_or(path)
+                    } else {
+                        path
+                    };
+                    let (center, half) = crate::shapes::bounds_of(&pts);
+                    Geom {
+                        center,
+                        half,
+                        rot: 0.0,
+                        pts,
+                    }
+                } else {
+                    Geom {
                         center: [at[0] + half[0], at[1] + half[1]],
                         half,
                         rot: 0.0,
                         pts: vec![],
-                    },
+                    }
+                };
+                let data = ObjData::Text {
+                    text,
+                    style,
+                    geom,
                     size,
                     seed: crate::uid::new() as u32,
                 };
@@ -632,6 +754,9 @@ impl App {
                 if let Some(d) = s("dash") {
                     style.dash = dash_of(d).ok_or(format!("unknown dash: {d}"))?;
                 }
+                if let Some(g) = gradient_of(c)? {
+                    put_gradient(&mut style, g);
+                }
                 style.round = c.get("round").and_then(Value::as_bool).unwrap_or(false);
                 if let Some(o) = num(c, "opacity") {
                     style.opacity = (o.clamp(0.0, 1.0) * 255.0).round() as u8;
@@ -642,12 +767,33 @@ impl App {
                     Sloppiness::Artist
                 };
                 let linear = matches!(kind, ShapeKind::Line | ShapeKind::Arrow);
-                let geom = Geom {
+                let mut geom = Geom {
                     center: [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5],
                     half: [((b[0] - a[0]) * 0.5).abs(), ((b[1] - a[1]) * 0.5).abs()],
                     rot: 0.0,
                     pts: if linear { vec![a, b] } else { vec![] },
                 };
+                if kind == ShapeKind::Path {
+                    // Through "points", straight or "smooth", maybe "closed".
+                    let anchors: Vec<[f64; 2]> = c
+                        .get("points")
+                        .and_then(Value::as_array)
+                        .ok_or("a path needs \"points\": [[x, y], …]")?
+                        .iter()
+                        .take(MAX_POINTS)
+                        .filter_map(|p| {
+                            let a = p.as_array()?;
+                            Some(to_cam(cam, a.first()?.as_f64()?, a.get(1)?.as_f64()?))
+                        })
+                        .collect();
+                    if anchors.len() < 2 {
+                        return Err("a path needs two or more points".into());
+                    }
+                    let flag = |k: &str| c.get(k).and_then(Value::as_bool).unwrap_or(false);
+                    geom.pts =
+                        crate::shapes::path_through(&anchors, flag("smooth"), flag("closed"));
+                    (geom.center, geom.half) = crate::shapes::bounds_of(&geom.pts);
+                }
                 let data = ObjData::Shape {
                     style,
                     geom,
@@ -883,6 +1029,16 @@ impl App {
                         if style.fill_style != FillStyle::None {
                             put("fill", color_hex(style.fill).into());
                         }
+                        if style.fill_style.gradient() {
+                            put(
+                                "gradient",
+                                json!({
+                                    "to": color_hex(style.fill2),
+                                    "angle": style.grad,
+                                    "radial": style.fill_style == FillStyle::Radial,
+                                }),
+                            );
+                        }
                         put("width", tidy(width * ppc).into());
                         if style.dash != Dash::Solid {
                             put("dash", dash_name(style.dash).into());
@@ -916,10 +1072,29 @@ impl App {
                         put("size", tidy(size * ppc).into());
                         put("color", color_hex(style.color).into());
                     }
-                    ObjData::Image { opacity, .. } => {
+                    ObjData::Image {
+                        opacity, adjust, ..
+                    } => {
                         put("kind", "image".into());
                         if opacity != 255 {
                             put("opacity", tidy(opacity as f64 / 255.0).into());
+                        }
+                        if adjust != objects::NO_ADJUST {
+                            put("brightness", tidy(adjust[0] as f64).into());
+                            put("contrast", tidy(adjust[1] as f64).into());
+                            put("saturation", tidy(adjust[2] as f64).into());
+                        }
+                    }
+                    ObjData::Frame { ref name, .. } => {
+                        put("kind", "frame".into());
+                        put("name", name.clone().into());
+                    }
+                    ObjData::Bundle { ref comp, .. } => {
+                        put("kind", "group".into());
+                        put("members", self.objs.members(g).len().into());
+                        if let Some(c) = comp {
+                            put("component", c.name.clone().into());
+                            put("main", c.main.into());
                         }
                     }
                     ObjData::Audio { dur_ms, .. } => {
@@ -991,6 +1166,46 @@ impl App {
                 };
                 self.edit.selection = refs;
                 self.reorder(front);
+                let sel = std::mem::take(&mut self.edit.selection);
+                Ok(json!({ "ids": ids(self, &sel) }))
+            }
+            "combine" => {
+                use crate::booleans::BoolOp;
+                let op = match c.get("op").and_then(Value::as_str).unwrap_or("union") {
+                    "union" => BoolOp::Union,
+                    "subtract" => BoolOp::Subtract,
+                    "intersect" => BoolOp::Intersect,
+                    "exclude" => BoolOp::Exclude,
+                    other => {
+                        return Err(format!(
+                            "combine with op union, subtract, intersect or exclude, not {other}"
+                        ))
+                    }
+                };
+                self.edit.selection = refs;
+                self.boolean(op);
+                let sel = std::mem::take(&mut self.edit.selection);
+                Ok(json!({ "ids": ids(self, &sel) }))
+            }
+            "component" => {
+                self.edit.selection = refs;
+                self.make_component();
+                let sel = std::mem::take(&mut self.edit.selection);
+                Ok(json!({ "ids": ids(self, &sel) }))
+            }
+            "remove_background" => {
+                self.edit.selection = refs;
+                self.remove_background();
+                let sel = std::mem::take(&mut self.edit.selection);
+                Ok(json!({ "ids": ids(self, &sel) }))
+            }
+            "group" | "ungroup" => {
+                self.edit.selection = refs;
+                if verb == "group" {
+                    self.group_selection();
+                } else {
+                    self.ungroup_selection();
+                }
                 let sel = std::mem::take(&mut self.edit.selection);
                 Ok(json!({ "ids": ids(self, &sel) }))
             }
@@ -1355,5 +1570,38 @@ mod tests {
         assert!(corner[0] > 230 && corner[1] > 230, "{corner:?}");
         // The camera is put back.
         assert_eq!(app.cam.off, crate::home_camera().off);
+    }
+
+    #[test]
+    fn gradients_combine_and_groups_by_id() {
+        let mut app = App::new(None);
+        app.cam = crate::home_camera();
+        let r = run(
+            &mut app,
+            json!([
+                {"add": "shape", "kind": "rect", "x": 0, "y": 0, "w": 100, "h": 100,
+                 "fill": "#ff0000", "gradient": {"to": "#0000ff", "angle": 0}},
+                {"add": "shape", "kind": "ellipse", "x": 50, "y": 50, "w": 100, "h": 100, "fill": "#00ff00"},
+                {"add": "shape", "kind": "path", "points": [[200, 0], [260, 40], [220, 90]], "closed": true, "smooth": true},
+            ]),
+        );
+        let ids: Vec<String> = r
+            .iter()
+            .map(|x| x["id"].as_str().unwrap().to_string())
+            .collect();
+        let list = run(&mut app, json!([{"get": "objects"}]))[0]["objects"].clone();
+        assert_eq!(list[0]["gradient"]["to"], "#0000ff", "{list}");
+        assert_eq!(list[2]["shape"], "path");
+        let r = run(
+            &mut app,
+            json!([{"combine": [ids[0], ids[1]], "op": "union"}]),
+        );
+        assert_eq!(r[0]["ok"], true, "{r:?}");
+        let u = r[0]["ids"][0].as_str().unwrap().to_string();
+        let r = run(&mut app, json!([{"group": [u, ids[2]]}]));
+        assert_eq!(r[0]["ok"], true, "{r:?}");
+        let list = run(&mut app, json!([{"get": "objects"}]))[0]["objects"].clone();
+        assert_eq!(list.as_array().unwrap().len(), 1, "{list}");
+        assert_eq!(list[0]["kind"], "group");
     }
 }

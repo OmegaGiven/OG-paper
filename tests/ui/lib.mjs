@@ -13,6 +13,7 @@ import { tmpdir } from 'os';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import net from 'net';
+import { inflateSync } from 'zlib';
 
 export const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 // The web app under test: the local build (scripts/serve-web.py), or the
@@ -444,6 +445,25 @@ export class T {
       tgt.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true })); })()`);
     this.log(`paste "${text.slice(0, 40)}…"`);
     await this.beat(400);
+  }
+
+  /** The colour [r, g, b] on screen at CSS px (x, y). */
+  async pixel(x, y) {
+    const s = await this.b.send('Page.captureScreenshot', {
+      format: 'png', clip: { x: Math.round(x), y: Math.round(y), width: 1, height: 1, scale: 1 },
+    });
+    const png = Buffer.from(s.data, 'base64');
+    // One pixel: every PNG row filter leaves its bytes as they are.
+    let at = 8, idat = [], channels = 4;
+    while (at < png.length) {
+      const len = png.readUInt32BE(at), type = png.toString('ascii', at + 4, at + 8);
+      const body = png.subarray(at + 8, at + 8 + len);
+      if (type === 'IHDR') channels = { 2: 3, 6: 4 }[body[9]] ?? 4;
+      if (type === 'IDAT') idat.push(body);
+      at += 12 + len;
+    }
+    const raw = inflateSync(Buffer.concat(idat));
+    return [raw[1], raw[2], raw[3]].slice(0, channels >= 3 ? 3 : 1);
   }
 
   /** Screenshot into out/shots. */

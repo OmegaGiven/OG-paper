@@ -173,7 +173,12 @@ pub fn bindings() -> Vec<Binding> {
         ("cmd.timeline", "Timeline", Some("ctrl+h")),
         ("cmd.library", "Library", Some("ctrl+l")),
         ("cmd.home", "Fly home", None),
-        ("cmd.grid", "Grid", Some("ctrl+g")),
+        (
+            "cmd.grid",
+            "Grid (Group with things selected)",
+            Some("ctrl+g"),
+        ),
+        ("cmd.ungroup", "Ungroup", Some("ctrl+shift+g")),
         ("cmd.dark", "Dark mode", None),
         ("cmd.diagram", "Diagram mode", None),
         ("cmd.layout", "Edit layout", None),

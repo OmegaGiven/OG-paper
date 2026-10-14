@@ -426,6 +426,12 @@ impl Scene {
                     .contains(&layer_of(self.strokes[id as usize].z)))
     }
 
+    /// The layers that have held strokes (deleted ones too), bottom first:
+    /// cheap, from the bands' bounds.
+    pub fn layer_bands(&self) -> impl Iterator<Item = i32> + '_ {
+        self.layer_z.keys().copied()
+    }
+
     /// The layers that hold strokes still on the page, bottom first.
     pub fn layers_in_use(&self) -> Vec<i32> {
         let mut v: Vec<i32> = self

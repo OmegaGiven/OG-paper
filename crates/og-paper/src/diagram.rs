@@ -74,6 +74,7 @@ enum Outline {
 
 fn outline_of(d: &ObjData) -> Option<(Outline, &Geom)> {
     match d {
+        ObjData::Bundle { .. } | ObjData::Frame { .. } => None,
         ObjData::Portal { style, geom, .. } if geom.pts.len() < 3 => match style.kind {
             ShapeKind::Ellipse => Some((Outline::Ellipse, geom)),
             ShapeKind::Diamond => Some((Outline::Diamond, geom)),

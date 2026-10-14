@@ -84,6 +84,8 @@ pub struct EditState {
     /// A line or arrow point being dragged.
     pub joint: Option<crate::joints::JointDrag>,
     pub text: Option<TextEdit>,
+    /// A pen path being drawn (Shapes › Pen).
+    pub pen: Option<crate::pen::PenDraft>,
     pub clipboard: Vec<ObjRef>,
     pub last_tap: Option<(Instant, [f64; 2])>,
     /// The selection style last handed to the panel.
@@ -156,6 +158,11 @@ impl App {
                 pivot: self.px_to_cam(pivot),
                 angle,
             },
+            Op::Fit { from, to, k } => Op::Fit {
+                from: self.px_to_cam(from),
+                to: self.px_to_cam(to),
+                k,
+            },
         }
     }
 
@@ -218,6 +225,10 @@ impl App {
         self.redraw();
     }
 
+    pub(crate) fn next_seed_pub(&mut self) -> u32 {
+        self.next_seed()
+    }
+
     fn next_seed(&mut self) -> u32 {
         self.edit.seed = self.edit.seed.wrapping_add(0x9E37_79B9) ^ (uid::new() as u32);
         self.edit.seed
@@ -252,10 +263,16 @@ impl App {
     // ---- shapes ----------------------------------------------------------
 
     pub(crate) fn shape_begin(&mut self, p: [f64; 2]) {
+        if self.pen_active() {
+            return self.pen_begin(p);
+        }
         self.edit.shape_drag = Some((p, p));
     }
 
     pub(crate) fn shape_move(&mut self, p: [f64; 2]) {
+        if self.edit.pen.is_some() {
+            return self.pen_move(p);
+        }
         if let Some(d) = self.edit.shape_drag.as_mut() {
             d.1 = p;
         }
@@ -294,6 +311,9 @@ impl App {
     }
 
     pub(crate) fn shape_end(&mut self, cancel: bool) {
+        if self.edit.pen.is_some() {
+            return self.pen_end(cancel);
+        }
         let Some((a, b)) = self.edit.shape_drag.take() else {
             return;
         };
@@ -305,6 +325,23 @@ impl App {
         let (a, b) = self.snap_line(a, b);
         let g = self.shape_geom_px(a, b);
         let ppc = self.cam.ppc();
+        if self.ui.shape.kind == shapes::ShapeKind::Frame {
+            // A frame: under everything on its layer.
+            let data = ObjData::Frame {
+                geom: Geom {
+                    center: self.px_to_cam(g.center),
+                    half: [g.half[0] / ppc, g.half[1] / ppc],
+                    rot: 0.0,
+                    pts: vec![],
+                },
+                name: self.frame_name_new(),
+            };
+            let low = self.scene.layer_bottom(self.scene.layer);
+            let (gr, ids) = self.add_group(&data, Some((low - 3.0, low - 1.0)));
+            self.record_edit(vec![], ids);
+            self.edit.selection = vec![ObjRef::Group(gr)];
+            return;
+        }
         let seed = self.next_seed();
         let to_cam = |p: [f64; 2]| self.px_to_cam(p);
         let data = ObjData::Shape {
@@ -480,15 +517,21 @@ impl App {
                 [b[0] * 0.5, b[1] * 0.5]
             };
             let d = rot2(half, t.rot);
+            // Text on a path keeps its path.
+            let on_path = t.group.and_then(|g| {
+                let grp = self.objs.groups.get(g as usize)?;
+                let d = objects::to_cam(&grp.cell, &grp.data, &t.cam);
+                (d.geom().pts.len() >= 2).then(|| d.geom().clone())
+            });
             ObjData::Text {
                 text,
                 style: t.style,
-                geom: Geom {
+                geom: on_path.unwrap_or(Geom {
                     center: [t.at[0] + d[0], t.at[1] + d[1]],
                     half,
                     rot: t.rot,
                     pts: vec![],
-                },
+                }),
                 size: t.size,
                 seed,
             }
@@ -1060,7 +1103,12 @@ impl App {
         mut edit: impl FnMut(&mut App, ObjRef) -> Option<ObjRef>,
     ) {
         self.sel_alive();
-        let sel = self.edit.selection.clone();
+        let sel0 = self.edit.selection.clone();
+        // Groups open up: each member is edited (and those the edit leaves
+        // are copied anyway, so the new group is all new strokes).
+        let (sel, each) = self.open_groups(&sel0);
+        let grouped: std::collections::HashSet<ObjRef> =
+            each.iter().flatten().flatten().copied().collect();
         // Diagram mode: lines linked to the selection follow it.
         let att = self.attached_to(&sel);
         let mut removed = Vec::new();
@@ -1068,9 +1116,15 @@ impl App {
         let mut new_sel = Vec::new();
         let mut pairs = Vec::new();
         let mut groups = Vec::new();
+        let mut map = std::collections::HashMap::new();
         for r in sel {
             let old: Vec<u32> = self.objs.strokes(&r).to_vec();
-            if let Some(n) = edit(self, r) {
+            let n = match edit(self, r) {
+                None if grouped.contains(&r) => Some(self.same_copy(r)),
+                n => n,
+            };
+            if let Some(n) = n {
+                map.insert(r, n);
                 let new = self.objs.strokes(&n).to_vec();
                 added.extend_from_slice(&new);
                 pairs.push((old.clone(), new));
@@ -1088,7 +1142,14 @@ impl App {
             added.extend_from_slice(&new);
             pairs.push((old, new));
         }
-        self.edit.selection = new_sel;
+        let _ = new_sel;
+        self.edit.selection = self.regroup(&sel0, &each, &map, false);
+        // Components' copies follow their main, in the same step.
+        let mains = self.edit.selection.clone();
+        let (r2, a2, p2) = self.remake_copies(&mains);
+        removed.extend(r2);
+        added.extend(a2);
+        pairs.extend(p2);
         self.note_replaced(&pairs);
         self.record_edit(removed, added);
     }
@@ -1156,12 +1217,9 @@ impl App {
     }
 
     /// Strokes of the selection in draw order, with the objects they belong to.
+    /// The selection bottom to top, groups opened into their members.
     pub(crate) fn sel_sorted_pub(&self) -> Vec<ObjRef> {
-        self.sel_sorted()
-    }
-
-    fn sel_sorted(&self) -> Vec<ObjRef> {
-        let mut v = self.edit.selection.clone();
+        let mut v = self.open_groups(&self.edit.selection).0;
         v.sort_by(|a, b| {
             let za = self.z_range(self.objs.strokes(a)).0;
             let zb = self.z_range(self.objs.strokes(b)).0;
@@ -1172,7 +1230,14 @@ impl App {
 
     pub(crate) fn reorder(&mut self, front: bool) {
         self.sel_alive();
-        let order = self.sel_sorted();
+        let sel0 = self.edit.selection.clone();
+        let (mut order, each) = self.open_groups(&sel0);
+        order.sort_by(|a, b| {
+            let za = self.z_range(self.objs.strokes(a)).0;
+            let zb = self.z_range(self.objs.strokes(b)).0;
+            za.total_cmp(&zb)
+        });
+        let mut map = std::collections::HashMap::new();
         let total: usize = order.iter().map(|r| self.objs.strokes(r).len()).sum();
         // To the front or back of the layer the selection is on.
         let layer = order
@@ -1203,17 +1268,26 @@ impl App {
             pairs.push((old.clone(), new));
             removed.extend(old);
             new_sel.push(nr);
+            map.insert(r, nr);
         }
-        self.edit.selection = new_sel;
+        let _ = new_sel;
+        self.edit.selection = self.regroup(&sel0, &each, &map, false);
         self.note_replaced(&pairs);
         self.record_edit(removed, added);
+    }
+
+    pub(crate) fn duplicate_selection_pub(&mut self, offset: [f64; 2]) {
+        let refs = self.edit.selection.clone();
+        self.duplicate(&refs, offset);
     }
 
     fn duplicate(&mut self, refs: &[ObjRef], offset: [f64; 2]) {
         let op = Op::Move(offset);
         let mut added = Vec::new();
         let mut new_sel = Vec::new();
-        for r in refs.iter().copied() {
+        let (flat, each) = self.open_groups(refs);
+        let mut map = std::collections::HashMap::new();
+        for r in flat {
             let n = self.objs.strokes(&r).len() as f64;
             let z = self.scene.top() + 1.0;
             let nr = match r {
@@ -1222,8 +1296,10 @@ impl App {
             };
             added.extend_from_slice(self.objs.strokes(&nr));
             new_sel.push(nr);
+            map.insert(r, nr);
         }
-        self.edit.selection = new_sel;
+        let _ = new_sel;
+        self.edit.selection = self.regroup(refs, &each, &map, true);
         self.record_edit(vec![], added);
     }
 
@@ -1408,6 +1484,7 @@ impl App {
             },
             opacity: 255,
             crop: objects::FULL_CROP,
+            adjust: objects::NO_ADJUST,
         });
         self.say("Picture added — drag to move, corners to resize");
     }
@@ -1476,7 +1553,7 @@ impl App {
             crate::web::set_selection_text(self.selection_text());
         }
         if sel != self.edit.sel_seen_for {
-            let s = self.describe(&sel);
+            let s = self.describe(&self.open_groups(&sel).0);
             self.ui.sel = s;
             self.edit.sel_seen = Some(s);
             self.edit.sel_seen_for = sel;
@@ -1510,6 +1587,8 @@ impl App {
                 ObjData::Image { .. } => SelKind::Images,
                 ObjData::Audio { .. } => SelKind::Audio,
                 ObjData::Portal { .. } => SelKind::Portals,
+                ObjData::Bundle { .. } => SelKind::Mixed,
+                ObjData::Frame { .. } => SelKind::Frames,
             },
         });
         let first = kinds.next().unwrap_or(SelKind::None);
@@ -1535,8 +1614,13 @@ impl App {
             Some(ObjRef::Group(g)) => match &self.objs.groups[*g as usize].data {
                 ObjData::Shape { style, .. } | ObjData::Portal { style, .. } => s.shape = *style,
                 ObjData::Text { style, .. } | ObjData::Table { style, .. } => s.text = *style,
-                ObjData::Image { opacity, .. } => s.opacity = *opacity,
-                ObjData::Audio { .. } => {}
+                ObjData::Image {
+                    opacity, adjust, ..
+                } => {
+                    s.opacity = *opacity;
+                    s.adjust = *adjust;
+                }
+                ObjData::Audio { .. } | ObjData::Bundle { .. } | ObjData::Frame { .. } => {}
             },
             None => {}
         }
@@ -1598,20 +1682,26 @@ impl App {
                         seed,
                     } => {
                         merge_text(&mut style, &b.text, &a.text);
-                        // The box follows the new font.
-                        let bx = objects::text_box(&text, &style, size);
-                        let half = [bx[0] * 0.5, bx[1] * 0.5];
-                        let tl = rot2([-geom.half[0], -geom.half[1]], geom.rot);
-                        let tl = [geom.center[0] + tl[0], geom.center[1] + tl[1]];
-                        let d = rot2(half, geom.rot);
-                        ObjData::Text {
-                            text,
-                            style,
-                            geom: Geom {
+                        // The box follows the new font (on a path, the
+                        // path stays as it is).
+                        let geom = if geom.pts.len() >= 2 {
+                            geom
+                        } else {
+                            let bx = objects::text_box(&text, &style, size);
+                            let half = [bx[0] * 0.5, bx[1] * 0.5];
+                            let tl = rot2([-geom.half[0], -geom.half[1]], geom.rot);
+                            let tl = [geom.center[0] + tl[0], geom.center[1] + tl[1]];
+                            let d = rot2(half, geom.rot);
+                            Geom {
                                 center: [tl[0] + d[0], tl[1] + d[1]],
                                 half,
                                 ..geom
-                            },
+                            }
+                        };
+                        ObjData::Text {
+                            text,
+                            style,
+                            geom,
                             size,
                             seed,
                         }
@@ -1641,16 +1731,23 @@ impl App {
                             seed,
                         }
                     }
-                    d @ ObjData::Audio { .. } => d,
+                    d
+                    @ (ObjData::Audio { .. } | ObjData::Bundle { .. } | ObjData::Frame { .. }) => d,
                     ObjData::Image {
                         id,
                         geom,
                         opacity,
                         crop,
+                        adjust,
                     } => ObjData::Image {
                         id,
                         geom,
                         crop,
+                        adjust: if a.adjust != b.adjust {
+                            a.adjust
+                        } else {
+                            adjust
+                        },
                         opacity: if a.opacity != b.opacity {
                             a.opacity
                         } else {
@@ -1756,6 +1853,8 @@ impl App {
                     .push((vec![to_pt([0.0, y]), to_pt([w, y])], 1.0, pink, false));
             }
         }
+        self.pen_overlay(&mut ov);
+        self.frame_overlay(&mut ov);
         self.port_overlay(&mut ov);
         let joints = self.edit.sel_drag.is_none()
             && self.ui.tool.selects()
@@ -1807,17 +1906,26 @@ fn merge_text(st: &mut TextStyle, b: &TextStyle, a: &TextStyle) {
     if a.opacity != b.opacity {
         st.opacity = a.opacity;
     }
+    if a.letter != b.letter {
+        st.letter = a.letter;
+    }
+    if a.line != b.line {
+        st.line = a.line;
+    }
 }
 
 /// Copy the fields that changed from `b` to `a` into `st`.
 fn merge_shape(st: &mut shapes::ShapeStyle, b: &shapes::ShapeStyle, a: &shapes::ShapeStyle) {
-    if a.kind != b.kind && a.kind.is_linear() == st.kind.is_linear() {
+    if a.kind != b.kind && a.kind.same_family(st.kind) {
         st.kind = a.kind;
     }
     macro_rules! take {
         ($($f:ident),*) => { $( if a.$f != b.$f { st.$f = a.$f; } )* };
     }
-    take!(stroke, fill, fill_style, dash, sloppiness, round, sides, start, end, arrow, opacity);
+    take!(
+        stroke, fill, fill_style, dash, sloppiness, round, sides, start, end, arrow, opacity,
+        fill2, grad
+    );
 }
 
 #[cfg(test)]

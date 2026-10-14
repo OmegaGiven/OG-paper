@@ -168,6 +168,7 @@ pub enum SelKind {
     /// Audio clips.
     Audio,
     Portals,
+    Frames,
     Mixed,
 }
 
@@ -182,6 +183,8 @@ pub struct SelStyle {
     pub text: TextStyle,
     /// Pictures' opacity.
     pub opacity: u8,
+    /// Pictures' brightness, contrast and saturation.
+    pub adjust: [f32; 3],
 }
 
 /// Which color the shape panel's dial edits.
@@ -192,6 +195,8 @@ pub enum ColorTarget {
     Fill,
     /// Stroke and fill share one color.
     Both,
+    /// A gradient's end color.
+    FillEnd,
 }
 
 /// Screen-space drawing the app asks the UI to show over the canvas.
@@ -210,6 +215,8 @@ pub struct Overlay {
     pub joints: Option<(Vec<Pos2>, Vec<Pos2>)>,
     /// The selection's delete button (see `delete_knob`).
     pub del_knob: Option<Pos2>,
+    /// Frame names, at their frames' top left corners.
+    pub notes: Vec<(Pos2, String)>,
     /// People on a live canvas: where, their name, their color, and the
     /// direction they are in when they are off screen.
     pub labels: Vec<(Pos2, String, Color32, Option<Vec2>)>,
@@ -346,6 +353,10 @@ pub enum AppItem {
     Diagram,
     /// Layers: show, hide, lock, order and pick the one to draw on.
     Layers,
+    /// Frames (artboards): fly to one.
+    Frames,
+    /// Rulers along the top and left edges.
+    Rulers,
     /// Move the controls around (now inside the Layout window).
     #[allow(dead_code)]
     Layout,
@@ -412,6 +423,8 @@ const APP_SECTIONS: [(&str, &[AppItem]); 5] = [
             AppItem::Bookmarks,
             AppItem::Timeline,
             AppItem::Home,
+            AppItem::Frames,
+            AppItem::Rulers,
         ],
     ),
     (
@@ -472,6 +485,8 @@ impl AppItem {
             AppItem::Library => "Library",
             AppItem::Diagram => "Diagram",
             AppItem::Layers => "Layers",
+            AppItem::Frames => "Frames",
+            AppItem::Rulers => "Rulers",
             AppItem::Layout => "Edit layout",
             AppItem::Hotkeys => "Hotkeys",
             AppItem::RadialBar => "Radial toolbar",
@@ -509,6 +524,8 @@ impl AppItem {
             AppItem::Library => Action::Library,
             AppItem::Diagram => Action::Diagram,
             AppItem::Layers => Action::LayersPanel,
+            AppItem::Frames => Action::FramesPanel,
+            AppItem::Rulers => Action::Rulers,
             AppItem::Layout => Action::EditLayout,
             AppItem::Hotkeys => Action::Hotkeys,
             AppItem::RadialBar => Action::RadialBar,
@@ -642,8 +659,29 @@ pub struct UiState {
     /// and how many things are selected (for "Move selection here").
     pub layers_open: bool,
     pub layer_rows: Vec<crate::layers::LayerRow>,
+    /// Menu › Frames, and the frames it lists.
+    pub frames_open: bool,
+    pub frame_rows: Vec<crate::frames::FrameRow>,
+    /// Rulers on (Menu › Rulers), and their mapping this frame.
+    pub rulers: bool,
+    pub ruler: crate::measure::Ruler,
+    /// The selection's X, Y, W, H and turn as shown (and typed), and which
+    /// were typed but not yet applied.
+    pub geo: Option<[f64; 5]>,
+    pub geo_dirty: [bool; 5],
+    pub geo_busy: bool,
+    /// The selected frame's name as typed (and the frame it is for).
+    pub frame_name: String,
+    pub frame_name_for: Option<u32>,
     pub layer_editing: Option<(i32, String)>,
     pub sel_count: usize,
+    /// A group is among the selection.
+    pub sel_grouped: bool,
+    /// A text on a path is among the selection.
+    pub sel_on_path: bool,
+    /// The one thing selected is a component: its name, and whether it is
+    /// the main.
+    pub sel_comp: Option<(String, bool)>,
     /// A placing plugin tool waiting for a tap on the canvas: plugin,
     /// button, and the tool that was in hand (picking another disarms it).
     pub plugin_tool: Option<(usize, i32, Tool)>,
@@ -875,6 +913,7 @@ impl Default for UiState {
                 AppItem::Plugins,
                 AppItem::Diagram,
                 AppItem::Layers,
+                AppItem::Frames,
                 AppItem::Hotkeys,
             ],
             hide_tools: false,
@@ -911,8 +950,20 @@ impl Default for UiState {
             plugins_open: false,
             layers_open: false,
             layer_rows: Vec::new(),
+            rulers: false,
+            ruler: Default::default(),
+            geo: None,
+            geo_dirty: [false; 5],
+            geo_busy: false,
+            frames_open: false,
+            frame_rows: Vec::new(),
+            frame_name: String::new(),
+            frame_name_for: None,
             layer_editing: None,
             sel_count: 0,
+            sel_grouped: false,
+            sel_on_path: false,
+            sel_comp: None,
             plugin_tool: None,
             plugins: Vec::new(),
             plugins_bundled: Vec::new(),
@@ -1309,6 +1360,12 @@ pub enum Action {
     /// unlock; move up (true) or down; delete; rename (to `layer_editing`'s
     /// name); move the selection onto.
     LayersPanel,
+    FramesPanel,
+    FrameGo(u32),
+    FrameRename,
+    Rulers,
+    /// The selection's number typed in the panel (`UiState::geo`).
+    SetGeo(crate::measure::GeoField),
     LayerNew,
     LayerPick(i32),
     LayerHide(i32),
@@ -1317,6 +1374,10 @@ pub enum Action {
     LayerDelete(i32),
     LayerRename(i32),
     LayerTakeSelection(i32),
+    /// Layer k's opacity (percent); true when the change is done.
+    LayerOpacity(i32, u8, bool),
+    LayerBlend(i32, crate::layers::Blend),
+    LayerClip(i32),
     /// Save the current view under `UiState::view_save` (a bookmark, in Views).
     SaveView,
     /// The name typed in Share live becomes the one others see.
@@ -1332,6 +1393,20 @@ pub enum Action {
     ToBack,
     FlipH,
     FlipV,
+    /// Union, subtract, intersect or exclude the selected shapes.
+    Boolean(crate::booleans::BoolOp),
+    /// Components: make one, select a copy's main, make a copy ordinary.
+    MakeComponent,
+    SelectMain,
+    Detach,
+    /// Make the selected pictures' plain backgrounds see-through.
+    RemoveBackground,
+    /// Run the selected text along the other selected thing, or straight.
+    TextOnPath,
+    TextOffPath,
+    /// Group the selection, or split its groups.
+    Group,
+    Ungroup,
     /// Line the selection up, or spread it out across (true) or down.
     Align(crate::arrange::Align),
     Distribute(bool),
@@ -1929,6 +2004,10 @@ pub fn draw(ctx: &egui::Context, st: &mut UiState) -> Vec<Action> {
             });
     }
     paint_overlay(ctx, &st.overlay, st.touch_ui);
+    if st.rulers {
+        let sel = st.overlay.sel_box.map(|(c, _)| Rect::from_points(&c));
+        paint_rulers(ctx, st.ruler, sel);
+    }
     people_strip(ctx, st, &g, &mut actions);
     quick_bar(ctx, st, &g);
     if st.radial_bar && !st.hide_bar {
@@ -2009,6 +2088,9 @@ pub fn draw(ctx: &egui::Context, st: &mut UiState) -> Vec<Action> {
     }
     if st.layers_open {
         layers_panel(ctx, st, &g, &mut actions);
+    }
+    if st.frames_open {
+        frames_panel(ctx, st, &g, &mut actions);
     }
     actions.append(&mut st.queued);
 
@@ -4263,7 +4345,107 @@ fn tool_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) 
                 });
             });
             if tool.selects() {
-                select_actions(ui, st.sel.kind, st.sel.count, st.cropping, actions);
+                select_actions(
+                    ui,
+                    st.sel.kind,
+                    st.sel_count,
+                    st.sel_grouped,
+                    st.cropping,
+                    actions,
+                );
+                geo_fields(ui, st, actions);
+                if st.sel.kind == SelKind::Images {
+                    for (i, (name, lo, hi)) in [
+                        ("Brightness", -1.0, 1.0),
+                        ("Contrast", 0.0, 3.0),
+                        ("Saturation", 0.0, 3.0),
+                    ]
+                    .into_iter()
+                    .enumerate()
+                    {
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new(name).small());
+                            let s = ui.add(
+                                egui::Slider::new(&mut st.sel.adjust[i], lo..=hi).step_by(0.05),
+                            );
+                            named(&s, name);
+                        });
+                    }
+                }
+                if st.sel_count == 2
+                    && st.sel.kind == SelKind::Mixed
+                    && ui
+                        .button("Text on path")
+                        .on_hover_text("Run the text along the line, path or shape")
+                        .clicked()
+                {
+                    actions.push(Action::TextOnPath);
+                }
+                match st.sel_comp.clone() {
+                    Some((name, true)) => {
+                        ui.label(
+                            egui::RichText::new(format!("◆ {name} (main: its copies follow it)"))
+                                .small(),
+                        );
+                    }
+                    Some((name, false)) => {
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new(format!("◇ copy of {name}")).small());
+                            if ui.button("Go to main").clicked() {
+                                actions.push(Action::SelectMain);
+                            }
+                            if ui
+                                .button("Detach")
+                                .on_hover_text("Make it an ordinary group")
+                                .clicked()
+                            {
+                                actions.push(Action::Detach);
+                            }
+                        });
+                    }
+                    None if st.sel_count >= 2 || st.sel_grouped => {
+                        if ui
+                            .button("Make component")
+                            .on_hover_text("Duplicate it for copies that change when it does")
+                            .clicked()
+                        {
+                            actions.push(Action::MakeComponent);
+                        }
+                    }
+                    None => {}
+                }
+                if st.sel_on_path
+                    && ui
+                        .button("Off path")
+                        .on_hover_text("Put the words straight again")
+                        .clicked()
+                {
+                    actions.push(Action::TextOffPath);
+                }
+                if st.sel.kind == SelKind::Frames && st.frame_name_for.is_some() {
+                    ui.horizontal(|ui| {
+                        ui.label("Name");
+                        let e = ui.add(
+                            egui::TextEdit::singleline(&mut st.frame_name).desired_width(160.0),
+                        );
+                        named(&e, "Frame name");
+                        if e.gained_focus() {
+                            // Its name selected, so typing replaces it.
+                            let mut state = egui::text_edit::TextEditState::load(ui.ctx(), e.id)
+                                .unwrap_or_default();
+                            state
+                                .cursor
+                                .set_char_range(Some(egui::text::CCursorRange::two(
+                                    egui::text::CCursor::new(0),
+                                    egui::text::CCursor::new(st.frame_name.chars().count()),
+                                )));
+                            state.store(ui.ctx(), e.id);
+                        }
+                        if e.lost_focus() {
+                            actions.push(Action::FrameRename);
+                        }
+                    });
+                }
             }
             if quick_strip(ui, st, touch) && tabs.contains(&PanelTab::Color) {
                 st.panel_tab.insert(key, PanelTab::Color);
@@ -4899,7 +5081,7 @@ fn shape_section(
             |p, c, r, s| line_icon(p, c, r, Dash::Solid, s, ArrowType::Curved),
         );
         if !sh.kind.is_linear() {
-            if sh.kind != ShapeKind::Ellipse {
+            if !matches!(sh.kind, ShapeKind::Ellipse | ShapeKind::Path) {
                 heading(ui, "Edges");
                 chips(
                     ui,
@@ -4937,6 +5119,17 @@ fn shape_section(
                 |f| f.name().into(),
                 fill_icon,
             );
+            if sh.fill_style == FillStyle::Linear {
+                ui.horizontal(|ui| {
+                    ui.label("Angle");
+                    let s = ui.add(
+                        egui::Slider::new(&mut sh.grad, 0.0..=360.0)
+                            .step_by(15.0)
+                            .suffix("°"),
+                    );
+                    named(&s, "Gradient angle");
+                });
+            }
         }
         if sh.kind.is_linear() {
             heading(ui, "Line type");
@@ -4979,6 +5172,12 @@ fn shape_section(
         ui.horizontal(|ui| {
             ui.selectable_value(target, ColorTarget::Stroke, "Stroke");
             ui.selectable_value(target, ColorTarget::Fill, "Fill");
+            if sh.fill_style.gradient() {
+                ui.selectable_value(target, ColorTarget::FillEnd, "Fill end")
+                    .on_hover_text("The gradient's other color");
+            } else if *target == ColorTarget::FillEnd {
+                *target = ColorTarget::Fill;
+            }
             ui.selectable_value(target, ColorTarget::Both, "Both")
                 .on_hover_text("Stroke and fill in one color");
         });
@@ -4988,6 +5187,8 @@ fn shape_section(
     let edit_fill = fillable && *target == ColorTarget::Fill;
     let slot = if edit_fill {
         &mut sh.fill
+    } else if fillable && *target == ColorTarget::FillEnd {
+        &mut sh.fill2
     } else {
         &mut sh.stroke
     };
@@ -5060,6 +5261,21 @@ fn text_section(
                 }
             },
         );
+        heading(ui, "Spacing");
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Letters").small());
+            let s = ui.add(egui::Slider::new(&mut tx.letter, -0.3..=2.0).step_by(0.05));
+            named(&s, "Letter spacing");
+        });
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Lines").small());
+            let s = ui.add(
+                egui::Slider::new(&mut tx.line, 0.6..=3.0)
+                    .step_by(0.05)
+                    .suffix("×"),
+            );
+            named(&s, "Line height");
+        });
     }
     if !part(PanelTab::Color) {
         return false;
@@ -5217,10 +5433,61 @@ fn portal_section(
     false
 }
 
+#[derive(Clone, Copy)]
+enum ArrangeIcon {
+    Align(crate::arrange::Align),
+    Spread(bool),
+}
+
+/// A small painted button for lining up / spreading out (the arrow glyphs
+/// are not in every font).
+fn arrange_button(ui: &mut egui::Ui, icon: ArrangeIcon) -> egui::Response {
+    use crate::arrange::Align;
+    let h = ui.spacing().interact_size.y;
+    let resp = ui.add(egui::Button::new("").min_size(egui::vec2(h * 1.3, h)));
+    let r = resp.rect.shrink2(egui::vec2(h * 0.3, h * 0.2));
+    let c = ui.visuals().widgets.inactive.fg_stroke.color;
+    let p = ui.painter();
+    let fill = |a: egui::Pos2, b: egui::Pos2| {
+        p.rect_filled(egui::Rect::from_two_pos(a, b), 1.0, c);
+    };
+    let pos = |x: f32, y: f32| egui::pos2(r.left() + r.width() * x, r.top() + r.height() * y);
+    // Lines drawn across (a, then bars hanging off it), turned for tops etc.
+    let (line, bars): (f32, [(f32, f32); 2]) = match icon {
+        ArrangeIcon::Align(Align::Left | Align::Top) => (0.0, [(0.0, 0.9), (0.0, 0.55)]),
+        ArrangeIcon::Align(Align::Center | Align::Middle) => (0.5, [(0.1, 0.9), (0.28, 0.72)]),
+        ArrangeIcon::Align(Align::Right | Align::Bottom) => (1.0, [(0.1, 1.0), (0.45, 1.0)]),
+        ArrangeIcon::Spread(across) => {
+            for k in 0..3 {
+                let t = 0.1 + k as f32 * 0.35;
+                if across {
+                    fill(pos(t, 0.15), pos(t + 0.15, 0.85));
+                } else {
+                    fill(pos(0.15, t), pos(0.85, t + 0.15));
+                }
+            }
+            return resp;
+        }
+    };
+    let across = matches!(
+        icon,
+        ArrangeIcon::Align(Align::Left | Align::Center | Align::Right)
+    );
+    let at = |u: f32, v: f32| if across { pos(u, v) } else { pos(v, u) };
+    let w = 1.5 / r.width().min(r.height());
+    p.line_segment([at(line, -0.1), at(line, 1.1)], egui::Stroke::new(1.5, c));
+    for (k, (a, b)) in bars.into_iter().enumerate() {
+        let v = 0.12 + k as f32 * 0.48;
+        fill(at(a + w, v), at(b - w, v + 0.3));
+    }
+    resp
+}
+
 fn select_actions(
     ui: &mut egui::Ui,
     kind: SelKind,
     count: usize,
+    grouped: bool,
     cropping: bool,
     actions: &mut Vec<Action>,
 ) {
@@ -5250,21 +5517,42 @@ fn select_actions(
                 actions.push(a);
             }
         }
+        if count >= 2
+            && ui
+                .button("Group")
+                .on_hover_text("Pick and change these as one (Ctrl+G)")
+                .clicked()
+        {
+            actions.push(Action::Group);
+        }
+        if count >= 2 && kind == SelKind::Shapes {
+            ui.end_row();
+            for (op, name, tip) in crate::booleans::BOOL_OPS {
+                if ui.button(name).on_hover_text(tip).clicked() {
+                    actions.push(Action::Boolean(op));
+                }
+            }
+        }
+        if grouped
+            && ui
+                .button("Ungroup")
+                .on_hover_text("Split groups into their parts (Ctrl+Shift+G)")
+                .clicked()
+        {
+            actions.push(Action::Ungroup);
+        }
         if count >= 2 {
             ui.end_row();
-            for (how, name, glyph) in crate::arrange::ALIGNS {
-                let b = ui.button(glyph).on_hover_text(name);
+            for (how, name) in crate::arrange::ALIGNS {
+                let b = arrange_button(ui, ArrangeIcon::Align(how)).on_hover_text(name);
                 named(&b, name);
                 if b.clicked() {
                     actions.push(Action::Align(how));
                 }
             }
             if count >= 3 {
-                for (across, name, glyph) in [
-                    (true, "Spread out across", "⇿"),
-                    (false, "Spread out down", "⇕"),
-                ] {
-                    let b = ui.button(glyph).on_hover_text(name);
+                for (across, name) in [(true, "Spread out across"), (false, "Spread out down")] {
+                    let b = arrange_button(ui, ArrangeIcon::Spread(across)).on_hover_text(name);
                     named(&b, name);
                     if b.clicked() {
                         actions.push(Action::Distribute(across));
@@ -5299,6 +5587,14 @@ fn select_actions(
         {
             actions.push(Action::Crop);
         }
+        if kind == SelKind::Images
+            && ui
+                .button("Remove background")
+                .on_hover_text("Make the plain background around the subject see-through")
+                .clicked()
+        {
+            actions.push(Action::RemoveBackground);
+        }
     });
 }
 
@@ -5311,6 +5607,15 @@ fn paint_overlay(ctx: &egui::Context, ov: &Overlay, touch: bool) {
         } else {
             p.add(Shape::line(pts.clone(), Stroke::new(*w, *col)));
         }
+    }
+    for (at, name) in &ov.notes {
+        p.text(
+            *at + vec2(0.0, -4.0),
+            Align2::LEFT_BOTTOM,
+            name,
+            egui::FontId::proportional(12.0),
+            Color32::from_gray(110),
+        );
     }
     for (at, name, col, dir) in &ov.labels {
         let font = egui::FontId::proportional(12.0);
@@ -6007,6 +6312,26 @@ fn app_icon(
             ]);
             line(&[vec2(0.1, 0.55), vec2(0.1, 0.1), vec2(0.55, 0.1)]);
         }
+        AppItem::Rulers => {
+            // An L of ruler with ticks.
+            line(&[vec2(-0.9, 0.9), vec2(-0.9, -0.9), vec2(0.9, -0.9)]);
+            for k in 0..4 {
+                let t = -0.45 + k as f32 * 0.42;
+                line(&[vec2(t, -0.9), vec2(t, -0.6)]);
+                line(&[vec2(-0.9, t), vec2(-0.6, t)]);
+            }
+        }
+        AppItem::Frames => {
+            // A page with its name tab.
+            line(&[
+                vec2(-0.85, -0.45),
+                vec2(0.85, -0.45),
+                vec2(0.85, 0.95),
+                vec2(-0.85, 0.95),
+                vec2(-0.85, -0.45),
+            ]);
+            line(&[vec2(-0.85, -0.8), vec2(0.1, -0.8)]);
+        }
         AppItem::Layers => {
             // Three sheets, stacked.
             for k in 0..3 {
@@ -6652,10 +6977,16 @@ fn shape_icon(p: &egui::Painter, c: Pos2, r: f32, kind: ShapeKind, col: Color32)
             r as f64 * if kind == ShapeKind::Rect { 0.6 } else { 0.8 },
         ],
         rot: 0.0,
-        pts: vec![
-            [(c.x - r * 0.75) as f64, (c.y + r * 0.6) as f64],
-            [(c.x + r * 0.75) as f64, (c.y - r * 0.6) as f64],
-        ],
+        pts: if kind == ShapeKind::Path {
+            // A pen curve: an S with its handles.
+            let q = |x: f32, y: f32| [(c.x + r * x) as f64, (c.y + r * y) as f64];
+            vec![q(-0.8, 0.5), q(-0.2, -1.2), q(0.2, 1.2), q(0.8, -0.5)]
+        } else {
+            vec![
+                [(c.x - r * 0.75) as f64, (c.y + r * 0.6) as f64],
+                [(c.x + r * 0.75) as f64, (c.y - r * 0.6) as f64],
+            ]
+        },
     };
     pieces_icon(
         p,
@@ -6692,6 +7023,8 @@ fn fill_icon(p: &egui::Painter, c: Pos2, r: f32, f: FillStyle) {
         sloppiness: Sloppiness::Architect,
         stroke: u32c(INKY),
         fill: u32c(INKY),
+        fill2: u32c(Color32::from_gray(235)),
+        grad: 0.0,
         ..Default::default()
     };
     let geom = shapes::Geom {
@@ -6964,7 +7297,51 @@ fn color_dial(
             }
         }
     }
+    swatch_row(ui, color, touch);
     pick
+}
+
+/// Saved colors under a dial: tap one to use it, + to keep the color in
+/// use, right click or long press to let one go.
+fn swatch_row(ui: &mut egui::Ui, color: &mut Color32, touch: bool) {
+    ui.add_space(4.0);
+    ui.label(egui::RichText::new("Swatches").small().weak());
+    let d = if touch { 26.0 } else { 20.0 };
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = vec2(5.0, 5.0);
+        for c in crate::swatches::list() {
+            let [r, g, b, a] = c.to_le_bytes();
+            let col = Color32::from_rgba_unmultiplied(r, g, b, a);
+            let (rect, resp) = ui.allocate_exact_size(vec2(d, d), Sense::click());
+            let p = ui.painter();
+            p.circle_filled(rect.center(), d * 0.5 - 1.0, col);
+            let ring = if col == *color { INKY } else { EDGE };
+            p.circle_stroke(
+                rect.center(),
+                d * 0.5 - 1.0,
+                Stroke::new(if col == *color { 2.0 } else { 1.0 }, ring),
+            );
+            let hex = format!("#{r:02x}{g:02x}{b:02x}");
+            let resp = resp.on_hover_text(format!("{hex} (right click or hold: remove)"));
+            named(&resp, format!("Swatch {hex}"));
+            if resp.secondary_clicked() || resp.long_touched() {
+                crate::swatches::remove(c);
+            } else if resp.clicked() {
+                *color = col;
+            }
+        }
+        let add = ui
+            .add(
+                egui::Button::new("+")
+                    .min_size(vec2(d, d))
+                    .corner_radius(d * 0.5),
+            )
+            .on_hover_text("Keep this color as a swatch");
+        named(&add, "Save swatch");
+        if add.clicked() {
+            crate::swatches::add(u32c(*color));
+        }
+    });
 }
 
 /// A pipette: glass tube tilted up-right with a rubber bulb.
@@ -7666,6 +8043,197 @@ fn brush_section(
 /// first, each with show / hide, lock, its name (tap: draw on it; double
 /// tap: rename), up, down and delete; then New layer, and Move selection
 /// here when something is selected.
+/// X, Y, W, H and turn of the selection, typed or dragged to change.
+fn geo_fields(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>) {
+    use crate::measure::GeoField;
+    let Some(mut g) = st.geo else { return };
+    let mut busy = false;
+    let fields = [
+        (GeoField::X, "X", "X (home view points)"),
+        (GeoField::Y, "Y", "Y"),
+        (GeoField::W, "W", "Width"),
+        (GeoField::H, "H", "Height"),
+        (GeoField::Turn, "°", "Turn (degrees)"),
+    ];
+    let speed = (g[2].abs().max(g[3].abs()) * 0.005).max(1e-12);
+    for row in [&fields[..2], &fields[2..]] {
+        ui.horizontal(|ui| {
+            for &(f, short, name) in row {
+                let i = f as usize;
+                ui.label(egui::RichText::new(short).small().weak());
+                let mut dv = egui::DragValue::new(&mut g[i]).speed(if f == GeoField::Turn {
+                    1.0
+                } else {
+                    speed
+                });
+                dv = if f == GeoField::Turn {
+                    dv.max_decimals(1)
+                } else {
+                    dv.max_decimals(2)
+                };
+                let r = ui.add_sized(vec2(64.0, ui.spacing().interact_size.y), dv);
+                named(&r, name);
+                if r.changed() {
+                    st.geo_dirty[i] = true;
+                }
+                if r.has_focus() || r.dragged() {
+                    busy = true;
+                } else if st.geo_dirty[i] {
+                    st.geo_dirty[i] = false;
+                    actions.push(Action::SetGeo(f));
+                }
+            }
+        });
+    }
+    st.geo = Some(g);
+    st.geo_busy = busy || st.geo_dirty.iter().any(|d| *d);
+}
+
+/// Rulers along the top and left edges, in home-view points, with the
+/// selection's extent marked.
+fn paint_rulers(ctx: &egui::Context, r: crate::measure::Ruler, sel: Option<Rect>) {
+    use crate::measure::{label, nice_step};
+    let screen = ctx.content_rect();
+    let p = ctx.layer_painter(egui::LayerId::new(Order::Middle, Id::new("rulers")));
+    let t = 18.0;
+    let bg = Color32::from_rgba_unmultiplied(250, 249, 245, 235);
+    let ink = Color32::from_gray(90);
+    let top = Rect::from_min_max(screen.min, pos2(screen.right(), screen.top() + t));
+    let left = Rect::from_min_max(screen.min, pos2(screen.left() + t, screen.bottom()));
+    p.rect_filled(top, 0.0, bg);
+    p.rect_filled(left, 0.0, bg);
+    if let Some(s) = sel {
+        let pink = Color32::from_rgba_unmultiplied(230, 40, 130, 60);
+        p.rect_filled(Rect::from_x_y_ranges(s.x_range(), top.y_range()), 0.0, pink);
+        p.rect_filled(
+            Rect::from_x_y_ranges(left.x_range(), s.y_range()),
+            0.0,
+            pink,
+        );
+    }
+    let font = egui::FontId::proportional(9.0);
+    for across in [true, false] {
+        let (v0, dv, len) = if across {
+            (r.x0, r.dx, screen.width())
+        } else {
+            (r.y0, r.dy, screen.height())
+        };
+        if !(dv.abs() > 0.0) || !v0.is_finite() {
+            continue;
+        }
+        let step = nice_step(dv.abs() * 80.0);
+        let first = (v0 / step).floor() as i64;
+        let n = (len as f64 * dv.abs() / step).ceil() as i64 + 2;
+        for k in 0..n.min(400) {
+            let v = (first + k) as f64 * step;
+            let at = ((v - v0) / dv) as f32;
+            if at < t || at > len {
+                continue;
+            }
+            for m in 1..5 {
+                let sub = at + (m as f64 * step / 5.0 / dv) as f32;
+                if sub > t && sub < len {
+                    let (a, b) = if across {
+                        (
+                            pos2(screen.left() + sub, top.bottom() - 3.0),
+                            pos2(screen.left() + sub, top.bottom()),
+                        )
+                    } else {
+                        (
+                            pos2(left.right() - 3.0, screen.top() + sub),
+                            pos2(left.right(), screen.top() + sub),
+                        )
+                    };
+                    p.line_segment([a, b], Stroke::new(1.0, Color32::from_gray(170)));
+                }
+            }
+            let text = label(v, step);
+            if across {
+                let x = screen.left() + at;
+                p.line_segment(
+                    [pos2(x, top.top() + 6.0), pos2(x, top.bottom())],
+                    Stroke::new(1.0, ink),
+                );
+                p.text(
+                    pos2(x + 2.0, top.top() + 1.0),
+                    Align2::LEFT_TOP,
+                    text,
+                    font.clone(),
+                    ink,
+                );
+            } else {
+                let y = screen.top() + at;
+                p.line_segment(
+                    [pos2(left.left() + 6.0, y), pos2(left.right(), y)],
+                    Stroke::new(1.0, ink),
+                );
+                let galley = ctx.fonts_mut(|f| f.layout_no_wrap(text, font.clone(), ink));
+                p.add(
+                    egui::epaint::TextShape::new(pos2(left.left() + 1.0, y - 2.0), galley, ink)
+                        .with_angle(-std::f32::consts::FRAC_PI_2),
+                );
+            }
+        }
+    }
+    p.line_segment(
+        [top.left_bottom(), top.right_bottom()],
+        Stroke::new(1.0, EDGE),
+    );
+    p.line_segment(
+        [left.right_top(), left.right_bottom()],
+        Stroke::new(1.0, EDGE),
+    );
+}
+
+fn frames_panel(ctx: &egui::Context, st: &mut UiState, g: &Geo, actions: &mut Vec<Action>) {
+    let screen = ctx.content_rect();
+    let w = 260.0f32.min(screen.width() - 24.0);
+    let x = (g.app.x - g.r - 12.0).min(screen.right() - 12.0);
+    let y = (g.app.y + g.r + 34.0).max(screen.top() + 8.0);
+    egui::Area::new(Id::new("frames"))
+        .order(Order::Foreground)
+        .pivot(Align2::RIGHT_TOP)
+        .fixed_pos(pos2(x, y))
+        .show(ctx, |ui| {
+            ui.style_mut().visuals = egui::Visuals::light();
+            egui::Frame::new()
+                .fill(FACE)
+                .stroke(Stroke::new(1.0, EDGE))
+                .corner_radius(12.0)
+                .inner_margin(10.0)
+                .shadow(egui::Shadow { offset: [0, 3], blur: 14, spread: 0, color: Color32::from_black_alpha(45) })
+                .show(ui, |ui| {
+                    ui.set_width(w);
+                    ui.horizontal(|ui| {
+                        ui.strong("Frames");
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button("×").on_hover_text("Close").clicked() {
+                                st.frames_open = false;
+                            }
+                        });
+                    });
+                    ui.add_space(4.0);
+                    if st.frame_rows.is_empty() {
+                        help(ui, "No frames yet: Shapes › Frame, then drag one out.");
+                    }
+                    egui::ScrollArea::vertical()
+                        .max_height((screen.height() * 0.55).max(120.0))
+                        .show(ui, |ui| {
+                            for f in st.frame_rows.clone().iter().rev() {
+                                let b = ui
+                                    .add(egui::Button::new(format!("▭  {}", f.name)).frame(false))
+                                    .on_hover_text("Fly to it");
+                                named(&b, format!("Frame {}", f.name));
+                                if b.clicked() {
+                                    actions.push(Action::FrameGo(f.group));
+                                }
+                            }
+                        });
+                    help(ui, "Select a frame to rename it; Export › only the selection exports what is inside it.");
+                });
+        });
+}
+
 fn layers_panel(ctx: &egui::Context, st: &mut UiState, g: &Geo, actions: &mut Vec<Action>) {
     let screen = ctx.content_rect();
     let w = 300.0f32.min(screen.width() - 24.0);
@@ -7775,6 +8343,40 @@ fn layers_panel(ctx: &egui::Context, st: &mut UiState, g: &Geo, actions: &mut Ve
                                 });
                             }
                         });
+                    if let Some(active) = rows.iter().find(|r| r.active) {
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            ui.label("Opacity");
+                            let mut pct = (active.fx.opacity * 100.0).round() as u8;
+                            let s = ui.add(egui::Slider::new(&mut pct, 0..=100).suffix(" %"));
+                            named(&s, "Layer opacity");
+                            if s.changed() || s.drag_stopped() {
+                                actions.push(Action::LayerOpacity(active.layer, pct, !s.dragged()));
+                            }
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Blend");
+                            let mut blend = active.fx.blend;
+                            egui::ComboBox::from_id_salt("layer blend")
+                                .selected_text(blend.name())
+                                .show_ui(ui, |ui| {
+                                    for b in crate::layers::Blend::ALL {
+                                        ui.selectable_value(&mut blend, b, b.name());
+                                    }
+                                });
+                            if blend != active.fx.blend {
+                                actions.push(Action::LayerBlend(active.layer, blend));
+                            }
+                            let mut clip = active.fx.clip;
+                            let c = ui
+                                .checkbox(&mut clip, "Clip")
+                                .on_hover_text("Show it only where the layer under it has something (a clipping mask)");
+                            named(&c, "Clip to the layer below");
+                            if c.changed() {
+                                actions.push(Action::LayerClip(active.layer));
+                            }
+                        });
+                    }
                     if st.sel_count > 0 {
                         ui.add_space(4.0);
                         if let Some(active) = rows.iter().find(|r| r.active) {

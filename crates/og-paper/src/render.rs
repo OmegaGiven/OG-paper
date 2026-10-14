@@ -123,6 +123,21 @@ enum Op {
     MaskOut(u32),
     /// Draw only where the stencil holds this (the portal depth).
     Ref(u32),
+    /// What follows, up to `LayerEnd`, is layer k, drawn on its own and
+    /// then laid over the frame (see `Renderer::layer_fx`).
+    LayerBegin(i32),
+    LayerEnd,
+}
+
+/// How each layer drawn on its own is laid over the frame.
+struct LayerPlan {
+    /// Off-screen texture it is drawn into (0 holds clipping masks).
+    slot: usize,
+    /// Not drawn at all (clipped to a layer with nothing on screen).
+    skip: bool,
+    blend: crate::layers::Blend,
+    /// opacity, clipped, darken, unused (see layer.wgsl).
+    params: [f32; 4],
 }
 
 /// The views shown through portals this frame (see `portal`). Layer 0 is
@@ -169,6 +184,31 @@ fn stencil(
 }
 
 /// Content: drawn where the stencil equals the current portal depth.
+/// Laying a premultiplied layer over the frame with blend mode `b`.
+fn layer_blend(b: crate::layers::Blend) -> wgpu::BlendState {
+    use crate::layers::Blend;
+    use wgpu::{BlendComponent as C, BlendFactor as F, BlendOperation as O};
+    let alpha = C {
+        src_factor: F::One,
+        dst_factor: F::OneMinusSrcAlpha,
+        operation: O::Add,
+    };
+    let c = |src_factor, dst_factor, operation| C {
+        src_factor,
+        dst_factor,
+        operation,
+    };
+    let color = match b {
+        Blend::Normal => c(F::One, F::OneMinusSrcAlpha, O::Add),
+        Blend::Multiply => c(F::Dst, F::OneMinusSrcAlpha, O::Add),
+        Blend::Screen => c(F::One, F::OneMinusSrc, O::Add),
+        Blend::Add => c(F::One, F::One, O::Add),
+        Blend::Darken => c(F::One, F::One, O::Min),
+        Blend::Lighten => c(F::One, F::One, O::Max),
+    };
+    wgpu::BlendState { color, alpha }
+}
+
 fn clipped() -> Option<wgpu::DepthStencilState> {
     Some(stencil(
         wgpu::CompareFunction::Equal,
@@ -343,6 +383,17 @@ pub struct Renderer {
     bind: wgpu::BindGroup,
     ink_pipe: wgpu::RenderPipeline,
     hl_pipe: wgpu::RenderPipeline,
+    /// Highlighter on a layer drawn on its own.
+    hl_over: wgpu::RenderPipeline,
+    /// Layers with an opacity, a blend mode or a clipping mask, this frame.
+    pub layer_fx: HashMap<i32, crate::layers::FxDraw>,
+    /// Laying a layer over the frame, one pipeline per blend mode.
+    layer_pipes: Vec<wgpu::RenderPipeline>,
+    layer_bgl: wgpu::BindGroupLayout,
+    /// The two off-screen layer textures (their size), and bind groups:
+    /// [layer 1 masked by 0, layer 0 masked by 1].
+    layer_tex: Option<([wgpu::TextureView; 2], [wgpu::BindGroup; 2], [u32; 2])>,
+    layer_inst: Growable,
     /// Portal windows: raise / lower the stencil.
     mask_in: wgpu::RenderPipeline,
     mask_out: wgpu::RenderPipeline,
@@ -375,6 +426,8 @@ struct ImgInst {
     misc: [f32; 4],
     /// The part of the picture shown: u0, v0, u1, v1.
     crop: [f32; 4],
+    /// Brightness, contrast, saturation, unused.
+    adj: [f32; 4],
 }
 
 /// A vertex buffer that grows to fit.
@@ -609,6 +662,7 @@ impl Renderer {
         let inst = std::mem::size_of::<InstGpu>();
         let ink_pipe = pipe("vs_stroke", "fs_stroke", over, inst, &stroke_attrs);
         let hl_pipe = pipe("vs_stroke", "fs_highlight", min, inst, &stroke_attrs);
+        let hl_over = pipe("vs_stroke", "fs_highlight_over", over, inst, &stroke_attrs);
         // Portal windows: the ink shader's fill, raising or lowering the stencil.
         let mask_pipe = |pass: wgpu::StencilOperation, writes: wgpu::ColorWrites| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -724,7 +778,7 @@ impl Renderer {
             bind_group_layouts: &[Some(&img_bgl)],
             immediate_size: 0,
         });
-        let img_attrs = wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32x4, 3 => Float32x4];
+        let img_attrs = wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32x4, 3 => Float32x4, 4 => Float32x4];
         let img_pipe = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("image"),
             layout: Some(&img_layout),
@@ -881,6 +935,68 @@ impl Renderer {
             multiview_mask: None,
             cache: None,
         });
+        // Layers drawn on their own, laid over the frame.
+        let layer_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("layer"),
+            entries: &[0, 1].map(|binding| wgpu::BindGroupLayoutEntry {
+                binding,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            }),
+        });
+        let layer_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("layer"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("layer.wgsl").into()),
+        });
+        let layer_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("layer"),
+            bind_group_layouts: &[Some(&layer_bgl)],
+            immediate_size: 0,
+        });
+        let layer_attrs = wgpu::vertex_attr_array![0 => Float32x4];
+        let layer_pipes = crate::layers::Blend::ALL
+            .iter()
+            .map(|b| {
+                device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some(b.key()),
+                    layout: Some(&layer_layout),
+                    vertex: wgpu::VertexState {
+                        module: &layer_shader,
+                        entry_point: Some("vs_layer"),
+                        compilation_options: Default::default(),
+                        buffers: &[Some(wgpu::VertexBufferLayout {
+                            array_stride: 16,
+                            step_mode: wgpu::VertexStepMode::Instance,
+                            attributes: &layer_attrs,
+                        })],
+                    },
+                    primitive: wgpu::PrimitiveState::default(),
+                    depth_stencil: Some(stencil(
+                        wgpu::CompareFunction::Always,
+                        wgpu::StencilOperation::Keep,
+                    )),
+                    multisample: wgpu::MultisampleState::default(),
+                    fragment: Some(wgpu::FragmentState {
+                        module: &layer_shader,
+                        entry_point: Some("fs_layer"),
+                        compilation_options: Default::default(),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format,
+                            blend: Some(layer_blend(*b)),
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
+                    }),
+                    multiview_mask: None,
+                    cache: None,
+                })
+            })
+            .collect();
+        let layer_inst = Growable::new(&device, "layers", 1 << 10);
         let egui = egui_wgpu::Renderer::new(&device, format, egui_wgpu::RendererOptions::default());
         Ok(Self {
             grid: None,
@@ -916,6 +1032,12 @@ impl Renderer {
             bind,
             ink_pipe,
             hl_pipe,
+            hl_over,
+            layer_fx: HashMap::new(),
+            layer_pipes,
+            layer_bgl,
+            layer_tex: None,
+            layer_inst,
             mask_in,
             mask_out,
             stencil_tex: None,
@@ -1114,6 +1236,9 @@ impl Renderer {
             tiles: Vec::new(),
             ops: Vec::new(),
             run: 0,
+            hl_run: 0,
+            fx: &self.layer_fx,
+            open: None,
         };
         bd.layer(0, draw, [0.0, 0.0], 0);
         let Build {
@@ -1237,92 +1362,117 @@ impl Renderer {
         let extra =
             self.egui
                 .update_buffers(&self.device, &self.queue, &mut enc, &ui.prims, &screen);
-        {
-            let stencil_view = &self.stencil_tex.as_ref().expect("stencil").0;
-            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("main"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.96,
-                            g: 0.95,
-                            b: 0.92,
-                            a: 1.0,
-                        }),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: stencil_view,
-                    depth_ops: None,
-                    stencil_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(0),
-                        store: wgpu::StoreOp::Discard,
-                    }),
-                }),
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            pass.set_stencil_reference(0);
-            if let Some(grid) = self.grid {
-                self.queue
-                    .write_buffer(&self.grid_buf, 0, bytemuck::bytes_of(&grid));
-                pass.set_pipeline(&self.grid_pipe);
-                pass.set_bind_group(0, &self.grid_bind, &[]);
-                pass.draw(0..3, 0..1);
-            }
-            let segs = 0..(MAX_SEG * 6) as u32;
-            for op in &ops {
-                match *op {
-                    Op::Tiles(a, b) if b > a => {
-                        pass.set_pipeline(&self.tile_pipe);
-                        pass.set_bind_group(0, &self.bind, &[]);
-                        pass.set_vertex_buffer(0, self.tiles.buf.slice(..));
-                        pass.draw(0..6, a..b);
+        // Layers drawn on their own: where each goes and how it is laid over.
+        let plans = self.layer_plans(&ops);
+        if !plans.is_empty() {
+            self.layer_textures(size);
+            let inst: Vec<[f32; 4]> = plans.iter().map(|p| p.params).collect();
+            self.layer_inst
+                .upload(&self.device, &self.queue, bytemuck::cast_slice(&inst));
+        }
+        let stencil_view = &self.stencil_tex.as_ref().expect("stencil").0;
+        let stencil_clear = wgpu::RenderPassDepthStencilAttachment {
+            view: stencil_view,
+            depth_ops: None,
+            stencil_ops: Some(wgpu::Operations {
+                load: wgpu::LoadOp::Clear(0),
+                store: wgpu::StoreOp::Discard,
+            }),
+        };
+        let mut k = 0;
+        let mut first = true;
+        let mut plan = 0;
+        // A layer drawn on its own, to lay over the frame next: its plan.
+        let mut pending: Option<usize> = None;
+        loop {
+            {
+                let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("main"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: if first {
+                                wgpu::LoadOp::Clear(wgpu::Color {
+                                    r: 0.96,
+                                    g: 0.95,
+                                    b: 0.92,
+                                    a: 1.0,
+                                })
+                            } else {
+                                wgpu::LoadOp::Load
+                            },
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: Some(stencil_clear.clone()),
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+                pass.set_stencil_reference(0);
+                if first {
+                    if let Some(grid) = self.grid {
+                        self.queue
+                            .write_buffer(&self.grid_buf, 0, bytemuck::bytes_of(&grid));
+                        pass.set_pipeline(&self.grid_pipe);
+                        pass.set_bind_group(0, &self.grid_bind, &[]);
+                        pass.draw(0..3, 0..1);
                     }
-                    Op::Ink(a, b) if b > a => {
-                        pass.set_pipeline(&self.ink_pipe);
-                        pass.set_bind_group(0, &self.bind, &[]);
-                        pass.set_vertex_buffer(0, self.ink.buf.slice(..));
-                        pass.draw(segs.clone(), a..b);
-                    }
-                    Op::Hl(a, b) if b > a => {
-                        pass.set_pipeline(&self.hl_pipe);
-                        pass.set_bind_group(0, &self.bind, &[]);
-                        pass.set_vertex_buffer(0, self.hl.buf.slice(..));
-                        pass.draw(segs.clone(), a..b);
-                    }
-                    Op::Pic(k) => {
-                        if let Some(Some(bind)) = self.img_tex.get(&pics[k].0) {
-                            pass.set_pipeline(&self.img_pipe);
-                            pass.set_bind_group(0, bind, &[]);
-                            pass.set_vertex_buffer(0, self.imgs.buf.slice(..));
-                            pass.draw(0..6, k as u32..k as u32 + 1);
-                        }
-                    }
-                    Op::Dabs(a, b) if b > a => {
-                        pass.set_pipeline(&self.dab_pipe);
-                        pass.set_bind_group(0, &self.bind, &[]);
-                        pass.set_vertex_buffer(0, self.dabs.buf.slice(..));
-                        pass.draw(0..6, a..b);
-                    }
-                    Op::MaskIn(i) | Op::MaskOut(i) => {
-                        pass.set_pipeline(if matches!(op, Op::MaskIn(_)) {
-                            &self.mask_in
-                        } else {
-                            &self.mask_out
-                        });
-                        pass.set_bind_group(0, &self.bind, &[]);
-                        pass.set_vertex_buffer(0, self.ink.buf.slice(..));
-                        pass.draw(segs.clone(), i..i + 1);
-                    }
-                    Op::Ref(r) => pass.set_stencil_reference(r),
-                    _ => {}
                 }
+                first = false;
+                if let Some(p) = pending.take() {
+                    let pl = &plans[p];
+                    let (_, binds, _) = self.layer_tex.as_ref().expect("layer textures");
+                    pass.set_pipeline(&self.layer_pipes[pl.blend as usize]);
+                    pass.set_bind_group(0, &binds[pl.slot ^ 1], &[]);
+                    pass.set_vertex_buffer(0, self.layer_inst.buf.slice(..));
+                    pass.draw(0..3, p as u32..p as u32 + 1);
+                }
+                while k < ops.len() && !matches!(ops[k], Op::LayerBegin(_)) {
+                    self.draw_op(&mut pass, &ops[k], &pics, false);
+                    k += 1;
+                }
+            }
+            if k >= ops.len() {
+                break;
+            }
+            // A layer on its own: into its texture, then laid over.
+            k += 1;
+            let pl = &plans[plan];
+            let end = k + ops[k..]
+                .iter()
+                .position(|o| matches!(o, Op::LayerEnd))
+                .unwrap_or(ops.len() - k);
+            if !pl.skip {
+                let (views, _, _) = self.layer_tex.as_ref().expect("layer textures");
+                let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("layer"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &views[pl.slot],
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: Some(stencil_clear.clone()),
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+                pass.set_stencil_reference(0);
+                for op in &ops[k..end] {
+                    self.draw_op(&mut pass, op, &pics, true);
+                }
+                pending = Some(plan);
+            }
+            plan += 1;
+            k = (end + 1).min(ops.len());
+            if k >= ops.len() && pending.is_none() {
+                break;
             }
         }
         {
@@ -1377,6 +1527,143 @@ impl Renderer {
     }
 }
 
+impl Renderer {
+    /// One draw of the frame's list into `pass` (`own`: a layer's own texture).
+    fn draw_op(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        op: &Op,
+        pics: &[(u64, ImgInst)],
+        own: bool,
+    ) {
+        let segs = 0..(MAX_SEG * 6) as u32;
+        match *op {
+            Op::Tiles(a, b) if b > a => {
+                pass.set_pipeline(&self.tile_pipe);
+                pass.set_bind_group(0, &self.bind, &[]);
+                pass.set_vertex_buffer(0, self.tiles.buf.slice(..));
+                pass.draw(0..6, a..b);
+            }
+            Op::Ink(a, b) if b > a => {
+                pass.set_pipeline(&self.ink_pipe);
+                pass.set_bind_group(0, &self.bind, &[]);
+                pass.set_vertex_buffer(0, self.ink.buf.slice(..));
+                pass.draw(segs, a..b);
+            }
+            Op::Hl(a, b) if b > a => {
+                pass.set_pipeline(if own { &self.hl_over } else { &self.hl_pipe });
+                pass.set_bind_group(0, &self.bind, &[]);
+                pass.set_vertex_buffer(0, self.hl.buf.slice(..));
+                pass.draw(segs, a..b);
+            }
+            Op::Pic(k) => {
+                if let Some(Some(bind)) = self.img_tex.get(&pics[k].0) {
+                    pass.set_pipeline(&self.img_pipe);
+                    pass.set_bind_group(0, bind, &[]);
+                    pass.set_vertex_buffer(0, self.imgs.buf.slice(..));
+                    pass.draw(0..6, k as u32..k as u32 + 1);
+                }
+            }
+            Op::Dabs(a, b) if b > a => {
+                pass.set_pipeline(&self.dab_pipe);
+                pass.set_bind_group(0, &self.bind, &[]);
+                pass.set_vertex_buffer(0, self.dabs.buf.slice(..));
+                pass.draw(0..6, a..b);
+            }
+            Op::MaskIn(i) | Op::MaskOut(i) => {
+                pass.set_pipeline(if matches!(op, Op::MaskIn(_)) {
+                    &self.mask_in
+                } else {
+                    &self.mask_out
+                });
+                pass.set_bind_group(0, &self.bind, &[]);
+                pass.set_vertex_buffer(0, self.ink.buf.slice(..));
+                pass.draw(segs, i..i + 1);
+            }
+            Op::Ref(r) => pass.set_stencil_reference(r),
+            _ => {}
+        }
+    }
+
+    /// For each `LayerBegin` in `ops`, in order: its texture and how it is
+    /// laid over. Masks (layers others are clipped to) go in texture 0.
+    fn layer_plans(&self, ops: &[Op]) -> Vec<LayerPlan> {
+        let masks: std::collections::HashSet<i32> =
+            self.layer_fx.values().filter_map(|f| f.clip_to).collect();
+        let mut in_mask = None;
+        let mut out = Vec::new();
+        for op in ops {
+            let Op::LayerBegin(l) = *op else { continue };
+            let Some(f) = self.layer_fx.get(&l) else {
+                continue;
+            };
+            let slot = if masks.contains(&l) {
+                in_mask = Some(l);
+                0
+            } else {
+                1
+            };
+            let skip = f.clip_to.is_some_and(|b| in_mask != Some(b));
+            out.push(LayerPlan {
+                slot,
+                skip,
+                blend: f.fx.blend,
+                params: [
+                    f.fx.opacity,
+                    f.clip_to.is_some() as u32 as f32,
+                    (f.fx.blend == crate::layers::Blend::Darken) as u32 as f32,
+                    0.0,
+                ],
+            });
+        }
+        out
+    }
+
+    /// The two off-screen layer textures at the frame's size.
+    fn layer_textures(&mut self, size: [u32; 2]) {
+        if self.layer_tex.as_ref().is_some_and(|t| t.2 == size) {
+            return;
+        }
+        let views = [0, 1].map(|_| {
+            self.device
+                .create_texture(&wgpu::TextureDescriptor {
+                    label: Some("layer"),
+                    size: wgpu::Extent3d {
+                        width: size[0],
+                        height: size[1],
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: self.config.format,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                        | wgpu::TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[],
+                })
+                .create_view(&wgpu::TextureViewDescriptor::default())
+        });
+        let bind = |a: usize, b: usize| {
+            self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("layer"),
+                layout: &self.layer_bgl,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&views[a]),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(&views[b]),
+                    },
+                ],
+            })
+        };
+        let binds = [bind(1, 0), bind(0, 1)];
+        self.layer_tex = Some((views, binds, size));
+    }
+}
+
 /// Gathers a frame's instances and draws, canvas and portals alike.
 struct Build<'a> {
     scene: &'a Scene,
@@ -1394,6 +1681,11 @@ struct Build<'a> {
     ops: Vec<Op>,
     /// First ink instance not yet in an op.
     run: usize,
+    /// First highlighter instance not yet in an op.
+    hl_run: usize,
+    /// Layers drawn on their own, and the one open now.
+    fx: &'a HashMap<i32, crate::layers::FxDraw>,
+    open: Option<i32>,
 }
 
 impl Build<'_> {
@@ -1403,6 +1695,32 @@ impl Build<'_> {
                 .push(Op::Ink(self.run as u32, self.ink.len() as u32));
         }
         self.run = self.ink.len();
+    }
+
+    /// Highlighter so far, drawn after the ink before it (under what follows).
+    fn flush_hl(&mut self) {
+        if self.hl.len() > self.hl_run {
+            self.ops
+                .push(Op::Hl(self.hl_run as u32, self.hl.len() as u32));
+        }
+        self.hl_run = self.hl.len();
+    }
+
+    /// The canvas's strokes from here on are on layer `want` drawn on its
+    /// own (None: straight onto the frame).
+    fn segment(&mut self, want: Option<i32>) {
+        if want == self.open {
+            return;
+        }
+        self.flush();
+        self.flush_hl();
+        if self.open.is_some() {
+            self.ops.push(Op::LayerEnd);
+        }
+        if let Some(k) = want {
+            self.ops.push(Op::LayerBegin(k));
+        }
+        self.open = want;
     }
 
     /// Layer `li` (its draw list, moved by `off` px) at portal depth `depth`.
@@ -1416,7 +1734,6 @@ impl Build<'_> {
             }));
             self.ops.push(Op::Tiles(a, self.tiles.len() as u32));
         }
-        let hl_from = self.hl.len();
         let scene = self.scene;
         let objs = self.objs;
         for (k, i0) in draw.strokes.iter().enumerate() {
@@ -1426,10 +1743,15 @@ impl Build<'_> {
                 ..*i0
             };
             let s = &scene.strokes[i.stroke as usize];
+            if li == 0 && !self.fx.is_empty() {
+                let l = ogpaper_core::layer_of(s.z);
+                self.segment(self.fx.contains_key(&l).then_some(l));
+            }
             if let Some(&child) = self.portals.child.get(&(li, k)) {
                 // A portal: its window raises the stencil, its view draws
                 // inside, then the window lowers it again.
                 self.flush();
+                self.flush_hl();
                 let at = self.ink.len() as u32;
                 push_windows(&mut self.ink, i.stroke, 1, i.ox, i.oy, i.scale);
                 self.run = self.ink.len();
@@ -1479,6 +1801,11 @@ impl Build<'_> {
                             corners[2 * k + 1] = i.oy + q[1] * i.scale;
                         }
                         let misc = [self.vw, self.vh, opacity as f32 / 255.0, 0.0];
+                        let a = objs
+                            .image_adj
+                            .get(&i.stroke)
+                            .copied()
+                            .unwrap_or(crate::objects::NO_ADJUST);
                         self.flush();
                         self.ops.push(Op::Pic(self.pics.len()));
                         self.pics.push((
@@ -1487,6 +1814,7 @@ impl Build<'_> {
                                 corners,
                                 misc,
                                 crop,
+                                adj: [a[0], a[1], a[2], 0.0],
                             },
                         ));
                     }
@@ -1505,8 +1833,9 @@ impl Build<'_> {
             }
         }
         self.flush();
-        if self.hl.len() > hl_from {
-            self.ops.push(Op::Hl(hl_from as u32, self.hl.len() as u32));
+        self.flush_hl();
+        if li == 0 {
+            self.segment(None);
         }
     }
 }

@@ -34,6 +34,15 @@
 //! - v9 audio clips: count u32; each: group index u32, sound id u64,
 //!   length ms u32. The group itself is stored as the rounded box older
 //!   apps show in its place; the sound is kept with the pictures.
+//! - v10 groups (Group in the selection panel): count u32; each: group
+//!   index u32. The group is stored as an invisible box over its members'
+//!   strokes, which is what older apps read.
+//! - v11 frames (Shapes › Frame): count u32; each: group index u32, name
+//!   (u32 length + UTF-8). The frame is stored as the white box older apps
+//!   show.
+//! - v12 components: count u32; each: group index u32, component id u64,
+//!   main u8, size across and down f64 x2, name (u32 length + UTF-8). The
+//!   group is a group (v10) to older apps.
 //!
 //! Compatibility: a newer version may only add at the end (a new section
 //! after the last; never a field inside an existing record), so an older
@@ -52,11 +61,27 @@ use crate::shapes::{ArrowType, FillStyle, Geom, Head, ShapeKind, ShapeStyle, Slo
 use crate::timeline::{Bookmark, Event, Timeline};
 
 const MAGIC: &[u8; 4] = b"OGPT";
-const VERSION: u8 = 9;
+const VERSION: u8 = 12;
 /// Marks a portal's view after its shape in a lone object's bytes.
 const PORTAL_TAG: &[u8; 4] = b"OGPV";
 /// After a lone object's bytes: an audio clip's sound id and length.
 const AUDIO_TAG: &[u8; 4] = b"OGPA";
+/// After a lone object's bytes: it is a group (see `ObjData::Bundle`).
+const BUNDLE_TAG: &[u8; 4] = b"OGPB";
+/// After a lone object's bytes: it is a frame, then its name (u32 length +
+/// UTF-8).
+const FRAME_TAG: &[u8; 4] = b"OGPF";
+/// After `BUNDLE_TAG`: the group is a component (`put_comp`).
+const COMP_TAG: &[u8; 4] = b"OGPC";
+
+fn put_comp(b: &mut Vec<u8>, c: &crate::objects::Comp) {
+    b.extend_from_slice(&c.id.to_le_bytes());
+    b.push(c.main as u8);
+    b.extend_from_slice(&c.k[0].to_le_bytes());
+    b.extend_from_slice(&c.k[1].to_le_bytes());
+    b.extend_from_slice(&(c.name.len() as u32).to_le_bytes());
+    b.extend_from_slice(c.name.as_bytes());
+}
 
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 pub struct Snapshot {
@@ -72,7 +97,8 @@ pub struct Snapshot {
 /// A shape's or text's settings: kind u8 (0 shape, 1 text), then
 /// - shape: kind, stroke u32, fill u32, fill style, dash, sloppiness, round,
 ///   sides, start head, end head, arrow type, opacity (u8 unless noted),
-///   geometry, width f64, seed u32
+///   geometry, width f64, seed u32. Kind 6: the same, then a gradient's
+///   end color u32 and angle f32 (degrees).
 /// - text (kind 2): text (u32 length + UTF-8), font name (u32 length +
 ///   UTF-8), align u8, color u32, opacity u8, geometry, size f64, seed u32.
 ///   Kind 1 (older) had a font number u8 (0 single-line, 1 single-line
@@ -89,7 +115,12 @@ pub struct Snapshot {
 /// Geometry: centre f64 x2, half size f64 x2, rotation f64, point count u32,
 /// points f64 x2. All lengths in the group cell's units.
 pub fn put_data(b: &mut Vec<u8>, d: &ObjData) {
-    if let Some(shape) = d.portal_as_shape().or_else(|| d.audio_as_shape()) {
+    if let Some(shape) = d
+        .portal_as_shape()
+        .or_else(|| d.audio_as_shape())
+        .or_else(|| d.bundle_as_shape())
+        .or_else(|| d.frame_as_shape())
+    {
         return put_data(b, &shape);
     }
     let geom = |b: &mut Vec<u8>, g: &Geom| {
@@ -109,7 +140,10 @@ pub fn put_data(b: &mut Vec<u8>, d: &ObjData) {
             width,
             seed,
         } => {
-            b.push(0);
+            // Kind 6 is kind 0 plus a gradient's end color and angle;
+            // other shapes stay kind 0.
+            let grad = style.fill_style.gradient();
+            b.push(if grad { 6 } else { 0 });
             b.push(style.kind as u8);
             b.extend_from_slice(&style.stroke.to_le_bytes());
             b.extend_from_slice(&style.fill.to_le_bytes());
@@ -127,6 +161,10 @@ pub fn put_data(b: &mut Vec<u8>, d: &ObjData) {
             geom(b, g);
             b.extend_from_slice(&width.to_le_bytes());
             b.extend_from_slice(&seed.to_le_bytes());
+            if grad {
+                b.extend_from_slice(&style.fill2.to_le_bytes());
+                b.extend_from_slice(&style.grad.to_le_bytes());
+            }
         }
         ObjData::Text {
             text,
@@ -135,7 +173,9 @@ pub fn put_data(b: &mut Vec<u8>, d: &ObjData) {
             size,
             seed,
         } => {
-            b.push(2);
+            // Kind 7 is kind 2 plus letter and line spacing (f32 each).
+            let spaced = !style.plain_spacing();
+            b.push(if spaced { 7 } else { 2 });
             b.extend_from_slice(&(text.len() as u32).to_le_bytes());
             b.extend_from_slice(text.as_bytes());
             let name = font::name_of(style.font);
@@ -147,16 +187,29 @@ pub fn put_data(b: &mut Vec<u8>, d: &ObjData) {
             geom(b, g);
             b.extend_from_slice(&size.to_le_bytes());
             b.extend_from_slice(&seed.to_le_bytes());
+            if spaced {
+                b.extend_from_slice(&style.letter.to_le_bytes());
+                b.extend_from_slice(&style.line.to_le_bytes());
+            }
         }
         ObjData::Image {
             id,
             geom: g,
             opacity,
             crop,
+            adjust,
         } => {
-            // Kind 5 is kind 3 plus the crop; uncropped pictures stay kind 3.
-            let cropped = *crop != crate::objects::FULL_CROP;
-            b.push(if cropped { 5 } else { 3 });
+            // Kind 5 is kind 3 plus the crop; uncropped pictures stay kind
+            // 3. Kind 8 is kind 5 plus brightness, contrast and saturation.
+            let adjusted = *adjust != crate::objects::NO_ADJUST;
+            let cropped = adjusted || *crop != crate::objects::FULL_CROP;
+            b.push(if adjusted {
+                8
+            } else if cropped {
+                5
+            } else {
+                3
+            });
             b.extend_from_slice(&id.to_le_bytes());
             b.push(*opacity);
             geom(b, g);
@@ -165,8 +218,18 @@ pub fn put_data(b: &mut Vec<u8>, d: &ObjData) {
                     b.extend_from_slice(&v.to_le_bytes());
                 }
             }
+            if adjusted {
+                for v in adjust {
+                    b.extend_from_slice(&v.to_le_bytes());
+                }
+            }
         }
-        ObjData::Portal { .. } | ObjData::Audio { .. } => unreachable!("written as its shape"),
+        ObjData::Portal { .. }
+        | ObjData::Audio { .. }
+        | ObjData::Bundle { .. }
+        | ObjData::Frame { .. } => {
+            unreachable!("written as its shape")
+        }
         ObjData::Table {
             cells,
             style,
@@ -215,6 +278,18 @@ pub fn get_data(bytes: &[u8]) -> Result<ObjData, String> {
             if let Ok(v) = r.portal() {
                 return Ok(d.into_portal(v));
             }
+        } else if tag == BUNDLE_TAG {
+            let mut d = d.into_bundle();
+            if r.b.len() - r.at >= 4 && r.take(4)? == COMP_TAG {
+                if let (ObjData::Bundle { comp, .. }, Ok(c)) = (&mut d, r.comp()) {
+                    *comp = Some(c);
+                }
+            }
+            return Ok(d);
+        } else if tag == FRAME_TAG && r.b.len() - r.at >= 4 {
+            let len = r.u32()? as usize;
+            let name = String::from_utf8_lossy(r.take(len)?).into_owned();
+            return Ok(d.into_frame(name));
         } else if tag == AUDIO_TAG && r.b.len() - r.at >= 12 {
             let id = u64::from_le_bytes(r.take(8)?.try_into().expect("8 bytes"));
             let dur = r.u32()?;
@@ -232,6 +307,18 @@ pub fn data_bytes(d: &ObjData) -> Vec<u8> {
     if let ObjData::Portal { view, .. } = d {
         b.extend_from_slice(PORTAL_TAG);
         put_portal(&mut b, view);
+    }
+    if let ObjData::Bundle { comp, .. } = d {
+        b.extend_from_slice(BUNDLE_TAG);
+        if let Some(c) = comp {
+            b.extend_from_slice(COMP_TAG);
+            put_comp(&mut b, c);
+        }
+    }
+    if let ObjData::Frame { name, .. } = d {
+        b.extend_from_slice(FRAME_TAG);
+        b.extend_from_slice(&(name.len() as u32).to_le_bytes());
+        b.extend_from_slice(name.as_bytes());
     }
     if let ObjData::Audio { id, dur_ms, .. } = d {
         b.extend_from_slice(AUDIO_TAG);
@@ -373,6 +460,46 @@ pub fn encode(
         b.extend_from_slice(&(i as u32).to_le_bytes());
         b.extend_from_slice(&id.to_le_bytes());
         b.extend_from_slice(&dur.to_le_bytes());
+    }
+    let bundles: Vec<usize> = objs
+        .groups
+        .iter()
+        .enumerate()
+        .filter(|(_, g)| matches!(g.data, ObjData::Bundle { .. }))
+        .map(|(i, _)| i)
+        .collect();
+    b.extend_from_slice(&(bundles.len() as u32).to_le_bytes());
+    for i in bundles {
+        b.extend_from_slice(&(i as u32).to_le_bytes());
+    }
+    let frames: Vec<(usize, &str)> = objs
+        .groups
+        .iter()
+        .enumerate()
+        .filter_map(|(i, g)| match &g.data {
+            ObjData::Frame { name, .. } => Some((i, name.as_str())),
+            _ => None,
+        })
+        .collect();
+    b.extend_from_slice(&(frames.len() as u32).to_le_bytes());
+    for (i, name) in frames {
+        b.extend_from_slice(&(i as u32).to_le_bytes());
+        b.extend_from_slice(&(name.len() as u32).to_le_bytes());
+        b.extend_from_slice(name.as_bytes());
+    }
+    let comps: Vec<(usize, &crate::objects::Comp)> = objs
+        .groups
+        .iter()
+        .enumerate()
+        .filter_map(|(i, g)| match &g.data {
+            ObjData::Bundle { comp: Some(c), .. } => Some((i, c)),
+            _ => None,
+        })
+        .collect();
+    b.extend_from_slice(&(comps.len() as u32).to_le_bytes());
+    for (i, c) in comps {
+        b.extend_from_slice(&(i as u32).to_le_bytes());
+        put_comp(&mut b, c);
     }
     b
 }
@@ -655,6 +782,40 @@ pub fn decode(bytes: &[u8], base_px: f64) -> Result<Snapshot, String> {
                 }
             }
         }
+        if v >= 10 && r.at < bytes.len() {
+            let n = r.u32()? as usize;
+            for _ in 0..n.min(objs.groups.len()) {
+                let i = r.u32()? as usize;
+                if let Some(g) = objs.groups.get_mut(i) {
+                    g.data = g.data.clone().into_bundle();
+                }
+            }
+            // Its strokes now belong to the group as a group.
+            objs.reindex();
+        }
+        if v >= 11 && r.at < bytes.len() {
+            let n = r.u32()? as usize;
+            for _ in 0..n.min(objs.groups.len()) {
+                let i = r.u32()? as usize;
+                let len = r.u32()? as usize;
+                let name = String::from_utf8_lossy(r.take(len)?).into_owned();
+                if let Some(g) = objs.groups.get_mut(i) {
+                    g.data = g.data.clone().into_frame(name);
+                }
+            }
+        }
+        if v >= 12 && r.at < bytes.len() {
+            let n = r.u32()? as usize;
+            for _ in 0..n.min(objs.groups.len()) {
+                let i = r.u32()? as usize;
+                let c = r.comp()?;
+                if let Some(ObjData::Bundle { comp, .. }) =
+                    objs.groups.get_mut(i).map(|g| &mut g.data)
+                {
+                    *comp = Some(c);
+                }
+            }
+        }
         Some(crate::share::CopyLog {
             canvas,
             events,
@@ -725,6 +886,16 @@ impl<'a> Reader<'a> {
             self.take(8)?.try_into().expect("8 bytes"),
         ))
     }
+    /// See `put_comp`.
+    fn comp(&mut self) -> Result<crate::objects::Comp, String> {
+        let id = u64::from_le_bytes(self.take(8)?.try_into().expect("8 bytes"));
+        let main = self.u8()? != 0;
+        let k = [self.f64()?, self.f64()?];
+        let n = self.u32()? as usize;
+        let name = String::from_utf8_lossy(self.take(n)?).into_owned();
+        Ok(crate::objects::Comp { id, main, name, k })
+    }
+
     fn portal(&mut self) -> Result<crate::objects::PortalView, String> {
         let name = self.string()?;
         let cam = self.cam(1.0)?;
@@ -765,7 +936,7 @@ impl<'a> Reader<'a> {
             })
         };
         match kind {
-            0 => {
+            0 | 6 => {
                 let k = ShapeKind::from_u8(self.u8()?);
                 let stroke = self.u32()?;
                 let fill = self.u32()?;
@@ -783,10 +954,16 @@ impl<'a> Reader<'a> {
                     end: Head::from_u8(f[6]),
                     arrow: ArrowType::from_u8(f[7]),
                     opacity: f[8],
+                    ..ShapeStyle::default()
                 };
                 let geom = geom(self)?;
                 let width = self.f64()?;
                 let seed = self.u32()?;
+                let mut style = style;
+                if kind == 6 {
+                    style.fill2 = self.u32()?;
+                    style.grad = f32::from_le_bytes(self.take(4)?.try_into().expect("4 bytes"));
+                }
                 Ok(ObjData::Shape {
                     style,
                     geom,
@@ -794,7 +971,7 @@ impl<'a> Reader<'a> {
                     seed,
                 })
             }
-            1 | 2 => {
+            1 | 2 | 7 => {
                 let n = self.u32()? as usize;
                 let text = String::from_utf8_lossy(self.take(n)?).into_owned();
                 let font = if kind == 1 {
@@ -810,6 +987,14 @@ impl<'a> Reader<'a> {
                 let geom = geom(self)?;
                 let size = self.f64()?;
                 let seed = self.u32()?;
+                let (letter, line) = if kind == 7 {
+                    let f = |r: &mut Self| -> Result<f32, String> {
+                        Ok(f32::from_le_bytes(r.take(4)?.try_into().expect("4 bytes")))
+                    };
+                    (f(self)?, f(self)?)
+                } else {
+                    (0.0, 1.0)
+                };
                 Ok(ObjData::Text {
                     text,
                     style: TextStyle {
@@ -817,19 +1002,27 @@ impl<'a> Reader<'a> {
                         align,
                         color,
                         opacity,
+                        letter,
+                        line,
                     },
                     geom,
                     size,
                     seed,
                 })
             }
-            3 | 5 => {
+            3 | 5 | 8 => {
                 let id = u64::from_le_bytes(self.take(8)?.try_into().expect("8 bytes"));
                 let opacity = self.u8()?;
                 let geom = geom(self)?;
                 let mut crop = crate::objects::FULL_CROP;
-                if kind == 5 {
+                if kind == 5 || kind == 8 {
                     for v in &mut crop {
+                        *v = f32::from_le_bytes(self.take(4)?.try_into().expect("4 bytes"));
+                    }
+                }
+                let mut adjust = crate::objects::NO_ADJUST;
+                if kind == 8 {
+                    for v in &mut adjust {
                         *v = f32::from_le_bytes(self.take(4)?.try_into().expect("4 bytes"));
                     }
                 }
@@ -838,6 +1031,7 @@ impl<'a> Reader<'a> {
                     geom,
                     opacity,
                     crop,
+                    adjust,
                 })
             }
             4 => {
@@ -871,6 +1065,7 @@ impl<'a> Reader<'a> {
                         align,
                         color,
                         opacity,
+                        ..TextStyle::default()
                     },
                     geom,
                     size,
@@ -896,6 +1091,33 @@ impl<'a> Reader<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gradient_shapes_keep_their_end_color_and_angle() {
+        let style = ShapeStyle {
+            fill_style: FillStyle::Linear,
+            fill2: 0x1234_5678,
+            grad: 45.0,
+            ..ShapeStyle::default()
+        };
+        let d = ObjData::Shape {
+            style,
+            geom: Geom::default(),
+            width: 1.0,
+            seed: 3,
+        };
+        let bytes = data_bytes(&d);
+        assert_eq!(bytes[0], 6);
+        assert_eq!(get_data(&bytes).unwrap(), d);
+        // Plain shapes are written as before.
+        let plain = ObjData::Shape {
+            style: ShapeStyle::default(),
+            geom: Geom::default(),
+            width: 1.0,
+            seed: 3,
+        };
+        assert_eq!(data_bytes(&plain)[0], 0);
+    }
 
     #[test]
     fn roundtrip_keeps_strokes_timeline_bookmarks_and_view() {
@@ -1005,6 +1227,7 @@ mod tests {
                 geom: Geom::default(),
                 opacity: 128,
                 crop: [0.25, 0.0, 1.0, 0.5],
+                adjust: [0.2, 1.5, 0.5],
             },
             strokes: vec![a],
         });
@@ -1058,6 +1281,7 @@ mod tests {
             snap.objs.image_of.get(&a),
             Some(&(77, 128, [0.25, 0.0, 1.0, 0.5]))
         );
+        assert_eq!(snap.objs.image_adj.get(&a), Some(&[0.2, 1.5, 0.5]));
         assert_eq!(snap.scene.strokes[0].z, s.strokes[0].z);
         assert_eq!(snap.bookmarks[0].cam.cell, cam.cell);
         assert_eq!(snap.bookmarks[0].view_px, 640.0);

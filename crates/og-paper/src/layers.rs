@@ -24,6 +24,92 @@ use crate::App;
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct LayerMeta {
     pub name: String,
+    pub fx: LayerFx,
+}
+
+/// How a layer's picture mixes with what is under it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Blend {
+    #[default]
+    Normal,
+    Multiply,
+    Screen,
+    Add,
+    Darken,
+    Lighten,
+}
+
+impl Blend {
+    pub const ALL: [Blend; 6] = [
+        Blend::Normal,
+        Blend::Multiply,
+        Blend::Screen,
+        Blend::Add,
+        Blend::Darken,
+        Blend::Lighten,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Blend::Normal => "Normal",
+            Blend::Multiply => "Multiply",
+            Blend::Screen => "Screen",
+            Blend::Add => "Add",
+            Blend::Darken => "Darken",
+            Blend::Lighten => "Lighten",
+        }
+    }
+
+    pub fn key(self) -> &'static str {
+        match self {
+            Blend::Normal => "normal",
+            Blend::Multiply => "multiply",
+            Blend::Screen => "screen",
+            Blend::Add => "add",
+            Blend::Darken => "darken",
+            Blend::Lighten => "lighten",
+        }
+    }
+
+    pub fn from_key(k: &str) -> Option<Blend> {
+        Blend::ALL
+            .into_iter()
+            .find(|b| b.key() == k.trim().to_ascii_lowercase())
+    }
+}
+
+/// A layer's look as a whole: its opacity, how it mixes with what is under
+/// it, and whether it shows only where the layer under it has something
+/// (a clipping mask).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LayerFx {
+    pub opacity: f32,
+    pub blend: Blend,
+    pub clip: bool,
+}
+
+impl Default for LayerFx {
+    fn default() -> Self {
+        LayerFx {
+            opacity: 1.0,
+            blend: Blend::Normal,
+            clip: false,
+        }
+    }
+}
+
+impl LayerFx {
+    pub fn plain(&self) -> bool {
+        *self == LayerFx::default()
+    }
+}
+
+/// A layer drawn on its own and then laid over the rest (see `layer_fx`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FxDraw {
+    pub fx: LayerFx,
+    /// It is clipped to this layer (drawn on its own too, as the mask).
+    pub clip_to: Option<i32>,
 }
 
 /// A layer as the Layers panel shows it, top first.
@@ -36,6 +122,7 @@ pub struct LayerRow {
     pub active: bool,
     /// Things on it.
     pub count: usize,
+    pub fx: LayerFx,
 }
 
 fn prefs_key(canvas: u128) -> String {
@@ -62,6 +149,14 @@ fn encode(meta: &BTreeMap<i32, LayerMeta>, hidden: &[i32], locked: &[i32], activ
             hidden.contains(k) as u8,
             locked.contains(k) as u8
         );
+        if !m.fx.plain() {
+            out += &format!(
+                "fx {k},{},{},{};",
+                m.fx.opacity,
+                m.fx.blend.key(),
+                m.fx.clip as u8
+            );
+        }
     }
     out
 }
@@ -72,6 +167,19 @@ fn decode(s: &str) -> (BTreeMap<i32, LayerMeta>, Vec<i32>, Vec<i32>, i32) {
     for part in s.split(';').filter(|p| !p.is_empty()) {
         if let Some(a) = part.strip_prefix("active ") {
             active = a.trim().parse().unwrap_or(0);
+            continue;
+        }
+        if let Some(f) = part.strip_prefix("fx ") {
+            let w: Vec<&str> = f.split(',').collect();
+            if let [k, o, b, c] = w[..] {
+                if let Ok(k) = k.parse::<i32>() {
+                    meta.entry(k).or_insert_with(LayerMeta::default).fx = LayerFx {
+                        opacity: o.parse::<f32>().unwrap_or(1.0).clamp(0.0, 1.0),
+                        blend: Blend::from_key(b).unwrap_or_default(),
+                        clip: c == "1",
+                    };
+                }
+            }
             continue;
         }
         let mut w = part.splitn(4, ',');
@@ -89,12 +197,7 @@ fn decode(s: &str) -> (BTreeMap<i32, LayerMeta>, Vec<i32>, Vec<i32>, i32) {
         if l == "1" {
             locked.push(k);
         }
-        meta.insert(
-            k,
-            LayerMeta {
-                name: name.to_string(),
-            },
-        );
+        meta.entry(k).or_insert_with(LayerMeta::default).name = name.to_string();
     }
     (meta, hidden, locked, active)
 }
@@ -168,6 +271,7 @@ impl App {
                 locked: self.scene.locked_layers.contains(&k),
                 active: k == self.scene.layer,
                 count: count.get(&k).copied().unwrap_or(0),
+                fx: self.layer_meta.get(&k).map(|m| m.fx).unwrap_or_default(),
             })
             .collect()
     }
@@ -228,6 +332,7 @@ impl App {
             k,
             LayerMeta {
                 name: format!("Layer {n}"),
+                ..Default::default()
             },
         );
         self.scene.layer = k;
@@ -254,6 +359,55 @@ impl App {
         self.deselect_layer(k);
         self.layers_save();
         self.redraw();
+    }
+
+    /// Change layer `k`'s look; `save` when the change is done (a slider
+    /// let go), so a drag doesn't write the prefs every frame.
+    pub(crate) fn layer_set_fx(&mut self, k: i32, f: impl FnOnce(&mut LayerFx), save: bool) {
+        let m = self.layer_meta.entry(k).or_default();
+        f(&mut m.fx);
+        if save {
+            self.layers_save();
+        }
+        self.redraw();
+    }
+
+    /// The layers drawn on their own this frame (not plain, or the mask of
+    /// one clipped to it), with how to lay each over the rest.
+    pub(crate) fn layer_fx(&self) -> std::collections::HashMap<i32, FxDraw> {
+        let mut out = std::collections::HashMap::new();
+        if self.layer_meta.values().all(|m| m.fx.plain()) {
+            return out;
+        }
+        let mut layers: Vec<i32> = self.layer_meta.keys().copied().collect();
+        layers.extend(self.scene.layer_bands());
+        layers.sort_unstable();
+        layers.dedup();
+        let fx = |k: i32| self.layer_meta.get(&k).map(|m| m.fx).unwrap_or_default();
+        for (i, &k) in layers.iter().enumerate() {
+            let f = fx(k);
+            if f.plain() {
+                continue;
+            }
+            // Clipped: to the nearest layer under it that is not clipped.
+            let clip_to = if f.clip {
+                let base = layers[..i].iter().rev().copied().find(|&b| !fx(b).clip);
+                match base {
+                    Some(b) => {
+                        out.entry(b).or_insert(FxDraw {
+                            fx: fx(b),
+                            clip_to: None,
+                        });
+                        Some(b)
+                    }
+                    None => None,
+                }
+            } else {
+                None
+            };
+            out.insert(k, FxDraw { fx: f, clip_to });
+        }
+        out
     }
 
     pub(crate) fn layer_toggle_locked(&mut self, k: i32) {
@@ -535,18 +689,97 @@ mod tests {
             0,
             LayerMeta {
                 name: "Sketch".into(),
+                ..Default::default()
             },
         );
         meta.insert(
             2,
             LayerMeta {
                 name: "Ink; final".into(),
+                fx: LayerFx {
+                    opacity: 0.5,
+                    blend: Blend::Multiply,
+                    clip: true,
+                },
             },
         );
         let s = encode(&meta, &[2], &[0], 2);
         let (m, h, l, a) = decode(&s);
         assert_eq!(m.get(&0).unwrap().name, "Sketch");
         assert_eq!(m.get(&2).unwrap().name, "Ink  final");
+        assert_eq!(
+            m.get(&2).unwrap().fx,
+            LayerFx {
+                opacity: 0.5,
+                blend: Blend::Multiply,
+                clip: true
+            }
+        );
+        assert!(m.get(&0).unwrap().fx.plain());
         assert_eq!((h, l, a), (vec![2], vec![0], 2));
+    }
+
+    #[test]
+    fn layer_looks_plan_and_export() {
+        let mut app = App::new(None);
+        app.cam = crate::home_camera();
+        add(&mut app, "base");
+        app.layer_new();
+        let top = app.scene.layer;
+        add(&mut app, "clipped");
+        app.layer_new();
+        let faded = app.scene.layer;
+        add(&mut app, "faded");
+        assert!(app.layer_fx().is_empty(), "plain layers draw straight on");
+        app.layer_set_fx(top, |f| f.clip = true, false);
+        app.layer_set_fx(
+            faded,
+            |f| {
+                f.opacity = 0.4;
+                f.blend = Blend::Multiply;
+            },
+            false,
+        );
+        let fx = app.layer_fx();
+        // The clipped layer and the one it is clipped to, and the faded one.
+        assert_eq!(fx.len(), 3, "{fx:?}");
+        assert_eq!(fx[&top].clip_to, Some(0));
+        assert_eq!(fx[&0].clip_to, None);
+        assert_eq!(fx[&faded].fx.opacity, 0.4);
+        // Exported: groups with the look, the clipped one masked by the base.
+        app.size_override = Some([800.0, 600.0]);
+        let (w, h) = (800.0, 600.0);
+        ogpaper_core::query(&app.scene, &app.cam, w, h, crate::VIEW, &mut app.draw);
+        let svg = String::from_utf8(
+            app.export(
+                crate::export::Format::Svg,
+                &crate::export::Opts {
+                    selection: false,
+                    background: false,
+                    scale: 1.0,
+                },
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(svg.contains("<g id=\"layer0\">"), "{svg}");
+        assert!(svg.contains(&format!("mask=\"url(#clip{top})\"")), "{svg}");
+        assert!(svg.contains("<use href=\"#layer0\"/>"));
+        assert!(
+            svg.contains("opacity=\"0.4\" style=\"mix-blend-mode:multiply\""),
+            "{svg}"
+        );
+        let pdf = app
+            .export(
+                crate::export::Format::Pdf,
+                &crate::export::Opts {
+                    selection: false,
+                    background: false,
+                    scale: 1.0,
+                },
+            )
+            .unwrap();
+        let pdf = String::from_utf8_lossy(&pdf);
+        assert!(pdf.contains("/BM /Multiply"));
     }
 }

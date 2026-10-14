@@ -27,13 +27,13 @@ pub enum Align {
     Bottom,
 }
 
-pub const ALIGNS: [(Align, &str, &str); 6] = [
-    (Align::Left, "Align left", "⇤"),
-    (Align::Center, "Align centres", "⇹"),
-    (Align::Right, "Align right", "⇥"),
-    (Align::Top, "Align tops", "⤒"),
-    (Align::Middle, "Align middles", "⇳"),
-    (Align::Bottom, "Align bottoms", "⤓"),
+pub const ALIGNS: [(Align, &str); 6] = [
+    (Align::Left, "Align left"),
+    (Align::Center, "Align centres"),
+    (Align::Right, "Align right"),
+    (Align::Top, "Align tops"),
+    (Align::Middle, "Align middles"),
+    (Align::Bottom, "Align bottoms"),
 ];
 
 /// A dragged selection's snapping: what it can snap to (screen px), and
@@ -83,6 +83,15 @@ impl App {
             return;
         }
         self.edit.selection = moves.keys().copied().collect();
+        // A group's move is each member's.
+        let mut moves = moves;
+        for (g, d) in moves.clone() {
+            if let (ObjRef::Group(i), true) = (g, self.objs.is_bundle(&g)) {
+                for m in self.objs.members(i) {
+                    moves.insert(m, d);
+                }
+            }
+        }
         self.replace_selection(|app, r| {
             let d = *moves.get(&r)?;
             if d == [0.0, 0.0] {

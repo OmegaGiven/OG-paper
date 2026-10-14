@@ -89,11 +89,22 @@ enum Item {
         opacity: f64,
         /// The part shown: u0, v0, u1, v1.
         crop: [f64; 4],
+        /// Brightness, contrast, saturation (see `ObjData::Image`).
+        adjust: [f32; 3],
     },
     /// What follows, up to the matching `ClipEnd`, shows only inside this
     /// outline (a portal's window).
     ClipStart(Vec<[f64; 2]>),
     ClipEnd,
+    /// What follows, up to `LayerEnd`, is layer `layer` with a look of its
+    /// own (see `layers::LayerFx`), clipped to layer `clip_to` if any.
+    LayerStart {
+        layer: i32,
+        opacity: f64,
+        blend: crate::layers::Blend,
+        clip_to: Option<i32>,
+    },
+    LayerEnd,
 }
 
 /// The vector list and its frame: origin and size in screen px.
@@ -154,8 +165,10 @@ fn runs_of(pts: &[[f64; 3]], brush: Brush, width: f64) -> Vec<Run> {
 impl App {
     /// What to export, in screen px.
     pub(crate) fn export_page(&self, opts: &Opts) -> Result<Page, String> {
+        // Frames selected: everything inside them, cut to them.
+        let frames = opts.selection.then(|| self.selected_frames_px()).flatten();
         let only: Option<Vec<u32>> =
-            (opts.selection && !self.edit.selection.is_empty()).then(|| {
+            (opts.selection && frames.is_none() && !self.edit.selection.is_empty()).then(|| {
                 let mut v: Vec<u32> = self
                     .edit
                     .selection
@@ -182,7 +195,9 @@ impl App {
             &mut grow,
         );
         let [w, h] = self.size();
-        let (origin, size) = if only.is_some() {
+        let (origin, size) = if let Some((a, b)) = frames {
+            (a, [b[0] - a[0], b[1] - a[1]])
+        } else if only.is_some() {
             if lo[0] > hi[0] {
                 return Err("The selection has nothing on screen to export".into());
             }
@@ -238,8 +253,34 @@ impl App {
             );
             za.total_cmp(&zb).then(a.stroke.cmp(&b.stroke))
         });
+        // Layers with a look of their own: their items grouped.
+        let fx = if li == 0 {
+            self.layer_fx()
+        } else {
+            Default::default()
+        };
+        let mut open: Option<i32> = None;
         for (k, inst) in &insts {
             let inst = *inst;
+            if !fx.is_empty() {
+                let l = ogpaper_core::layer_of(self.scene.strokes[inst.stroke as usize].z);
+                let want = fx.contains_key(&l).then_some(l);
+                if want != open {
+                    if open.is_some() {
+                        items.push(Item::LayerEnd);
+                    }
+                    if let Some(l) = want {
+                        let f = fx[&l];
+                        items.push(Item::LayerStart {
+                            layer: l,
+                            opacity: f.fx.opacity as f64,
+                            blend: f.fx.blend,
+                            clip_to: f.clip_to,
+                        });
+                    }
+                    open = want;
+                }
+            }
             if let Some(&child) = portals.child.get(&(li, *k)) {
                 let id = inst.stroke;
                 if self.scene.strokes[id as usize].deleted
@@ -316,6 +357,12 @@ impl App {
                                 corners: c,
                                 opacity: op as f64 / 255.0,
                                 crop: crop.map(|v| v as f64),
+                                adjust: self
+                                    .objs
+                                    .image_adj
+                                    .get(&id)
+                                    .copied()
+                                    .unwrap_or(crate::objects::NO_ADJUST),
                             });
                         }
                     }
@@ -374,6 +421,9 @@ impl App {
                 unit: width.max(1.5),
                 runs: runs_of(&pts, s.brush, width),
             });
+        }
+        if open.is_some() {
+            items.push(Item::LayerEnd);
         }
     }
 
@@ -508,6 +558,8 @@ impl Page {
             );
         }
         let mut clips = 0;
+        // Layers written so far (others may be clipped to them).
+        let mut shown: Vec<i32> = Vec::new();
         for it in &self.items {
             match it {
                 Item::Ink {
@@ -589,9 +641,28 @@ impl Page {
                     corners,
                     opacity,
                     crop,
+                    adjust,
                 } => {
                     let Some(a) = images.get(id) else { continue };
                     let [tl, tr, _, bl] = corners.map(|q| self.map(q, k));
+                    // Colors adjusted: a filter, as the renderer does it.
+                    let filter = (*adjust != crate::objects::NO_ADJUST).then(|| {
+                        clips += 1;
+                        let [b, c, sat] = adjust.map(|v| v as f64);
+                        let i = 0.5 - 0.5 * c + b;
+                        let f = |ch: &str| {
+                            format!("<feFunc{ch} type=\"linear\" slope=\"{}\" intercept=\"{}\"/>", num(c), num(i))
+                        };
+                        let _ = writeln!(
+                            s,
+                            "<filter id=\"adjust{clips}\" color-interpolation-filters=\"sRGB\"><feColorMatrix type=\"saturate\" values=\"{}\"/><feComponentTransfer>{}{}{}</feComponentTransfer></filter>",
+                            num(sat),
+                            f("R"),
+                            f("G"),
+                            f("B")
+                        );
+                        format!("adjust{clips}")
+                    });
                     // The unit square is the part shown; a nested viewport
                     // shows just that part of the whole picture.
                     let (w, h) = (a.w as f64, a.h as f64);
@@ -607,6 +678,9 @@ impl Page {
                     );
                     if *opacity < 0.999 {
                         let _ = write!(s, " opacity=\"{}\"", num(*opacity));
+                    }
+                    if let Some(f) = &filter {
+                        let _ = write!(s, " filter=\"url(#{f})\"");
                     }
                     let _ = writeln!(
                         s,
@@ -637,6 +711,43 @@ impl Page {
                     let _ = writeln!(s, "Z\"/></clipPath><g clip-path=\"url(#portal{clips})\">");
                 }
                 Item::ClipEnd => s.push_str("</g>\n"),
+                Item::LayerStart {
+                    layer,
+                    opacity,
+                    blend,
+                    clip_to,
+                } => {
+                    let mut g = String::from("<g");
+                    if *opacity < 0.999 {
+                        let _ = write!(g, " opacity=\"{}\"", num(*opacity));
+                    }
+                    if *blend != crate::layers::Blend::Normal {
+                        let css = match blend {
+                            crate::layers::Blend::Add => "plus-lighter",
+                            b => b.key(),
+                        };
+                        let _ = write!(g, " style=\"mix-blend-mode:{css}\"");
+                    }
+                    if let Some(b) = clip_to {
+                        if shown.contains(b) {
+                            let _ = write!(
+                                s,
+                                "<mask id=\"clip{layer}\" mask-type=\"alpha\" maskUnits=\"userSpaceOnUse\" x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\"><use href=\"#layer{b}\"/></mask>\n",
+                                num(-w),
+                                num(-h),
+                                num(3.0 * w),
+                                num(3.0 * h)
+                            );
+                            let _ = write!(g, " mask=\"url(#clip{layer})\"");
+                        } else {
+                            // Clipped to nothing on the page: not shown.
+                            g.push_str(" display=\"none\"");
+                        }
+                    }
+                    shown.push(*layer);
+                    let _ = writeln!(s, "{g}><g id=\"layer{layer}\">");
+                }
+                Item::LayerEnd => s.push_str("</g></g>\n"),
             }
         }
         s.push_str("</svg>\n");
@@ -689,12 +800,16 @@ impl Page {
         let page = pdf.reserve();
         let mut gs: Vec<(String, String)> = Vec::new(); // (name, dict)
         let mut xobj: Vec<(String, usize)> = Vec::new();
-        let gs_name = |ca: f64, darken: bool, gs: &mut Vec<(String, String)>| -> String {
+        let gs_bm = |ca: f64, bm: &str, gs: &mut Vec<(String, String)>| -> String {
             let dict = format!(
                 "<< /Type /ExtGState /CA {} /ca {}{} >>",
                 num(ca),
                 num(ca),
-                if darken { " /BM /Darken" } else { "" }
+                if bm.is_empty() {
+                    String::new()
+                } else {
+                    format!(" /BM /{bm}")
+                }
             );
             if let Some((n, _)) = gs.iter().find(|(_, d)| *d == dict) {
                 return n.clone();
@@ -703,6 +818,12 @@ impl Page {
             gs.push((n.clone(), dict));
             n
         };
+        let gs_name = |ca: f64, darken: bool, gs: &mut Vec<(String, String)>| -> String {
+            gs_bm(ca, if darken { "Darken" } else { "" }, gs)
+        };
+        // A layer with a look of its own is a transparency group: the page
+        // content before it waits here.
+        let mut outer: Vec<(String, f64, &'static str)> = Vec::new();
         let mut c = String::new();
         // y down, like the screen.
         let _ = writeln!(c, "1 0 0 -1 0 {} cm", num(h));
@@ -804,6 +925,8 @@ impl Page {
                     corners,
                     opacity,
                     crop,
+                    // (PDF keeps pictures as they are.)
+                    ..
                 } => {
                     let Some(asset) = images.get(id) else {
                         continue;
@@ -858,6 +981,32 @@ impl Page {
                     c.push_str("h W n\n");
                 }
                 Item::ClipEnd => c.push_str("Q\n"),
+                Item::LayerStart { opacity, blend, .. } => {
+                    // (Clipping masks are not kept in PDF.)
+                    let bm = match blend {
+                        crate::layers::Blend::Normal => "",
+                        crate::layers::Blend::Multiply => "Multiply",
+                        crate::layers::Blend::Screen | crate::layers::Blend::Add => "Screen",
+                        crate::layers::Blend::Darken => "Darken",
+                        crate::layers::Blend::Lighten => "Lighten",
+                    };
+                    outer.push((std::mem::take(&mut c), *opacity, bm));
+                }
+                Item::LayerEnd => {
+                    let Some((before, opacity, bm)) = outer.pop() else {
+                        continue;
+                    };
+                    let body = std::mem::replace(&mut c, before);
+                    // No /Resources: the page's (its pictures and states).
+                    let id = pdf.add_stream(
+                        "/Type /XObject /Subtype /Form /BBox [-100000 -100000 100000 100000] /Group << /S /Transparency >>",
+                        body.as_bytes(),
+                    );
+                    let xn = format!("X{}", xobj.len());
+                    xobj.push((xn.clone(), id));
+                    let n = gs_bm(opacity, bm, &mut gs);
+                    let _ = writeln!(c, "q /{n} gs /{xn} Do Q");
+                }
             }
         }
         let content = pdf.add_stream("", c.as_bytes());
@@ -913,6 +1062,7 @@ pub fn sticker_svg(s: &crate::library::Sticker, px: f64) -> String {
                             corners: std::array::from_fn(|i| [pts[i][0], pts[i][1]]),
                             opacity,
                             crop,
+                            adjust: crate::objects::NO_ADJUST,
                         });
                     }
                 } else if style.color != 0 {
@@ -1208,7 +1358,22 @@ mod tests {
             corners: [[100.0, 20.0], [180.0, 20.0], [180.0, 60.0], [100.0, 60.0]],
             opacity: 1.0,
             crop: [0.0, 0.0, 1.0, 1.0],
+            adjust: crate::objects::NO_ADJUST,
         });
+        let mut grey = page();
+        grey.items.push(Item::Image {
+            id: 7,
+            corners: [[100.0, 20.0], [180.0, 20.0], [180.0, 60.0], [100.0, 60.0]],
+            opacity: 1.0,
+            crop: [0.0, 0.0, 1.0, 1.0],
+            adjust: [0.1, 1.2, 0.0],
+        });
+        let g = grey.svg(&imgs);
+        assert!(
+            g.contains("feColorMatrix type=\"saturate\" values=\"0\""),
+            "{g}"
+        );
+        assert!(g.contains("filter=\"url(#adjust"));
         let svg = p.svg(&imgs);
         assert!(svg.contains("href=\"data:image/png;base64,"));
         let pdf = String::from_utf8_lossy(&p.pdf(&imgs).unwrap()).into_owned();

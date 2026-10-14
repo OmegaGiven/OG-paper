@@ -10,7 +10,9 @@ mod arrange;
 mod artwork;
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 mod audio;
+mod booleans;
 mod bucket;
+mod components;
 mod crop;
 #[cfg(any(test, target_arch = "wasm32"))]
 mod demo;
@@ -22,6 +24,8 @@ mod export;
 #[cfg(not(target_arch = "wasm32"))]
 mod folder;
 mod font;
+mod frames;
+mod groups;
 mod hotbar;
 mod hotkeys;
 #[cfg(desktop)]
@@ -30,6 +34,7 @@ mod hub;
 mod hubconsole;
 #[cfg(desktop)]
 mod hubpage;
+mod imagefx;
 mod images;
 mod import;
 mod joints;
@@ -38,11 +43,13 @@ mod layout;
 mod library;
 #[cfg(desktop)]
 mod mcp;
+mod measure;
 mod net;
 mod objects;
 mod pack;
 mod pages;
 mod pdf;
+mod pen;
 mod plugin;
 mod portal;
 mod prefs;
@@ -56,6 +63,8 @@ mod search;
 mod shapes;
 mod share;
 mod snapshot;
+mod swatches;
+mod textpath;
 mod timeline;
 mod ui;
 mod uid;
@@ -345,6 +354,7 @@ impl App {
         ui.load_saved(hotbar::load());
         let prefs = prefs::load();
         ui.grid = ui::GridMode::from_key(prefs.get("grid").map_or("off", |s| s.as_str()));
+        ui.rulers = prefs.get("rulers").is_some_and(|s| s == "on");
         ui.diagram = prefs.get("diagram").is_some_and(|v| v == "on");
         ui.radial_bar = prefs.get("radialbar").is_some_and(|v| v == "on");
         ui.dark = prefs.get("dark").is_some_and(|v| v == "on");
@@ -945,6 +955,9 @@ impl App {
                     Tool::Shapes if self.ui.color_target == ui::ColorTarget::Fill => {
                         self.ui.shape.fill = col
                     }
+                    Tool::Shapes if self.ui.color_target == ui::ColorTarget::FillEnd => {
+                        self.ui.shape.fill2 = col
+                    }
                     Tool::Shapes if self.ui.color_target == ui::ColorTarget::Both => {
                         self.ui.shape.stroke = col;
                         self.ui.shape.fill = col;
@@ -1085,6 +1098,10 @@ impl App {
         }
     }
 
+    pub(crate) fn persist_groups_pub(&mut self) {
+        self.persist_groups()
+    }
+
     /// Write shapes and texts created since the last call.
     #[cfg(not(target_arch = "wasm32"))]
     fn persist_groups(&mut self) {
@@ -1101,6 +1118,8 @@ impl App {
                     objects::ObjData::Table { .. } => "table".into(),
                     objects::ObjData::Portal { .. } => "portal".into(),
                     objects::ObjData::Audio { .. } => "audio".into(),
+                    objects::ObjData::Bundle { .. } => "group".into(),
+                    objects::ObjData::Frame { .. } => "frame".into(),
                 },
                 data: snapshot::data_bytes(&g.data),
                 strokes: g
@@ -1375,6 +1394,15 @@ impl App {
             | Action::FlipV
             | Action::EditText => self.sel_action(a),
             Action::Align(how) => self.align(how),
+            Action::Group => self.group_selection(),
+            Action::TextOnPath => self.text_on_path(),
+            Action::MakeComponent => self.make_component(),
+            Action::SelectMain => self.select_main(),
+            Action::Detach => self.detach_component(),
+            Action::RemoveBackground => self.remove_background(),
+            Action::TextOffPath => self.text_off_path(),
+            Action::Boolean(op) => self.boolean(op),
+            Action::Ungroup => self.ungroup_selection(),
             Action::Distribute(across) => self.distribute(across),
             Action::AudioPlay => self.audio_play_selected(),
             Action::SaveSticker => self.save_sticker(),
@@ -1869,6 +1897,32 @@ impl App {
             #[cfg(not(target_arch = "wasm32"))]
             Action::SetPolicy(code) => self.set_policy(code),
             Action::GoToPeer(peer, follow) => self.go_to_peer(peer, follow),
+            Action::FramesPanel => {
+                self.ui.frames_open = !self.ui.frames_open;
+                self.ui.close_menus();
+                self.redraw();
+            }
+            Action::FrameGo(g) => self.frame_go(g),
+            Action::Rulers => {
+                self.ui.rulers = !self.ui.rulers;
+                let mut p = prefs::load();
+                p.insert(
+                    "rulers".into(),
+                    if self.ui.rulers { "on" } else { "off" }.into(),
+                );
+                prefs::save(&p);
+                self.ui.close_menus();
+                self.redraw();
+            }
+            Action::SetGeo(f) => {
+                if let Some(g) = self.ui.geo {
+                    self.set_sel_number(f, g[f as usize]);
+                }
+            }
+            Action::FrameRename => {
+                let name = std::mem::take(&mut self.ui.frame_name);
+                self.frame_rename(name);
+            }
             Action::LayersPanel => {
                 self.ui.layers_open = !self.ui.layers_open;
                 self.ui.close_menus();
@@ -1877,6 +1931,11 @@ impl App {
             Action::LayerNew => self.layer_new(),
             Action::LayerPick(k) => self.layer_pick(k),
             Action::LayerHide(k) => self.layer_toggle_hidden(k),
+            Action::LayerOpacity(k, pct, done) => {
+                self.layer_set_fx(k, |f| f.opacity = pct.min(100) as f32 / 100.0, done)
+            }
+            Action::LayerBlend(k, b) => self.layer_set_fx(k, |f| f.blend = b, true),
+            Action::LayerClip(k) => self.layer_set_fx(k, |f| f.clip = !f.clip, true),
             Action::LayerLock(k) => self.layer_toggle_locked(k),
             Action::LayerMove(k, up) => self.layer_move(k, up),
             Action::LayerDelete(k) => self.layer_delete(k),
@@ -2256,6 +2315,10 @@ impl App {
                 self.action(Action::Home);
                 return true;
             }
+            Key::Named(NamedKey::Enter | NamedKey::Escape) if self.edit.pen.is_some() => {
+                self.pen_finish(false);
+                return true;
+            }
             Key::Named(NamedKey::Enter) if self.edit.crop.is_some() => {
                 self.crop_done();
                 return true;
@@ -2444,7 +2507,10 @@ impl App {
             "cmd.timeline" => self.action(Action::Timeline),
             "cmd.library" => self.action(Action::Library),
             "cmd.home" => self.action(Action::Home),
+            // With several things selected, Ctrl+G groups them instead.
+            "cmd.grid" if self.edit.selection.len() >= 2 => self.action(Action::Group),
             "cmd.grid" => self.action(Action::Grid),
+            "cmd.ungroup" => self.action(Action::Ungroup),
             "cmd.dark" => self.action(Action::Dark),
             "cmd.diagram" => self.action(Action::Diagram),
             "cmd.layout" => self.action(Action::EditLayout),
@@ -2624,6 +2690,10 @@ impl App {
             }
         }
         self.fly_to(b.cam.clone(), b.view_px);
+    }
+
+    pub(crate) fn fly_to_pub(&mut self, target: Camera, view_px: f64) {
+        self.fly_to(target, view_px)
     }
 
     /// Start flying to a saved view (`view_px`: the screen it was saved on).
@@ -3326,8 +3396,44 @@ impl App {
             self.layers_load();
         }
         self.ui.sel_count = self.edit.selection.len();
+        self.ui.sel_grouped = self.edit.selection.iter().any(|r| self.objs.is_bundle(r));
+        self.ui.sel_on_path = self.sel_on_path();
+        self.ui.sel_comp = match self.edit.selection[..] {
+            [r] => self.comp_of(&r).map(|c| (c.name, c.main)),
+            _ => None,
+        };
         if self.ui.layers_open {
             self.ui.layer_rows = self.layer_rows();
+        }
+        if self.ui.frames_open {
+            self.ui.frame_rows = self.frame_rows();
+        }
+        // The selection's numbers (unless being typed), and the rulers.
+        if !self.ui.geo_busy {
+            self.ui.geo = if self.edit.selection.is_empty() {
+                None
+            } else {
+                self.sel_numbers()
+            };
+        }
+        if self.ui.rulers {
+            self.ui.ruler = self.ruler();
+        }
+        // The selected frame's name, for the panel to change.
+        let frame = match self.edit.selection[..] {
+            [objects::ObjRef::Group(g)] => match &self.objs.groups[g as usize].data {
+                objects::ObjData::Frame { name, .. } => Some((g, name.clone())),
+                _ => None,
+            },
+            _ => None,
+        };
+        match frame {
+            Some((g, name)) if self.ui.frame_name_for != Some(g) => {
+                self.ui.frame_name = name;
+                self.ui.frame_name_for = Some(g);
+            }
+            None => self.ui.frame_name_for = None,
+            _ => {}
         }
         // The people strip: everyone else here, in a steady order.
         let mut people: Vec<(u64, String, egui::Color32)> = self
@@ -3505,6 +3611,7 @@ impl App {
         });
         self.gpu.as_mut().expect("gpu").grid = grid;
         self.gpu.as_mut().expect("gpu").dark = self.ui.dark;
+        self.gpu.as_mut().expect("gpu").layer_fx = self.layer_fx();
         let paint = UiPaint {
             prims,
             textures: out.textures_delta,

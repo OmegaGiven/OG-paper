@@ -27,9 +27,13 @@ pub enum ShapeKind {
     Polygon,
     Line,
     Arrow,
+    /// Drawn with the pen: curves through points (see `subpaths`).
+    Path,
+    /// Shapes › Frame makes a frame (`ObjData::Frame`), not a shape.
+    Frame,
 }
 
-pub const SHAPES: [ShapeKind; 8] = [
+pub const SHAPES: [ShapeKind; 10] = [
     ShapeKind::Rect,
     ShapeKind::Ellipse,
     ShapeKind::Diamond,
@@ -38,6 +42,8 @@ pub const SHAPES: [ShapeKind; 8] = [
     ShapeKind::Polygon,
     ShapeKind::Line,
     ShapeKind::Arrow,
+    ShapeKind::Path,
+    ShapeKind::Frame,
 ];
 
 impl ShapeKind {
@@ -51,6 +57,8 @@ impl ShapeKind {
             ShapeKind::Polygon => "Polygon",
             ShapeKind::Line => "Line",
             ShapeKind::Arrow => "Arrow",
+            ShapeKind::Path => "Pen (curves)",
+            ShapeKind::Frame => "Frame",
         }
     }
 
@@ -62,6 +70,48 @@ impl ShapeKind {
     pub fn from_u8(v: u8) -> Self {
         SHAPES.get(v as usize).copied().unwrap_or_default()
     }
+
+    /// Whether a shape of this kind can become `other` (keeping its points
+    /// or its box): lines with lines, boxes with boxes, pen paths alone.
+    pub fn same_family(self, other: ShapeKind) -> bool {
+        let fam = |k: ShapeKind| match k {
+            ShapeKind::Line | ShapeKind::Arrow => 1,
+            ShapeKind::Path => 2,
+            _ => 0,
+        };
+        fam(self) == fam(other)
+    }
+}
+
+/// Pen path points (see `subpaths`) through `anchors`: straight, or a
+/// smooth curve through each; closed back to the first if `closed`.
+pub fn path_through(anchors: &[[f64; 2]], smooth: bool, closed: bool) -> Vec<[f64; 2]> {
+    let n = anchors.len();
+    if n < 2 {
+        return anchors.to_vec();
+    }
+    let at = |i: isize| -> [f64; 2] {
+        if closed {
+            anchors[i.rem_euclid(n as isize) as usize]
+        } else {
+            anchors[i.clamp(0, n as isize - 1) as usize]
+        }
+    };
+    let segs = if closed { n } else { n - 1 };
+    let mut pts = vec![anchors[0]];
+    for i in 0..segs as isize {
+        let (p0, p1, p2, p3) = (at(i - 1), at(i), at(i + 1), at(i + 2));
+        let (c1, c2) = if smooth {
+            (
+                [p1[0] + (p2[0] - p0[0]) / 6.0, p1[1] + (p2[1] - p0[1]) / 6.0],
+                [p2[0] - (p3[0] - p1[0]) / 6.0, p2[1] - (p3[1] - p1[1]) / 6.0],
+            )
+        } else {
+            (p1, p2)
+        };
+        pts.extend([c1, c2, p2]);
+    }
+    pts
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -72,14 +122,20 @@ pub enum FillStyle {
     CrossHatch,
     Zigzag,
     Solid,
+    /// From the fill color to the end color, across (`ShapeStyle::grad`).
+    Linear,
+    /// From the fill color in the middle to the end color at the edge.
+    Radial,
 }
 
-pub const FILLS: [FillStyle; 5] = [
+pub const FILLS: [FillStyle; 7] = [
     FillStyle::None,
     FillStyle::Hachure,
     FillStyle::CrossHatch,
     FillStyle::Zigzag,
     FillStyle::Solid,
+    FillStyle::Linear,
+    FillStyle::Radial,
 ];
 
 impl FillStyle {
@@ -90,10 +146,16 @@ impl FillStyle {
             FillStyle::CrossHatch => "Cross-hatch",
             FillStyle::Zigzag => "Zigzag",
             FillStyle::Solid => "Solid",
+            FillStyle::Linear => "Gradient",
+            FillStyle::Radial => "Radial gradient",
         }
     }
     pub fn from_u8(v: u8) -> Self {
         FILLS.get(v as usize).copied().unwrap_or_default()
+    }
+
+    pub fn gradient(self) -> bool {
+        matches!(self, FillStyle::Linear | FillStyle::Radial)
     }
 }
 
@@ -223,6 +285,10 @@ pub struct ShapeStyle {
     pub arrow: ArrowType,
     /// 0..=255.
     pub opacity: u8,
+    /// Gradients: the end color, and a linear one's direction (degrees,
+    /// 0 = left to right, 90 = top to bottom).
+    pub fill2: u32,
+    pub grad: f32,
 }
 
 impl Default for ShapeStyle {
@@ -240,8 +306,101 @@ impl Default for ShapeStyle {
             end: Head::Arrow,
             arrow: ArrowType::Straight,
             opacity: 255,
+            fill2: rgba(120, 90, 220, 255),
+            grad: 90.0,
         }
     }
+}
+
+/// `a` to `b` by `t` (RGBA8).
+fn mix(a: u32, b: u32, t: f64) -> u32 {
+    let (a, b) = (a.to_le_bytes(), b.to_le_bytes());
+    let c: [u8; 4] =
+        std::array::from_fn(|i| (a[i] as f64 + (b[i] as f64 - a[i] as f64) * t).round() as u8);
+    u32::from_le_bytes(c)
+}
+
+/// Gradient bands: the closed `contours` cut into strips (linear, at
+/// `angle_deg`) or rings (radial), each filled with its color from
+/// `from` to `to`. Each band reaches a little into the next, so no seam
+/// shows between them.
+pub fn gradient_bands(
+    contours: &[Vec<[f64; 2]>],
+    from: u32,
+    to: u32,
+    radial: bool,
+    angle_deg: f32,
+) -> Vec<Piece> {
+    use i_overlay::core::fill_rule::FillRule;
+    use i_overlay::core::overlay_rule::OverlayRule;
+    use i_overlay::float::single::SingleFloatOverlay;
+    const BANDS: usize = 40;
+    let all: Vec<[f64; 2]> = contours.iter().flatten().copied().collect();
+    if all.len() < 3 {
+        return vec![];
+    }
+    let (c, half) = bounds_of(&all);
+    let reach = half[0].hypot(half[1]) * 1.01 + 1e-12;
+    let mut out = Vec::new();
+    for i in 0..BANDS {
+        let (t0, t1) = (i as f64 / BANDS as f64, (i + 1) as f64 / BANDS as f64);
+        let t1 = (t1 + 0.4 / BANDS as f64).min(1.0);
+        let band: Vec<Vec<[f64; 2]>> = if radial {
+            let ring = |r: f64| -> Vec<[f64; 2]> {
+                (0..72)
+                    .map(|k| {
+                        let a = k as f64 / 72.0 * TAU;
+                        [c[0] + r * a.cos(), c[1] + r * a.sin()]
+                    })
+                    .collect()
+            };
+            let mut b = vec![ring(reach * t1.max(1e-9))];
+            if i > 0 {
+                b.push(ring(reach * t0).into_iter().rev().collect());
+            }
+            if i == BANDS - 1 {
+                b[0] = ring(reach * 1.5);
+            }
+            b
+        } else {
+            let a = (angle_deg as f64).to_radians();
+            let (d, n) = ([a.cos(), a.sin()], [-a.sin(), a.cos()]);
+            let at = |t: f64, s: f64| {
+                let u = -reach + 2.0 * reach * t;
+                [c[0] + d[0] * u + n[0] * s, c[1] + d[1] * u + n[1] * s]
+            };
+            let (t0, t1) = (
+                if i == 0 { -0.1 } else { t0 },
+                if i == BANDS - 1 { 1.1 } else { t1 },
+            );
+            vec![vec![
+                at(t0, -reach),
+                at(t1, -reach),
+                at(t1, reach),
+                at(t0, reach),
+            ]]
+        };
+        let parts: Vec<Vec<[f64; 2]>> = contours
+            .to_vec()
+            .overlay(&band, OverlayRule::Intersect, FillRule::EvenOdd)
+            .into_iter()
+            .flatten()
+            .filter(|p| p.len() >= 3)
+            .collect();
+        if parts.is_empty() {
+            continue;
+        }
+        let (pts, bridges) = crate::font::join(parts);
+        out.push(Piece {
+            pts,
+            width: 0.0,
+            brush: Brush::Fill,
+            dash: Dash::Solid,
+            color: mix(from, to, (i as f64 + 0.5) / BANDS as f64),
+            bridges,
+        });
+    }
+    out
 }
 
 pub const fn rgba(r: u8, g: u8, b: u8, a: u8) -> u32 {
@@ -321,7 +480,7 @@ fn lerp(a: [f64; 2], b: [f64; 2], t: f64) -> [f64; 2] {
 fn base_outline(kind: ShapeKind, half: [f64; 2], sides: u8) -> Vec<[f64; 2]> {
     let [w, h] = half;
     match kind {
-        ShapeKind::Rect => vec![[-w, -h], [w, -h], [w, h], [-w, h]],
+        ShapeKind::Rect | ShapeKind::Frame => vec![[-w, -h], [w, -h], [w, h], [-w, h]],
         ShapeKind::Diamond => vec![[0.0, -h], [w, 0.0], [0.0, h], [-w, 0.0]],
         ShapeKind::Triangle => vec![[0.0, -h], [w, h], [-w, h]],
         ShapeKind::Ellipse => (0..96)
@@ -349,8 +508,103 @@ fn base_outline(kind: ShapeKind, half: [f64; 2], sides: u8) -> Vec<[f64; 2]> {
                 })
                 .collect()
         }
-        ShapeKind::Line | ShapeKind::Arrow => vec![],
+        ShapeKind::Line | ShapeKind::Arrow | ShapeKind::Path => vec![],
     }
+}
+
+/// A pen path's parts, flattened: each a polyline and whether it closes.
+///
+/// `pts` are anchors, each followed by its two curve controls towards the
+/// next anchor (cubic Béziers): a, c1, c2, a, c1, c2, a. A part closes when
+/// an anchor lands back on the part's first one; the segment after that
+/// only jumps to the next part's first anchor.
+pub fn subpaths(pts: &[[f64; 2]]) -> Vec<(Vec<[f64; 2]>, bool)> {
+    let mut out = Vec::new();
+    if pts.is_empty() {
+        return out;
+    }
+    let mut cur = vec![pts[0]];
+    let mut start = pts[0];
+    let mut segs = 0;
+    let mut i = 0;
+    while i + 3 < pts.len() {
+        let (a, c1, c2, b) = (pts[i], pts[i + 1], pts[i + 2], pts[i + 3]);
+        if cur.is_empty() {
+            // The jump to the next part.
+            cur.push(b);
+            start = b;
+            segs = 0;
+            i += 3;
+            continue;
+        }
+        let straight = c1 == a && c2 == b;
+        if straight {
+            cur.push(b);
+        } else {
+            let n = 16;
+            for k in 1..=n {
+                let t = k as f64 / n as f64;
+                let u = 1.0 - t;
+                let f = |j: usize| {
+                    u * u * u * a[j]
+                        + 3.0 * u * u * t * c1[j]
+                        + 3.0 * u * t * t * c2[j]
+                        + t * t * t * b[j]
+                };
+                cur.push([f(0), f(1)]);
+            }
+        }
+        segs += 1;
+        if b == start && segs >= 2 {
+            cur.pop();
+            out.push((std::mem::take(&mut cur), true));
+        }
+        i += 3;
+    }
+    if cur.len() >= 2 {
+        out.push((cur, false));
+    }
+    out
+}
+
+/// A pen path from closed polygons (straight segments; see `subpaths`).
+pub fn path_of_polygons(polys: &[Vec<[f64; 2]>]) -> Vec<[f64; 2]> {
+    let mut pts: Vec<[f64; 2]> = Vec::new();
+    for poly in polys.iter().filter(|p| p.len() >= 3) {
+        if let Some(&last) = pts.last() {
+            // The jump: straight controls.
+            pts.push(last);
+            pts.push(poly[0]);
+        }
+        pts.push(poly[0]);
+        for w in poly
+            .windows(2)
+            .chain(std::iter::once(&[poly[poly.len() - 1], poly[0]][..]))
+        {
+            pts.push(w[0]);
+            pts.push(w[1]);
+            pts.push(w[1]);
+        }
+    }
+    pts
+}
+
+/// The box around points: center and half size.
+pub fn bounds_of(pts: &[[f64; 2]]) -> ([f64; 2], [f64; 2]) {
+    let (mut lo, mut hi) = ([f64::MAX; 2], [f64::MIN; 2]);
+    for p in pts {
+        for k in 0..2 {
+            lo[k] = lo[k].min(p[k]);
+            hi[k] = hi[k].max(p[k]);
+        }
+    }
+    if lo[0] > hi[0] {
+        return ([0.0; 2], [0.0; 2]);
+    }
+    (
+        [(lo[0] + hi[0]) * 0.5, (lo[1] + hi[1]) * 0.5],
+        [(hi[0] - lo[0]) * 0.5, (hi[1] - lo[1]) * 0.5],
+    )
 }
 
 /// Replace each corner of a closed polygon by a circular-ish arc.
@@ -381,8 +635,16 @@ fn round_corners(poly: &[[f64; 2]], frac: f64) -> Vec<[f64; 2]> {
     out
 }
 
-/// A shape's closed outline in frame units (rotated and placed).
+/// A shape's closed outline in frame units (rotated and placed). A pen
+/// path's is its first closed part.
 pub fn outline(st: &ShapeStyle, g: &Geom) -> Vec<[f64; 2]> {
+    if st.kind == ShapeKind::Path {
+        return subpaths(&g.pts)
+            .into_iter()
+            .find(|p| p.1)
+            .map(|p| p.0)
+            .unwrap_or_default();
+    }
     let mut poly = base_outline(st.kind, g.half, st.sides);
     if st.round && !matches!(st.kind, ShapeKind::Ellipse) {
         poly = round_corners(&poly, 0.22);
@@ -649,6 +911,60 @@ pub fn pieces(st: &ShapeStyle, g: &Geom, width: f64, seed: u32) -> Vec<Piece> {
         return out;
     }
 
+    if st.kind == ShapeKind::Path {
+        let parts = subpaths(&g.pts);
+        let closed: Vec<Vec<[f64; 2]>> = parts
+            .iter()
+            .filter(|p| p.1 && p.0.len() >= 3)
+            .map(|p| p.0.clone())
+            .collect();
+        let all: Vec<[f64; 2]> = parts.iter().flat_map(|p| p.0.iter().copied()).collect();
+        if all.len() < 2 {
+            return out;
+        }
+        let size = size_of(&all);
+        let (amp, passes) = st.sloppiness.amount();
+        if !closed.is_empty() && st.fill_style.gradient() {
+            out.extend(gradient_bands(
+                &closed,
+                fill,
+                with_opacity(st.fill2, st.opacity),
+                st.fill_style == FillStyle::Radial,
+                st.grad,
+            ));
+        } else if !closed.is_empty() && st.fill_style != FillStyle::None {
+            if st.fill_style == FillStyle::Solid || closed.len() > 1 {
+                // Holes and separate parts: one fill, joined by bridges.
+                let (pts, bridges) = crate::font::join(closed.clone());
+                out.push(Piece {
+                    pts,
+                    width: 0.0,
+                    brush: Brush::Fill,
+                    dash: Dash::Solid,
+                    color: fill,
+                    bridges,
+                });
+            } else {
+                let gap = (width * 5.0).max(size * 0.03);
+                let mut lines = hatch(&closed[0], -0.716, gap);
+                if st.fill_style == FillStyle::CrossHatch {
+                    lines.extend(hatch(&closed[0], -0.716 + PI / 2.0, gap));
+                }
+                for l in lines {
+                    for p in rough(&l, false, amp * size * 0.3, 1, &mut rng) {
+                        out.push(line(p, width * 0.6, Dash::Solid, fill));
+                    }
+                }
+            }
+        }
+        for (p, c) in &parts {
+            for q in rough(p, *c, amp * size, passes, &mut rng) {
+                out.push(line(q, width, st.dash, stroke));
+            }
+        }
+        return out;
+    }
+
     let poly = outline(st, g);
     if poly.len() < 3 {
         return out;
@@ -668,6 +984,13 @@ pub fn pieces(st: &ShapeStyle, g: &Geom, width: f64, seed: u32) -> Vec<Piece> {
             color: fill,
             bridges: vec![],
         }),
+        FillStyle::Linear | FillStyle::Radial => out.extend(gradient_bands(
+            std::slice::from_ref(&poly),
+            fill,
+            with_opacity(st.fill2, st.opacity),
+            st.fill_style == FillStyle::Radial,
+            st.grad + g.rot.to_degrees() as f32,
+        )),
         FillStyle::Hachure | FillStyle::CrossHatch => {
             let mut lines = hatch(&poly, angle, gap);
             if st.fill_style == FillStyle::CrossHatch {
@@ -851,7 +1174,11 @@ mod tests {
                         end: Head::Triangle,
                         ..Default::default()
                     };
-                    let p = pieces(&st, &geom(), 0.005, 7);
+                    let mut g = geom();
+                    if kind == ShapeKind::Path {
+                        g.pts = path_through(&[[0.1, 0.1], [0.9, 0.6], [0.3, 0.8]], true, true);
+                    }
+                    let p = pieces(&st, &g, 0.005, 7);
                     assert!(!p.is_empty(), "{kind:?} {fill_style:?}");
                     for piece in &p {
                         assert!(!piece.pts.is_empty());
@@ -890,5 +1217,48 @@ mod tests {
                 assert!(p[0] > -1e-9 && p[0] < 1.0 + 1e-9 && p[1] > -1e-9 && p[1] < 1.0 + 1e-9);
             }
         }
+    }
+
+    #[test]
+    fn gradients_fill_in_bands_from_one_color_to_the_other() {
+        let st = ShapeStyle {
+            fill_style: FillStyle::Linear,
+            fill: rgba(255, 0, 0, 255),
+            fill2: rgba(0, 0, 255, 255),
+            grad: 0.0,
+            sloppiness: Sloppiness::Architect,
+            round: false,
+            ..Default::default()
+        };
+        let g = Geom {
+            center: [0.0, 0.0],
+            half: [10.0, 5.0],
+            ..Default::default()
+        };
+        let p = pieces(&st, &g, 0.1, 1);
+        let fills: Vec<&Piece> = p.iter().filter(|q| q.brush == Brush::Fill).collect();
+        assert!(fills.len() >= 20, "{}", fills.len());
+        // Left to right: red first, blue last; inside the box.
+        let first = fills[0].color.to_le_bytes();
+        let last = fills[fills.len() - 1].color.to_le_bytes();
+        assert!(first[0] > 200 && first[2] < 60, "{first:?}");
+        assert!(last[2] > 200 && last[0] < 60, "{last:?}");
+        assert!(fills.iter().all(|f| f
+            .pts
+            .iter()
+            .all(|q| q[0].abs() <= 10.001 && q[1].abs() <= 5.001)));
+        // Radial: the middle band is the fill color.
+        let st = ShapeStyle {
+            fill_style: FillStyle::Radial,
+            ..st
+        };
+        let p = pieces(&st, &g, 0.1, 1);
+        let mid = p
+            .iter()
+            .find(|q| q.brush == Brush::Fill)
+            .unwrap()
+            .color
+            .to_le_bytes();
+        assert!(mid[0] > 200, "{mid:?}");
     }
 }

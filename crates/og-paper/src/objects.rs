@@ -26,6 +26,10 @@ pub struct TextStyle {
     pub color: u32,
     /// 0..=255.
     pub opacity: u8,
+    /// Extra room after each letter (cap heights) and line height (times
+    /// the font's own).
+    pub letter: f32,
+    pub line: f32,
 }
 
 impl Default for TextStyle {
@@ -35,7 +39,23 @@ impl Default for TextStyle {
             align: Align::Left,
             color: shapes::rgba(28, 28, 36, 255),
             opacity: 255,
+            letter: 0.0,
+            line: 1.0,
         }
+    }
+}
+
+impl TextStyle {
+    pub fn spacing(&self) -> font::Spacing {
+        font::Spacing {
+            letter: self.letter as f64,
+            line: self.line as f64,
+        }
+    }
+
+    /// Letter and line spacing as the font has them.
+    pub fn plain_spacing(&self) -> bool {
+        self.letter == 0.0 && self.line == 1.0
     }
 }
 
@@ -65,6 +85,9 @@ pub enum ObjData {
         geom: Geom,
         opacity: u8,
         crop: [f32; 4],
+        /// Brightness (-1..1, added), contrast and saturation (times; 1 as
+        /// it is): see `NO_ADJUST`.
+        adjust: [f32; 3],
     },
     /// Rows of cells drawn as a grid; `size` is the cap height and `geom`
     /// the whole table's box.
@@ -93,6 +116,27 @@ pub enum ObjData {
         seed: u32,
         view: PortalView,
     },
+    /// A group of things picked and changed as one (Group in the selection
+    /// panel). It draws nothing of its own: its strokes are its members'
+    /// (each keeps its own object), and `geom` is the box around them.
+    /// Older apps read it as an invisible box (see `bundle_as_shape`).
+    Bundle { geom: Geom, comp: Option<Comp> },
+    /// A frame (artboard, Shapes › Frame): a named white page on the
+    /// canvas, listed in Menu › Frames to fly to and export. Older apps read
+    /// it as a white box (see `frame_as_shape`).
+    Frame { geom: Geom, name: String },
+}
+
+/// A group made a component (see `components`): its main, or a copy that
+/// is remade from the main whenever the main changes.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Comp {
+    /// The same for the main and all its copies.
+    pub id: u64,
+    pub main: bool,
+    pub name: String,
+    /// A copy's size, times the main's (across, down).
+    pub k: [f64; 2],
 }
 
 /// What a portal shows: a saved view, as a bookmark keeps it.
@@ -121,6 +165,8 @@ pub const PORTAL_PAPER: u32 = u32::from_le_bytes([245, 242, 235, 255]);
 
 /// A picture's crop when all of it shows.
 pub const FULL_CROP: [f32; 4] = [0.0, 0.0, 1.0, 1.0];
+/// A picture as it is: no brightness, contrast or saturation change.
+pub const NO_ADJUST: [f32; 3] = [0.0, 1.0, 1.0];
 
 /// A shape or a text: its settings, in the units of `cell`, and its strokes.
 #[derive(Clone, Debug)]
@@ -146,12 +192,27 @@ pub struct Objects {
     /// The stroke that places a picture (its corners): picture id, opacity
     /// and crop.
     pub image_of: HashMap<u32, (u64, u8, [f32; 4])>,
+    /// Pictures with their colors adjusted (by the stroke placing them).
+    pub image_adj: HashMap<u32, [f32; 3]>,
     /// A portal's window (its first stroke, a fill): the portal's group.
     pub portal_of: HashMap<u32, u32>,
+    /// A stroke in a group (`ObjData::Bundle`): that group. Its own
+    /// object (the shape, text… or ink it is) stays in `of_stroke`.
+    pub bundle_of: HashMap<u32, u32>,
 }
 
 impl Objects {
+    /// What picking `stroke` picks: its group, if it is in one, else its
+    /// own object.
     pub fn obj_of(&self, stroke: u32) -> ObjRef {
+        match self.bundle_of.get(&stroke) {
+            Some(&b) => ObjRef::Group(b),
+            None => self.own_obj(stroke),
+        }
+    }
+
+    /// The object `stroke` is part of, groups aside.
+    pub fn own_obj(&self, stroke: u32) -> ObjRef {
         match self.of_stroke.get(&stroke) {
             Some(&g) => ObjRef::Group(g),
             None => ObjRef::Ink(stroke),
@@ -167,15 +228,29 @@ impl Objects {
 
     pub fn add(&mut self, g: Group) -> u32 {
         let gi = self.groups.len() as u32;
+        if matches!(g.data, ObjData::Bundle { .. }) {
+            for &s in &g.strokes {
+                self.bundle_of.insert(s, gi);
+            }
+            self.groups.push(g);
+            return gi;
+        }
         for &s in &g.strokes {
             self.of_stroke.insert(s, gi);
         }
         if let ObjData::Image {
-            id, opacity, crop, ..
+            id,
+            opacity,
+            crop,
+            adjust,
+            ..
         } = g.data
         {
             for &s in &g.strokes {
                 self.image_of.insert(s, (id, opacity, crop));
+                if adjust != NO_ADJUST {
+                    self.image_adj.insert(s, adjust);
+                }
             }
         }
         if let (ObjData::Portal { .. }, Some(&s)) = (&g.data, g.strokes.first()) {
@@ -183,6 +258,37 @@ impl Objects {
         }
         self.groups.push(g);
         gi
+    }
+
+    /// Whether `r` is a group (`ObjData::Bundle`).
+    pub fn is_bundle(&self, r: &ObjRef) -> bool {
+        matches!(r, ObjRef::Group(g)
+            if matches!(self.groups.get(*g as usize).map(|x| &x.data), Some(ObjData::Bundle { .. })))
+    }
+
+    /// A group's members (each thing in it), bottom to top as stored.
+    pub fn members(&self, g: u32) -> Vec<ObjRef> {
+        let mut seen = std::collections::HashSet::new();
+        self.groups[g as usize]
+            .strokes
+            .iter()
+            .map(|&s| self.own_obj(s))
+            .filter(|r| seen.insert(*r))
+            .collect()
+    }
+
+    /// Rebuild the stroke maps from the groups (after groups' data
+    /// changed kind on loading: see `snapshot`).
+    pub fn reindex(&mut self) {
+        let groups = std::mem::take(&mut self.groups);
+        self.of_stroke.clear();
+        self.bundle_of.clear();
+        self.image_of.clear();
+        self.image_adj.clear();
+        self.portal_of.clear();
+        for g in groups {
+            self.add(g);
+        }
     }
 
     pub fn alive(&self, scene: &Scene, r: &ObjRef) -> bool {
@@ -212,6 +318,13 @@ pub enum Op {
         pivot: [f64; 2],
         angle: f64,
     },
+    /// Move `from` to `to`, scaling by `k` across and down about it (a
+    /// component's copy made from its main).
+    Fit {
+        from: [f64; 2],
+        to: [f64; 2],
+        k: [f64; 2],
+    },
 }
 
 impl Op {
@@ -234,6 +347,10 @@ impl Op {
                     pivot[1] + d[0] * s + d[1] * c,
                 ]
             }
+            Op::Fit { from, to, k } => [
+                to[0] + (p[0] - from[0]) * k[0],
+                to[1] + (p[1] - from[1]) * k[1],
+            ],
         }
     }
 
@@ -241,6 +358,7 @@ impl Op {
     pub fn scale_factor(&self) -> f64 {
         match *self {
             Op::Scale { sx, sy, .. } => (sx * sy).abs().sqrt(),
+            Op::Fit { k, .. } => (k[0] * k[1]).abs().sqrt(),
             _ => 1.0,
         }
     }
@@ -257,8 +375,18 @@ impl Op {
         let mut out = g.clone();
         out.center = self.apply(g.center);
         out.pts = g.pts.iter().map(|&p| self.apply(p)).collect();
-        match *self {
-            Op::Move(_) => {}
+        let me = match *self {
+            // As a scale along the page's axes (the move is in `apply`).
+            Op::Fit { k, from, .. } => Op::Scale {
+                pivot: from,
+                sx: k[0],
+                sy: k[1],
+                rot: 0.0,
+            },
+            op => op,
+        };
+        match me {
+            Op::Move(_) | Op::Fit { .. } => {}
             Op::Rotate { angle, .. } => out.rot += angle,
             Op::Scale { sx, sy, rot, .. } => {
                 // Box shapes keep their own axes: scale along them when they
@@ -308,7 +436,9 @@ impl ObjData {
             | ObjData::Image { geom, .. }
             | ObjData::Table { geom, .. }
             | ObjData::Audio { geom, .. }
-            | ObjData::Portal { geom, .. } => geom,
+            | ObjData::Portal { geom, .. }
+            | ObjData::Bundle { geom, .. }
+            | ObjData::Frame { geom, .. } => geom,
         }
     }
 
@@ -316,6 +446,14 @@ impl ObjData {
     /// scales lengths.
     pub fn map(&self, f: impl Fn([f64; 2]) -> [f64; 2], k: f64) -> ObjData {
         match self {
+            ObjData::Bundle { geom, comp } => ObjData::Bundle {
+                geom: geom_map(geom, &f, k),
+                comp: comp.clone(),
+            },
+            ObjData::Frame { geom, name } => ObjData::Frame {
+                geom: geom_map(geom, &f, k),
+                name: name.clone(),
+            },
             ObjData::Shape {
                 style,
                 geom,
@@ -345,11 +483,13 @@ impl ObjData {
                 geom,
                 opacity,
                 crop,
+                adjust,
             } => ObjData::Image {
                 id: *id,
                 geom: geom_map(geom, &f, k),
                 opacity: *opacity,
                 crop: *crop,
+                adjust: *adjust,
             },
             ObjData::Table {
                 cells,
@@ -394,6 +534,14 @@ impl ObjData {
     /// The edit applied (camera units).
     pub fn edited(&self, op: &Op) -> ObjData {
         match self {
+            ObjData::Bundle { geom, comp } => ObjData::Bundle {
+                geom: op.geom(geom),
+                comp: comp.clone(),
+            },
+            ObjData::Frame { geom, name } => ObjData::Frame {
+                geom: op.geom(geom),
+                name: name.clone(),
+            },
             ObjData::Shape {
                 style,
                 geom,
@@ -428,11 +576,13 @@ impl ObjData {
                 geom,
                 opacity,
                 crop,
+                adjust,
             } => ObjData::Image {
                 id: *id,
                 geom: op.geom(geom),
                 opacity: *opacity,
                 crop: *crop,
+                adjust: *adjust,
             },
             ObjData::Table {
                 cells,
@@ -482,6 +632,8 @@ impl ObjData {
     /// The strokes to store, in frame units.
     pub fn pieces(&self) -> Vec<Piece> {
         match self {
+            ObjData::Bundle { .. } => vec![],
+            d @ ObjData::Frame { .. } => d.frame_as_shape().map(|s| s.pieces()).unwrap_or_default(),
             ObjData::Shape {
                 style,
                 geom,
@@ -560,6 +712,61 @@ impl ObjData {
             width: geom.half[1] * 0.08,
             seed: *seed,
         })
+    }
+
+    /// A group as a plain shape older apps can read: an invisible box.
+    pub fn bundle_as_shape(&self) -> Option<ObjData> {
+        let ObjData::Bundle { geom, .. } = self else {
+            return None;
+        };
+        Some(ObjData::Shape {
+            style: ShapeStyle {
+                opacity: 0,
+                ..ShapeStyle::default()
+            },
+            geom: geom.clone(),
+            width: 0.0,
+            seed: 0,
+        })
+    }
+
+    /// A frame as a plain shape: a white page with a light edge.
+    pub fn frame_as_shape(&self) -> Option<ObjData> {
+        let ObjData::Frame { geom, .. } = self else {
+            return None;
+        };
+        Some(ObjData::Shape {
+            style: ShapeStyle {
+                kind: shapes::ShapeKind::Rect,
+                stroke: shapes::rgba(200, 200, 206, 255),
+                fill: shapes::rgba(255, 255, 255, 255),
+                fill_style: shapes::FillStyle::Solid,
+                sloppiness: shapes::Sloppiness::Architect,
+                round: false,
+                ..ShapeStyle::default()
+            },
+            geom: geom.clone(),
+            width: geom.half[0].min(geom.half[1]).abs() * 0.004,
+            seed: 0,
+        })
+    }
+
+    /// A shape made a frame named `name` (see `frame_as_shape`).
+    pub fn into_frame(self, name: String) -> ObjData {
+        match self {
+            ObjData::Shape { geom, .. } | ObjData::Frame { geom, .. } => {
+                ObjData::Frame { geom, name }
+            }
+            other => other,
+        }
+    }
+
+    /// A shape made a group (see `bundle_as_shape`).
+    pub fn into_bundle(self) -> ObjData {
+        match self {
+            ObjData::Shape { geom, .. } => ObjData::Bundle { geom, comp: None },
+            other => other,
+        }
     }
 
     /// A shape made an audio clip (see `audio_as_shape`).
@@ -773,7 +980,7 @@ fn portal_pieces(style: &ShapeStyle, geom: &Geom, width: f64, seed: u32) -> Vec<
 
 /// Text box size (frame units) for `text` at cap height `size`.
 pub fn text_box(text: &str, style: &TextStyle, size: f64) -> [f64; 2] {
-    let (_, b) = font::layout(text, style.font, style.align, 0);
+    let (_, b) = font::layout_spaced(text, style.font, style.align, 0, style.spacing());
     let u = size / 6.0;
     [b[0] * u, b[1] * u]
 }
@@ -955,14 +1162,25 @@ fn table_pieces(
 }
 
 fn text_pieces(text: &str, style: &TextStyle, g: &Geom, size: f64, seed: u32) -> Vec<Piece> {
-    let (marks, b) = font::layout(text, style.font, style.align, seed);
+    let (marks, b) = font::layout_spaced(text, style.font, style.align, seed, style.spacing());
     let u = size / 6.0;
     let (s, c) = g.rot.sin_cos();
+    // Text on a path: along its points, the baseline on the line.
+    let along = (g.pts.len() >= 2).then(|| Along::new(&g.pts));
     let [r, gg, bb, a] = style.color.to_le_bytes();
     let color = u32::from_le_bytes([r, gg, bb, ((a as u32 * style.opacity as u32) / 255) as u8]);
     // Single-line fonts: pen width from the size (thinner for mono).
     let width = size * if style.font == 2 { 0.07 } else { 0.085 };
     let place = |p: &[f64; 2]| {
+        if let Some(a) = &along {
+            // Centred on the path when it is longer than the words.
+            let start = match style.align {
+                Align::Left => 0.0,
+                Align::Center => (a.len - b[0] * u) * 0.5,
+                Align::Right => a.len - b[0] * u,
+            };
+            return a.at(start + p[0] * u, (p[1] - 6.0) * u);
+        }
         let (x, y) = ((p[0] - b[0] * 0.5) * u, (p[1] - b[1] * 0.5) * u);
         [g.center[0] + x * c - y * s, g.center[1] + x * s + y * c]
     };
@@ -987,6 +1205,49 @@ fn text_pieces(text: &str, style: &TextStyle, g: &Geom, size: f64, seed: u32) ->
             },
         })
         .collect()
+}
+
+/// A polyline measured along its length (text on a path).
+struct Along {
+    pts: Vec<[f64; 2]>,
+    /// Length up to each point.
+    at: Vec<f64>,
+    len: f64,
+}
+
+impl Along {
+    fn new(pts: &[[f64; 2]]) -> Self {
+        let mut at = vec![0.0];
+        for w in pts.windows(2) {
+            let l =
+                at.last().copied().unwrap_or(0.0) + (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1]);
+            at.push(l);
+        }
+        Along {
+            pts: pts.to_vec(),
+            len: *at.last().unwrap_or(&0.0),
+            at,
+        }
+    }
+
+    /// The point `s` along it (straight on past its ends), moved `off`
+    /// to its left-hand side... y down: positive `off` is below the line.
+    fn at(&self, s: f64, off: f64) -> [f64; 2] {
+        let n = self.pts.len();
+        let i = match self.at.iter().position(|&a| a > s) {
+            Some(0) => 0,
+            Some(i) => i - 1,
+            None => n - 2,
+        }
+        .min(n - 2);
+        let (a, b) = (self.pts[i], self.pts[i + 1]);
+        let l = (self.at[i + 1] - self.at[i]).max(1e-300);
+        let t = (s - self.at[i]) / l;
+        let d = [(b[0] - a[0]) / l, (b[1] - a[1]) / l];
+        let p = [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+        // The normal of the direction, turned a quarter clockwise (y down).
+        [p[0] - d[1] * off, p[1] + d[0] * off]
+    }
 }
 
 /// Re-express object data given in camera units in the cell that fits it.
@@ -1141,6 +1402,7 @@ mod tests {
             geom: g,
             opacity: 255,
             crop: FULL_CROP,
+            adjust: NO_ADJUST,
         };
         let p = pic.pieces();
         assert_eq!(p.len(), 1);

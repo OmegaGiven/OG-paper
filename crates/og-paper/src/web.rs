@@ -426,6 +426,8 @@ pub fn og_set_menu(items: &str) {
                 "library" => AppItem::Library,
                 "diagram" => AppItem::Diagram,
                 "layers" => AppItem::Layers,
+                "frames" => AppItem::Frames,
+                "rulers" => AppItem::Rulers,
                 "layout" => AppItem::LayoutMenu,
                 "hotkeys" => AppItem::Hotkeys,
                 "radialbar" => AppItem::RadialBar,

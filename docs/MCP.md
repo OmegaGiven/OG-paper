@@ -69,11 +69,11 @@ streams) and supports protocol versions 2025-03-26, 2025-06-18 and
 | Tool | Does | View key |
 | --- | --- | --- |
 | `list_pages` | the server's pages: id, name, last change | ✓ |
-| `read_page` | what's on a page: each thing's id, kind, box and details (text, colours, sizes, shape kind, table cells), the box around everything; filter by region or kind | ✓ |
+| `read_page` | what's on a page: each thing's id, kind, box and details (text, colours, sizes, shape kind, gradients, table cells, groups and components, frames and their names, picture adjustments), the box around everything; filter by region or kind | ✓ |
 | `view_page` | a picture of the page, a region or some things (PNG, up to 2048 px) | ✓ |
 | `list_fonts` | the fonts texts can use | ✓ |
-| `add_to_page` | texts, shapes (rect, ellipse, diamond, triangle, star, polygon, line, arrow), tables and freehand strokes, many at once, in one undo step | |
-| `edit_page` | move, resize, rotate, restyle (text, colours, fill, width, font, …), bring to front / send to back and delete, by id | |
+| `add_to_page` | texts (with letter spacing, line height, or running along a path), shapes (rect, ellipse, diamond, triangle, star, polygon, line, arrow, and pen paths through points), gradient fills, tables and freehand strokes, many at once, in one undo step | |
+| `edit_page` | move, resize, rotate, restyle (text, colours, fill, gradient, width, font, spacing, a frame's name, a picture's brightness / contrast / saturation, …), bring to front / send to back, delete, group / ungroup, combine shapes (union, subtract, intersect, exclude), make a component, remove a picture's background, by id | |
 | `create_page`, `rename_page`, `delete_page` | manage pages (a deleted page's file is kept as `<id>.ogp.deleted`) | |
 
 Pages can be named by id or by name. Two prompts come with it: **design**
