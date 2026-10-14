@@ -852,7 +852,9 @@ mod tests {
     ) -> Msg {
         let client = Client::connect(format!("ws://127.0.0.1:{}/p/{canvas:032x}", server.port));
         let start = Instant::now();
-        let mut sent = false;
+        // This question's connection (an earlier one's late frames, or its
+        // closing, may still arrive: they aren't this test's business).
+        let mut mine = None;
         while start.elapsed() < Duration::from_secs(10) {
             for ev in client.poll() {
                 if let Ev::Data(_, b) = ev {
@@ -862,11 +864,11 @@ mod tests {
             }
             for ev in server.poll() {
                 match ev {
-                    Ev::Open(_) if !sent => {
+                    Ev::Open(id) if mine.is_none() => {
+                        mine = Some(id);
                         client.send(key.seal(&m.encode(), false));
-                        sent = true;
                     }
-                    Ev::Data(id, b) => {
+                    Ev::Data(id, b) if Some(id) == mine => {
                         assert!(sign_in(console, server, canvas, id, &b), "a sign-in");
                     }
                     _ => {}
