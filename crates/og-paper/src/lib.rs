@@ -341,6 +341,7 @@ impl App {
         ui.dark = prefs.get("dark").is_some_and(|v| v == "on");
         ui.hints = prefs.get("hints").is_none_or(|v| v != "off");
         ui.basics_open = prefs.get("basictools").is_none_or(|v| v != "closed");
+        ui.views_open = prefs.get("invviews").is_none_or(|v| v != "closed");
         ui.ui_scale = prefs
             .get("uiscale")
             .and_then(|v| v.parse::<f32>().ok())
@@ -3244,6 +3245,14 @@ impl App {
         {
             self.ui.bookmark_names = self.bookmarks.iter().map(|b| b.name.clone()).collect();
         }
+        self.ui.bookmark_views = self
+            .bookmarks
+            .iter()
+            .map(|b| hotbar::View {
+                name: b.name.clone(),
+                cam: hotbar::cam_text(&b.cam, b.view_px),
+            })
+            .collect();
         self.build_overlay();
         self.ui.view_now = Some(hotbar::View {
             name: String::new(),

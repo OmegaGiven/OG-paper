@@ -53,6 +53,9 @@ pub struct Saved {
     pub inv: Vec<Option<Preset>>,
     /// Saved views that slots point at.
     pub views: std::collections::BTreeMap<u32, View>,
+    /// Quick bar slots added past the toolbar (with "+"): picked by tapping
+    /// only, no keys.
+    pub extras: Vec<Preset>,
 }
 
 /// Keep at least one empty row at the end of the inventory (and never less
@@ -277,6 +280,7 @@ pub fn defaults() -> Saved {
         active: 0,
         inv,
         views: Default::default(),
+        extras: Vec::new(),
     }
 }
 
@@ -470,6 +474,9 @@ pub fn encode(saved: &Saved) -> String {
     for (id, v) in &saved.views {
         out += &format!("w {id} {} {}\n", v.cam, v.name.replace(['\n', '\r'], " "));
     }
+    for p in &saved.extras {
+        out += &format!("e {}\n", put(p));
+    }
     // For older apps: one hold tool, the active toolbar's.
     if let Some(p) = saved.bars.get(saved.active).and_then(|b| b.hold.as_ref()) {
         out += &format!("x {}\n", put(p));
@@ -489,6 +496,7 @@ pub fn decode(text: &str) -> Option<Saved> {
     let mut bars: Vec<Toolbar> = Vec::new();
     let mut inv: Vec<Option<Preset>> = Vec::new();
     let mut views = std::collections::BTreeMap::new();
+    let mut extras = Vec::new();
     let mut active = 0;
     // A file from before each toolbar had a hold tool: its one.
     let mut old_hold = None;
@@ -549,6 +557,11 @@ pub fn decode(text: &str) -> Option<Saved> {
                 }
             }
             (2, "x") => old_hold = get(rest),
+            (2, "e") => {
+                if let Some(p) = get(rest).filter(|_| extras.len() < 64) {
+                    extras.push(p);
+                }
+            }
             (2, "y") => {
                 let mut w = rest.splitn(2, ' ');
                 if let (Some(Ok(b)), Some(tool)) = (w.next().map(str::parse::<usize>), w.next()) {
@@ -602,6 +615,7 @@ pub fn decode(text: &str) -> Option<Saved> {
         active,
         inv,
         views,
+        extras,
     })
 }
 
@@ -698,6 +712,26 @@ mod tests {
         assert_eq!(back.active, 2);
         assert!(back.bars[1].shown && !back.bars[0].shown);
         assert_eq!(back.bars[2].slots[8], Some(Preset::tool(Tool::Picker)));
+    }
+
+    #[test]
+    fn quick_bar_extras_survive_in_order() {
+        let mut saved = defaults();
+        saved.extras = vec![
+            Preset::tool(Tool::Eraser),
+            Preset::view(7),
+            Preset::cmd(SlotCmd::Plugin(crate::plugin::key("Audio notes"), 1)),
+        ];
+        saved.views.insert(
+            7,
+            View {
+                name: "Start".into(),
+                cam: "0|0|0|0.5|0.5|1|800".into(),
+            },
+        );
+        let back = decode(&encode(&saved)).unwrap();
+        assert_eq!(back.extras, saved.extras);
+        assert_eq!(back.views.get(&7).unwrap().name, "Start");
     }
 
     #[test]

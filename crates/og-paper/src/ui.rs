@@ -652,6 +652,14 @@ pub struct UiState {
     /// each frame) and a view to fly to (for the app).
     pub views: std::collections::BTreeMap<u32, hotbar::View>,
     pub view_now: Option<hotbar::View>,
+    /// This canvas's saved views (bookmarks), for the inventory's Views.
+    pub bookmark_views: Vec<hotbar::View>,
+    /// The inventory's Views, as slots (see `VIEW_ITEM`), refilled every
+    /// frame; and whether that section is open.
+    pub view_items: Vec<Option<Preset>>,
+    pub views_open: bool,
+    /// Quick bar slots past the toolbar, added with "+" (no keys).
+    pub extras: Vec<Option<Preset>>,
     pub fly_to: Option<String>,
     /// Actions a slot asked for (undo, redo), handed out with this frame's.
     pub queued: Vec<Action>,
@@ -929,6 +937,10 @@ impl Default for UiState {
             text_edit: None,
             overlay: Overlay::default(),
             hotbar: vec![None; hotbar::BAR],
+            bookmark_views: Vec::new(),
+            view_items: Vec::new(),
+            views_open: true,
+            extras: Vec::new(),
             inventory: vec![None; hotbar::INVENTORY],
             toolbars: vec![hotbar::empty_bar("Toolbar 1")],
             active_bar: 0,
@@ -1008,7 +1020,7 @@ impl UiState {
             return;
         }
         if let Some(v) = p.view {
-            self.fly_to = self.views.get(&v).map(|v| v.cam.clone());
+            self.fly_to = self.view_of(v).map(|v| v.cam.clone());
             self.menu = Menu::None;
             return;
         }
@@ -1045,6 +1057,7 @@ impl UiState {
             .iter()
             .flat_map(|b| b.slots.iter())
             .chain(self.inventory.iter())
+            .chain(self.extras.iter())
             .flatten()
             .filter_map(|p| p.view)
             .collect();
@@ -1058,6 +1071,27 @@ impl UiState {
                 .filter(|(k, _)| used.contains(k))
                 .map(|(k, v)| (*k, v.clone()))
                 .collect(),
+            extras: self.extras.iter().flatten().copied().collect(),
+        }
+    }
+
+    /// Saved view `id`: a slot's, or one of the inventory's Views.
+    pub fn view_of(&self, id: u32) -> Option<&hotbar::View> {
+        match id.checked_sub(VIEW_ITEM) {
+            Some(i) => self.bookmark_views.get(i as usize),
+            None => self.views.get(&id),
+        }
+    }
+
+    /// What is picked up from slot kind `which`: a copy of one of the
+    /// inventory's Views becomes a saved view of its own.
+    fn held_from(&mut self, which: Slots, p: Preset) -> Preset {
+        match p.view {
+            Some(v) if which == Slots::Views && v >= VIEW_ITEM => match self.view_of(v).cloned() {
+                Some(view) => Preset::view(self.add_view(view)),
+                None => p,
+            },
+            _ => p,
         }
     }
 
@@ -1100,6 +1134,7 @@ impl UiState {
         self.toolbars = s.bars;
         self.inventory = s.inv;
         self.views = s.views;
+        self.extras = s.extras.into_iter().map(Some).collect();
         // Each toolbar has its own hold tool; the main one's is in use.
         self.hold = self.toolbars.get(self.active_bar).and_then(|b| b.hold);
     }
@@ -1824,7 +1859,22 @@ enum Slots {
     /// The inventory's basic tools: every tool at its defaults, always
     /// there to assign from; never used up or replaced.
     Basic,
+    /// The inventory's Views: the canvas's saved views, like Basic.
+    Views,
+    /// Quick bar slots past the toolbar.
+    Extra,
 }
+
+impl Slots {
+    /// Slots that copies are taken from and never change.
+    fn is_source(self) -> bool {
+        matches!(self, Slots::Basic | Slots::Views)
+    }
+}
+
+/// Views in the inventory's Views point here (+ index into
+/// `bookmark_views`) until one is put in a slot (see `UiState::held_from`).
+const VIEW_ITEM: u32 = 1 << 30;
 
 /// Every tool with its default settings (the basic tools row).
 fn basic_presets() -> &'static [Preset] {
@@ -1856,8 +1906,10 @@ fn quick_bar(ctx: &egui::Context, st: &mut UiState, g: &Geo) {
     // else a row above them.
     let right = g.tool.x - g.r - 12.0;
     let left = screen.left() + m + if touch { 64.0 } else { 52.0 };
+    // Past the hold slot: the extra slots, and "+" to add one.
+    let ex = st.extras.len() + 1;
     // The toolbar switcher, the slots and the hold slot.
-    let full = (hotbar::BAR + 2) as f32 * (s + gap);
+    let full = (hotbar::BAR + 2 + ex) as f32 * (s + gap);
     let (n, y, cx) = if full <= right - left {
         let cx = screen
             .center()
@@ -1868,9 +1920,9 @@ fn quick_bar(ctx: &egui::Context, st: &mut UiState, g: &Geo) {
         let avail = screen.width() - 2.0 * m;
         if avail < full {
             // Fewer slots rather than slots too small to tap.
-            s = (avail / (hotbar::BAR + 2) as f32 - gap).max(if touch { 40.0 } else { 30.0 });
+            s = (avail / (hotbar::BAR + 2 + ex) as f32 - gap).max(if touch { 40.0 } else { 30.0 });
         }
-        let fit = ((avail / (s + gap)) as usize).saturating_sub(2);
+        let fit = ((avail / (s + gap)) as usize).saturating_sub(2 + ex);
         let n = fit.clamp(3, hotbar::BAR);
         (n, g.tool.y - g.r - 14.0 - s * 0.5, screen.center().x)
     };
@@ -1879,9 +1931,9 @@ fn quick_bar(ctx: &egui::Context, st: &mut UiState, g: &Geo) {
         Some(f) => {
             let avail = screen.width() - 2.0 * m;
             let fit = ((avail / (s + gap)) as usize)
-                .saturating_sub(2)
+                .saturating_sub(2 + ex)
                 .clamp(3, hotbar::BAR);
-            let row = (fit + 2) as f32 * (s + gap) - gap;
+            let row = (fit + 2 + ex) as f32 * (s + gap) - gap;
             let c = at_frac(screen, f, 0.0);
             (
                 fit,
@@ -1896,13 +1948,13 @@ fn quick_bar(ctx: &egui::Context, st: &mut UiState, g: &Geo) {
         None if st.layout.tool.is_some() => {
             let avail = screen.width() - 2.0 * m;
             let fit = ((avail / (s + gap)) as usize)
-                .saturating_sub(2)
+                .saturating_sub(2 + ex)
                 .clamp(3, hotbar::BAR);
             (fit, screen.bottom() - m - s * 0.5, screen.center().x)
         }
         None => (n, y, cx),
     };
-    let row = (n + 2) as f32 * (s + gap) - gap;
+    let row = (n + 2 + ex) as f32 * (s + gap) - gap;
     let x0 = cx - row * 0.5;
     let current = st.preset();
     let mut fx = SlotFx {
@@ -1938,9 +1990,9 @@ fn quick_bar(ctx: &egui::Context, st: &mut UiState, g: &Geo) {
         // Clear of the round buttons at the top and bottom.
         let avail = screen.height() - 2.0 * (pm + 2.0 * pr + 4.0 + 12.0);
         let fit = (((avail + gap) / (s + gap)) as usize)
-            .saturating_sub(2)
+            .saturating_sub(2 + ex)
             .clamp(3, hotbar::BAR);
-        let len = (fit + 2) as f32 * (s + gap) - gap;
+        let len = (fit + 2 + ex) as f32 * (s + gap) - gap;
         match st.layout.bar {
             // Moved (Edit layout): centred where it was put.
             Some(f) => {
@@ -1985,7 +2037,7 @@ fn quick_bar(ctx: &egui::Context, st: &mut UiState, g: &Geo) {
             Rect::from_center_size(g.bar, Vec2::splat(2.0 * g.r)),
         )
     } else if vertical {
-        let len = (n + 2) as f32 * (s + gap) - gap;
+        let len = (n + 2 + ex) as f32 * (s + gap) - gap;
         let wide = rows as f32 * (s + gap) - gap;
         let left = if leftward { col_x0 + s - wide } else { col_x0 };
         (
@@ -2041,6 +2093,14 @@ fn quick_bar(ctx: &egui::Context, st: &mut UiState, g: &Geo) {
                     if active {
                         let r = Rect::from_min_size(cell(ri, n + 1), Vec2::splat(s));
                         slot(ui, st, r, Slots::Hold(k), 0, &mut fx);
+                        // The extra slots (tap only), then "+".
+                        for i in 0..st.extras.len() {
+                            let r = Rect::from_min_size(cell(ri, n + 2 + i), Vec2::splat(s));
+                            slot(ui, st, r, Slots::Extra, i, &mut fx);
+                        }
+                        let r =
+                            Rect::from_min_size(cell(ri, n + 2 + st.extras.len()), Vec2::splat(s));
+                        add_extra(ui, st, r, &mut fx);
                     }
                 }
             });
@@ -2079,6 +2139,12 @@ fn quick_bar(ctx: &egui::Context, st: &mut UiState, g: &Geo) {
             fx.changed = true;
         }
     }
+    // An extra slot emptied (dragged to the bin, or away) goes, once
+    // nothing is in hand.
+    if st.drag_src.is_none() && st.held.is_none() && st.extras.iter().any(Option::is_none) {
+        st.extras.retain(Option::is_some);
+        fx.changed = true;
+    }
     if fx.changed {
         hotbar::grow_inventory(&mut st.inventory);
         st.presets_dirty = true;
@@ -2086,6 +2152,83 @@ fn quick_bar(ctx: &egui::Context, st: &mut UiState, g: &Geo) {
     if let Some(m) = fx.say {
         st.message = Some(m);
     }
+}
+
+/// The quick bar's "+": a tool dropped (or put down) on it, or with the
+/// inventory closed the current tool, becomes a new slot past the toolbar,
+/// for tapping (it has no key). Dragged onto the bin, a slot goes again.
+fn add_extra(ui: &mut egui::Ui, st: &mut UiState, rect: Rect, fx: &mut SlotFx) {
+    let resp = ui.interact(rect, Id::new("extra_add"), Sense::click());
+    named(&resp, "Add a slot");
+    let over = ui
+        .input(|i| i.pointer.interact_pos())
+        .is_some_and(|p| rect.contains(p));
+    let carrying = st.drag_src.is_some() || st.held.is_some();
+    let p = ui.painter();
+    let hot = resp.hovered() || (carrying && over);
+    p.rect_filled(
+        rect.shrink(1.0),
+        8.0,
+        if hot {
+            Color32::WHITE
+        } else {
+            FACE.gamma_multiply(0.7)
+        },
+    );
+    let dash = Stroke::new(if hot { 2.0 } else { 1.2 }, if hot { ACCENT } else { EDGE });
+    let r = rect.shrink(2.0);
+    for (a, b) in [
+        (r.left_top(), r.right_top()),
+        (r.right_top(), r.right_bottom()),
+        (r.right_bottom(), r.left_bottom()),
+        (r.left_bottom(), r.left_top()),
+    ] {
+        p.extend(egui::Shape::dashed_line(&[a, b], dash, 4.0, 3.0));
+    }
+    p.text(
+        rect.center(),
+        Align2::CENTER_CENTER,
+        "+",
+        egui::FontId::proportional(rect.height() * 0.5),
+        if hot { ACCENT } else { Color32::from_gray(150) },
+    );
+    let full = st.extras.len() >= 32;
+    let dropped = over && st.drag_src.is_some() && ui.input(|i| i.pointer.any_released());
+    let add = if dropped {
+        let (w, j) = st.drag_src.take().expect("dragging");
+        let held = st.held.take();
+        if w.is_source() {
+            // A copy: the basic tool or view stays where it was.
+            *slot_mut(st, w, j) = held;
+        }
+        held
+    } else if resp.clicked() {
+        match st.held.take() {
+            Some(h) => Some(h),
+            None if !st.bag_open => Some(fx.current),
+            None => None,
+        }
+    } else {
+        None
+    };
+    if let Some(p) = add {
+        if full {
+            fx.say = Some("The quick bar has enough extra slots".into());
+            stash_in_inventory(st, Some(p), fx);
+        } else {
+            st.extras.push(Some(p));
+            fx.say = Some(format!(
+                "Added {} to the quick bar (tap it to use it)",
+                describe(&p)
+            ));
+        }
+        fx.changed = true;
+    }
+    resp.on_hover_text(if st.bag_open {
+        "Drop a tool here for another quick bar slot (tap only, no key); drag one onto 🗑 to remove it"
+    } else {
+        "Add the current tool as another quick bar slot (tap only, no key)"
+    });
 }
 
 /// A toolbar's number button. True when tapped.
@@ -2285,6 +2428,17 @@ fn inventory_at(
     } else {
         30.0
     };
+    // Then the canvas's saved views, to fly to from a slot.
+    st.view_items = (0..st.bookmark_views.len())
+        .map(|i| Some(Preset::view(VIEW_ITEM + i as u32)))
+        .collect();
+    let view_rows = st.view_items.len().div_ceil(cols);
+    let footer = footer
+        + match (st.views_open, view_rows) {
+            (false, _) => 30.0,
+            (true, 0) => 52.0,
+            (true, r) => r as f32 * (s + gap) - gap + 34.0,
+        };
     // Fill the panel with empty slots, like a game's inventory grid.
     let fit = (((area.height() - 90.0 - footer) + gap) / (s + gap))
         .floor()
@@ -2398,7 +2552,8 @@ fn inventory_at(
                         );
                         crate::prefs::save(&p);
                     }
-                    if st.basics_open {
+                    let basics_open = st.basics_open;
+                    if basics_open {
                         let n = st.basic.len();
                         let (all, _) = ui.allocate_exact_size(
                             vec2(inner, basic_rows as f32 * (s + gap) - gap),
@@ -2410,6 +2565,47 @@ fn inventory_at(
                                 Vec2::splat(s),
                             );
                             slot(ui, st, r, Slots::Basic, i, fx);
+                        }
+                    }
+                    ui.add_space(4.0);
+                    let title = match (st.views_open, narrow) {
+                        (true, true) => "⏷ Views",
+                        (true, false) => "⏷ Views — drag one onto a slot to fly there",
+                        (false, _) => "⏵ Views",
+                    };
+                    let fold = ui
+                        .add(egui::Button::new(egui::RichText::new(title).strong()).frame(false))
+                        .on_hover_text(if st.views_open {
+                            "Fold the views away"
+                        } else {
+                            "Show this canvas's saved views, to put in a slot"
+                        });
+                    if fold.clicked() {
+                        st.views_open = !st.views_open;
+                        let mut p = crate::prefs::load();
+                        p.insert(
+                            "invviews".into(),
+                            if st.views_open { "open" } else { "closed" }.into(),
+                        );
+                        crate::prefs::save(&p);
+                    }
+                    if st.views_open {
+                        let n = st.view_items.len();
+                        if n == 0 {
+                            help(ui, "No saved views yet: save one in Menu › Views.");
+                        } else {
+                            let (all, _) = ui.allocate_exact_size(
+                                vec2(inner, view_rows as f32 * (s + gap) - gap),
+                                Sense::hover(),
+                            );
+                            for i in 0..n {
+                                let r = Rect::from_min_size(
+                                    all.min
+                                        + vec2((i % cols) as f32 * (s + gap), (i / cols) as f32 * (s + gap)),
+                                    Vec2::splat(s),
+                                );
+                                slot(ui, st, r, Slots::Views, i, fx);
+                            }
                         }
                     }
                 });
@@ -2772,6 +2968,8 @@ fn slot_mut(st: &mut UiState, which: Slots, i: usize) -> &mut Option<Preset> {
         Slots::Hold(k) if k == st.active_bar => &mut st.hold,
         Slots::Hold(k) => &mut st.toolbars[k].hold,
         Slots::Basic => &mut st.basic[i],
+        Slots::Views => &mut st.view_items[i],
+        Slots::Extra => &mut st.extras[i],
     }
 }
 
@@ -2799,12 +2997,17 @@ fn slot(ui: &mut egui::Ui, st: &mut UiState, rect: Rect, which: Slots, i: usize,
                 ),
             },
             Slots::Inventory => format!("Inventory {}", i + 1),
+            Slots::Views => format!(
+                "View {}",
+                st.bookmark_views.get(i).map_or("", |v| v.name.as_str())
+            ),
+            Slots::Extra => format!("Extra {}", i + 1),
             _ => format!("Slot {}", i + 1),
         },
     );
     if st.bag_open && resp.drag_started() && st.held.is_none() {
         if let Some(it) = slot_mut(st, which, i).take() {
-            st.held = Some(it);
+            st.held = Some(st.held_from(which, it));
             st.drag_src = Some((which, i));
             fx.changed = true;
         }
@@ -2817,16 +3020,18 @@ fn slot(ui: &mut egui::Ui, st: &mut UiState, rect: Rect, which: Slots, i: usize,
     if released && over {
         if let Some((w, j)) = st.drag_src.take() {
             let held = st.held.take();
-            if which == Slots::Basic {
-                // The basic tools stay as they are: it goes back.
+            if which.is_source() {
+                // The basic tools and views stay as they are: it goes back.
                 *slot_mut(st, w, j) = held;
-                if w != Slots::Basic {
-                    fx.say = Some("The basic tools always stay — drop it on another slot".into());
+                if !w.is_source() {
+                    fx.say = Some(
+                        "The basic tools and views always stay — drop it on another slot".into(),
+                    );
                 }
             } else {
                 let prev = std::mem::replace(slot_mut(st, which, i), held);
                 if prev.is_some() {
-                    if w == Slots::Basic {
+                    if w.is_source() {
                         // A copy of a basic tool took its place: keep what
                         // was there in the inventory.
                         stash_in_inventory(st, prev, fx);
@@ -2879,8 +3084,7 @@ fn slot(ui: &mut egui::Ui, st: &mut UiState, rect: Rect, which: Slots, i: usize,
         );
     }
     let view_name = item.and_then(|it| it.view).map(|v| {
-        st.views
-            .get(&v)
+        st.view_of(v)
             .map_or("A view".to_string(), |v| v.name.clone())
     });
     match (&item, &view_name) {
@@ -2899,18 +3103,18 @@ fn slot(ui: &mut egui::Ui, st: &mut UiState, rect: Rect, which: Slots, i: usize,
     // The hold slot is like any other: tapped, its tool becomes the main
     // one. It changes only when empty (a tap saves the current tool) or by
     // putting a tool down on it from the inventory.
-    if resp.clicked() && which == Slots::Basic {
+    if resp.clicked() && which.is_source() {
         // Tap: a copy in hand, to tap onto a slot (or use it straight away
         // with the inventory closed).
         if st.bag_open {
             if st.held.is_none() {
-                st.held = item;
+                st.held = item.map(|it| st.held_from(which, it));
                 fx.say = Some(format!(
                     "{}: tap a slot to put it there",
                     item.map_or(String::new(), |it| describe(&it))
                 ));
             } else {
-                fx.say = Some("The basic tools always stay — tap another slot".into());
+                fx.say = Some("The basic tools and views always stay — tap another slot".into());
             }
         } else if let Some(it) = item {
             st.apply(&it);
