@@ -1838,6 +1838,11 @@ impl App {
             #[cfg(not(target_arch = "wasm32"))]
             Action::SetPolicy(code) => self.set_policy(code),
             Action::GoToPeer(peer, follow) => self.go_to_peer(peer, follow),
+            Action::StopFollowing => {
+                if self.follow.take().is_some() {
+                    self.say("Stopped following");
+                }
+            }
             Action::SetName => {
                 if let Some(name) = self.ui.name_text.clone() {
                     presence::set_my_name(&name);
@@ -3260,6 +3265,26 @@ impl App {
         {
             self.ui.bookmark_names = self.bookmarks.iter().map(|b| b.name.clone()).collect();
         }
+        // The people strip: everyone else here, in a steady order.
+        let mut people: Vec<(u64, String, egui::Color32)> = self
+            .peers
+            .values()
+            .map(|p| {
+                let [r, g, b, _] = p.color.to_le_bytes();
+                (
+                    p.peer,
+                    net::display_name(&p.name),
+                    egui::Color32::from_rgb(r, g, b),
+                )
+            })
+            .collect();
+        people.sort_by(|a, b| {
+            a.1.to_lowercase()
+                .cmp(&b.1.to_lowercase())
+                .then(a.0.cmp(&b.0))
+        });
+        self.ui.people_here = people;
+        self.ui.following = self.follow;
         self.ui.bookmark_views = self
             .bookmarks
             .iter()

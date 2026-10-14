@@ -91,6 +91,7 @@ reports features without tests and tests named here that don't exist.
 | LIVE-05 | See and follow other people | Menu › Share live › Follow / Go to | W D M | ui:connections-tour |
 | LIVE-06 | Edits merge without conflicts; rival edits keep the newest (or host / guest wins) | automatic; Share live › rival edits policy | W D M | ui:connections-tour, rust:sync::tests::rival_edits_keep_the_newest_branch_only, rust:sync::tests::the_host_policy_picks_its_own_or_its_guests_edit, rust:wire::tests::every_message_round_trips |
 | LIVE-07 | Edit and view links (sealed, signed) | Share live links | W D M S | rust:seal::tests::edit_and_view_keys_seal_open_and_sign |
+| LIVE-08 | People strip: a badge for each person on a live page (right side in landscape, across the top in portrait); tap to go to their view, right click (press and hold) to follow or stop | the badges, top right | W D M | ui:people-strip |
 
 ## Page server (workspace host)
 

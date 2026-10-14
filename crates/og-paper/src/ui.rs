@@ -601,6 +601,10 @@ pub struct UiState {
     pub folder_on: bool,
     /// The live connection, if any (set by the app each frame).
     pub live: Option<LiveInfo>,
+    /// Others on this live page, for the people strip: peer, name, color.
+    pub people_here: Vec<(u64, String, Color32)>,
+    /// Whose view is being followed.
+    pub following: Option<u64>,
     pub live_open: bool,
     pub join_text: String,
     /// Signing in to a page server: user name, password.
@@ -867,6 +871,8 @@ impl Default for UiState {
             importing: false,
             folder_on: false,
             live: None,
+            people_here: Vec::new(),
+            following: None,
             live_open: false,
             join_text: String::new(),
             sign_in: (String::new(), String::new()),
@@ -1272,6 +1278,8 @@ pub enum Action {
     SetPolicy(u8),
     /// Fly to someone's view (true: and follow it).
     GoToPeer(u64, bool),
+    /// Stop riding along with someone's view.
+    StopFollowing,
     /// The name typed in Share live becomes the one others see.
     SetName,
     ImportPlace,
@@ -1396,6 +1404,135 @@ struct Geo {
     /// Radial toolbar: its button and arc.
     bar: Pos2,
     bar_arc: (f32, f32),
+}
+
+/// Everyone else on a live page: a round initials badge each, in their
+/// color, down the right side (landscape) or across the top (portrait).
+/// Tap one to fly to their view; right click (or press and hold) to go
+/// there, follow them, or stop following.
+fn people_strip(ctx: &egui::Context, st: &mut UiState, g: &Geo, actions: &mut Vec<Action>) {
+    if st.people_here.is_empty() {
+        return;
+    }
+    let screen = ctx.content_rect();
+    let r = if st.touch_ui { 21.0 } else { 17.0 } * ui_scale(screen).max(0.8);
+    let step = 2.0 * r + 8.0;
+    let portrait = screen.height() > screen.width();
+    // Clear of the settings button and its zoom readout (top right).
+    let (start, dir, room) = if portrait {
+        let y = g.app.y.max(screen.top() + r + 12.0);
+        let x0 = screen.left() + r + 12.0;
+        (pos2(x0, y), vec2(1.0, 0.0), g.app.x - g.r - 14.0 - x0)
+    } else {
+        let x = screen.right() - r - 14.0;
+        let y0 = g.app.y + g.r + 44.0 + r;
+        (pos2(x, y0), vec2(0.0, 1.0), screen.bottom() * 0.62 - y0)
+    };
+    let fit = ((room / step).floor().max(1.0)) as usize;
+    let n = st.people_here.len();
+    let shown = if n > fit {
+        fit.saturating_sub(1).max(1)
+    } else {
+        n
+    };
+    egui::Area::new(Id::new("people_strip"))
+        .order(Order::Foreground)
+        .fixed_pos(screen.min)
+        .show(ctx, |ui| {
+            ui.set_clip_rect(screen);
+            let people = st.people_here.clone();
+            for (i, (peer, name, color)) in people.iter().take(shown).enumerate() {
+                let c = start + dir * (i as f32 * step);
+                let rect = Rect::from_center_size(c, Vec2::splat(2.0 * r));
+                let resp = ui.interact(rect, Id::new(("peer_badge", *peer)), Sense::click());
+                named(&resp, format!("Person {name}"));
+                if resp.is_pointer_button_down_on() {
+                    ui.ctx().request_repaint();
+                }
+                let p = ui.painter();
+                let followed = st.following == Some(*peer);
+                p.circle_filled(c + vec2(0.0, 1.5), r + 1.0, Color32::from_black_alpha(40));
+                p.circle_filled(c, r, *color);
+                p.circle_stroke(
+                    c,
+                    r + if followed { 2.5 } else { 0.0 },
+                    Stroke::new(
+                        if followed { 3.0 } else { 2.0 },
+                        if followed { ACCENT } else { Color32::WHITE },
+                    ),
+                );
+                let initials: String = name
+                    .split_whitespace()
+                    .filter_map(|w| w.chars().next())
+                    .take(2)
+                    .collect::<String>()
+                    .to_uppercase();
+                let initials = if initials.is_empty() {
+                    "?".into()
+                } else {
+                    initials
+                };
+                // Dark or light letters, whichever reads on their color.
+                let lum =
+                    0.3 * color.r() as f32 + 0.59 * color.g() as f32 + 0.11 * color.b() as f32;
+                p.text(
+                    c,
+                    Align2::CENTER_CENTER,
+                    initials,
+                    egui::FontId::proportional(r * 0.8),
+                    if lum > 150.0 { INKY } else { Color32::WHITE },
+                );
+                if followed {
+                    p.circle_filled(c + vec2(r * 0.72, r * 0.72), r * 0.3, ACCENT);
+                }
+                let resp = resp.on_hover_text(if followed {
+                    format!("{name}: following their view (right click for more)")
+                } else {
+                    format!("{name}: tap to go to their view, right click to follow")
+                });
+                if resp.clicked() {
+                    actions.push(Action::GoToPeer(*peer, false));
+                }
+                resp.context_menu(|ui| {
+                    ui.label(egui::RichText::new(name).strong());
+                    if ui.button("Go to their view").clicked() {
+                        actions.push(Action::GoToPeer(*peer, false));
+                        ui.close();
+                    }
+                    if followed {
+                        if ui.button("Stop following").clicked() {
+                            actions.push(Action::StopFollowing);
+                            ui.close();
+                        }
+                    } else if ui
+                        .button("Follow")
+                        .on_hover_text("Ride along with their view until you move")
+                        .clicked()
+                    {
+                        actions.push(Action::GoToPeer(*peer, true));
+                        ui.close();
+                    }
+                });
+            }
+            // More people than fit: a count, naming the rest.
+            if shown < n {
+                let c = start + dir * (shown as f32 * step);
+                let rect = Rect::from_center_size(c, Vec2::splat(2.0 * r));
+                let resp = ui.interact(rect, Id::new("peer_more"), Sense::hover());
+                let p = ui.painter();
+                p.circle_filled(c, r, FACE);
+                p.circle_stroke(c, r, Stroke::new(1.5, EDGE));
+                p.text(
+                    c,
+                    Align2::CENTER_CENTER,
+                    format!("+{}", n - shown),
+                    egui::FontId::proportional(r * 0.75),
+                    INKY,
+                );
+                let rest: Vec<&str> = people[shown..].iter().map(|p| p.1.as_str()).collect();
+                resp.on_hover_text(rest.join(", "));
+            }
+        });
 }
 
 /// Size of the round buttons and fans by screen: about 60% on a phone
@@ -1750,6 +1887,7 @@ pub fn draw(ctx: &egui::Context, st: &mut UiState) -> Vec<Action> {
             });
     }
     paint_overlay(ctx, &st.overlay, st.touch_ui);
+    people_strip(ctx, st, &g, &mut actions);
     quick_bar(ctx, st, &g);
     if st.radial_bar && !st.hide_bar {
         radial_bar(ctx, st, &g);
