@@ -78,12 +78,30 @@ impl App {
         if lo[0] > hi[0] {
             return None;
         }
+        // A symbol's pins (members that are pins): where wires join it.
+        let pins: Vec<[f64; 2]> = members
+            .iter()
+            .filter_map(|m| match *m {
+                ObjRef::Group(g) => {
+                    let grp = self.objs.groups.get(g as usize)?;
+                    match objects::to_cam(&grp.cell, &grp.data, &self.cam) {
+                        ObjData::Shape { style, geom, .. }
+                            if style.kind == crate::shapes::ShapeKind::Pin =>
+                        {
+                            Some(geom.center)
+                        }
+                        _ => None,
+                    }
+                }
+                _ => None,
+            })
+            .collect();
         let data = ObjData::Bundle {
             geom: Geom {
                 center: [(lo[0] + hi[0]) * 0.5, (lo[1] + hi[1]) * 0.5],
                 half: [(hi[0] - lo[0]) * 0.5, (hi[1] - lo[1]) * 0.5],
                 rot: 0.0,
-                pts: vec![],
+                pts: pins,
             },
             comp,
         };
@@ -104,6 +122,8 @@ impl App {
         map: &HashMap<ObjRef, ObjRef>,
         dup: bool,
     ) -> Vec<ObjRef> {
+        self.comp_remade.clear();
+        self.bundle_remade.clear();
         let mut out = Vec::with_capacity(sel.len());
         for (r, ms) in sel.iter().zip(each) {
             match ms {
@@ -111,6 +131,9 @@ impl App {
                     let new: Vec<ObjRef> = ms.iter().map(|m| *map.get(m).unwrap_or(m)).collect();
                     match self.make_bundle(&new) {
                         Some(b) => {
+                            if let (ObjRef::Group(o), ObjRef::Group(n)) = (*r, b) {
+                                self.bundle_remade.push((o, n));
+                            }
                             // A component stays one (a duplicate is a copy).
                             self.carry_comp(r, &b, dup);
                             out.push(b)
@@ -122,6 +145,36 @@ impl App {
             }
         }
         out
+    }
+
+    /// `old`, a member of a group, was replaced by `new`: the group made
+    /// again around it (its other members copied, so it is all new
+    /// strokes, as any edit of a group is). The group, and the strokes
+    /// taken away and added besides `old`'s and `new`'s.
+    pub(crate) fn rebundle(
+        &mut self,
+        old: ObjRef,
+        new: ObjRef,
+    ) -> Option<(ObjRef, Vec<u32>, Vec<u32>)> {
+        let s = *self.objs.strokes(&old).first()?;
+        let b = *self.objs.bundle_of.get(&s)?;
+        let comp = self.comp_of(&ObjRef::Group(b));
+        let (mut removed, mut added, mut out) = (Vec::new(), Vec::new(), Vec::new());
+        for m in self.objs.members(b) {
+            if m == old {
+                out.push(new);
+                continue;
+            }
+            if !self.objs.alive(&self.scene, &m) {
+                continue;
+            }
+            let c = self.same_copy(m);
+            removed.extend_from_slice(self.objs.strokes(&m));
+            added.extend_from_slice(self.objs.strokes(&c));
+            out.push(c);
+        }
+        let nb = self.make_bundle_as(&out, comp)?;
+        Some((nb, removed, added))
     }
 
     /// A copy of `r` (new strokes, same everything): how a group's

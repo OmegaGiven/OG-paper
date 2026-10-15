@@ -324,6 +324,7 @@ impl Align {
 
 /// Lay out `text` (lines split on newlines) in `font`. Returns the ink and
 /// the box size (grid units, cap height 6).
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn layout(text: &str, font: FontId, align: Align, seed: u32) -> (Vec<Mark>, [f64; 2]) {
     layout_spaced(text, font, align, seed, Spacing::default())
 }

@@ -130,6 +130,7 @@ fn kind_name(k: ShapeKind) -> &'static str {
         ShapeKind::Arrow => "arrow",
         ShapeKind::Path => "path",
         ShapeKind::Frame => "frame",
+        ShapeKind::Pin => "pin",
     }
 }
 
@@ -498,6 +499,7 @@ impl Patch {
                     self.saturation.unwrap_or(adjust[2]),
                 ],
             },
+            d @ ObjData::LayerLook { .. } => d,
             ObjData::Frame { geom, name } => ObjData::Frame {
                 geom,
                 name: self.name.clone().unwrap_or(name),
@@ -731,6 +733,37 @@ impl App {
                 added.extend(ids);
                 Some(ObjRef::Group(g))
             }
+            "symbol" => {
+                let name = s("name").ok_or("symbol needs \"name\" (see the symbols list)")?;
+                let sym = crate::symbols::find(name).ok_or_else(|| {
+                    format!(
+                        "no symbol {name}: try {}",
+                        crate::symbols::SYMBOLS
+                            .iter()
+                            .map(|s| s.key)
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                })?;
+                // "size": points per grid unit (10 by default).
+                let unit = num(c, "size").unwrap_or(10.0).clamp(0.01, 10_000.0);
+                let (lo, hi) = crate::symbols::bounds(&crate::symbols::parse(sym.spec));
+                let (x, y) = (num(c, "x").unwrap_or(0.0), num(c, "y").unwrap_or(0.0));
+                // Placed by its top left corner, or centred on "cx", "cy".
+                let center = match (num(c, "cx"), num(c, "cy")) {
+                    (Some(cx), Some(cy)) => to_cam(cam, cx, cy),
+                    _ => to_cam(
+                        cam,
+                        x + (hi[0] - lo[0]) * unit * 0.5,
+                        y + (hi[1] - lo[1]) * unit * 0.5,
+                    ),
+                };
+                let (b, ids) = self
+                    .add_symbol(sym, center, unit / ppc, color.unwrap_or(0xff24_1c1c))
+                    .ok_or("could not draw that symbol")?;
+                added.extend(ids);
+                Some(b)
+            }
             "shape" => {
                 let kind = s("kind")
                     .map(|k| kind_of(k).ok_or(format!("unknown shape kind: {k}")))
@@ -902,6 +935,11 @@ impl App {
         Some(self.objs.obj_of(i as u32))
     }
 
+    #[cfg(test)]
+    pub(crate) fn find_all_pub(&self, ids: &[String]) -> Result<Vec<ObjRef>, String> {
+        self.find_all(ids)
+    }
+
     fn find_all(&self, ids: &[String]) -> Result<Vec<ObjRef>, String> {
         if ids.is_empty() {
             return Err("name the things to change by id".into());
@@ -918,7 +956,9 @@ impl App {
     /// Everything on the page, bottom to top.
     fn all_objects(&self) -> Vec<ObjRef> {
         let mut ids: Vec<u32> = (0..self.scene.strokes.len() as u32)
-            .filter(|&i| !self.scene.strokes[i as usize].deleted)
+            .filter(|&i| {
+                !self.scene.strokes[i as usize].deleted && !self.objs.look_strokes.contains(&i)
+            })
             .collect();
         ids.sort_by(|a, b| {
             let (za, zb) = (
@@ -1084,6 +1124,10 @@ impl App {
                             put("contrast", tidy(adjust[1] as f64).into());
                             put("saturation", tidy(adjust[2] as f64).into());
                         }
+                    }
+                    ObjData::LayerLook { ref name, .. } => {
+                        put("kind", "layer".into());
+                        put("name", name.clone().into());
                     }
                     ObjData::Frame { ref name, .. } => {
                         put("kind", "frame".into());
@@ -1339,6 +1383,8 @@ impl App {
         let saved_cam = std::mem::replace(&mut self.cam, view);
         let saved_size = self.size_override.replace([w, h]);
         let only = !refs.is_empty();
+        // Layer looks as the canvas keeps them (a page server draws no frames).
+        self.layers_refresh();
         self.edit.selection = refs;
         ogpaper_core::query(&self.scene, &self.cam, w, h, crate::VIEW, &mut self.draw);
         if self.portal_pass() {

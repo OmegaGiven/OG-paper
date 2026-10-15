@@ -75,23 +75,40 @@ pub fn knock_out(img: &mut RgbaImage) -> bool {
         stack.push((0, y));
         stack.push((w - 1, y));
     }
-    while let Some((x, y)) = stack.pop() {
+    // Each step outwards from the edges may drift a little from the last
+    // (a soft gradient or vignette), but never far from the background.
+    let mut from: Vec<[u8; 4]> = vec![[0; 4]; (w * h) as usize];
+    let seed: Vec<(u32, u32)> = stack.drain(..).collect();
+    let mut stack: Vec<(u32, u32, Option<[u8; 4]>)> =
+        seed.into_iter().map(|(x, y)| (x, y, None)).collect();
+    while let Some((x, y, prev)) = stack.pop() {
         let i = idx(x, y);
-        if out[i] || !near(img.get_pixel(x, y).0) {
+        if out[i] {
+            continue;
+        }
+        let p = img.get_pixel(x, y).0;
+        let ok = near(p)
+            || prev.is_some_and(|q| {
+                p[3] > 0
+                    && dist(p, [q[0] as f32, q[1] as f32, q[2] as f32]) < TOLERANCE * 0.3
+                    && dist(p, bg) < TOLERANCE * 2.5
+            });
+        if !ok {
             continue;
         }
         out[i] = true;
+        from[i] = p;
         if x > 0 {
-            stack.push((x - 1, y));
+            stack.push((x - 1, y, Some(p)));
         }
         if y > 0 {
-            stack.push((x, y - 1));
+            stack.push((x, y - 1, Some(p)));
         }
         if x + 1 < w {
-            stack.push((x + 1, y));
+            stack.push((x + 1, y, Some(p)));
         }
         if y + 1 < h {
-            stack.push((x, y + 1));
+            stack.push((x, y + 1, Some(p)));
         }
     }
     let taken = out.iter().filter(|o| **o).count();
@@ -118,8 +135,14 @@ pub fn knock_out(img: &mut RgbaImage) -> bool {
                         && out[idx(nx as u32, ny as u32)]
                 });
             if edge {
+                // Part background, part subject: fade it, and take the
+                // background's tint out of its color.
                 let d = dist(p.0, bg);
                 let keep = ((d - TOLERANCE * 0.5) / TOLERANCE).clamp(0.35, 1.0);
+                for k in 0..3 {
+                    let c = (p.0[k] as f32 - bg[k] * (1.0 - keep)) / keep;
+                    p.0[k] = c.clamp(0.0, 255.0) as u8;
+                }
                 p.0[3] = (p.0[3] as f32 * keep) as u8;
             }
         }
@@ -210,5 +233,23 @@ mod tests {
             ])
         });
         assert!(!knock_out(&mut noise) || noise.pixels().filter(|p| p.0[3] == 0).count() < 40);
+        // A soft gradient behind (light grey to white): all of it goes.
+        let mut grad = RgbaImage::from_fn(60, 60, |x, _| {
+            let v = 255 - (x as f32 * 0.8) as u8;
+            image::Rgba([v, v, v, 255])
+        });
+        for y in 20..40 {
+            for x in 20..40 {
+                grad.put_pixel(x, y, image::Rgba([20, 120, 40, 255]));
+            }
+        }
+        assert!(knock_out(&mut grad));
+        assert_eq!(
+            grad.get_pixel(59, 5).0[3],
+            0,
+            "the dark end of the gradient too"
+        );
+        assert_eq!(grad.get_pixel(0, 59).0[3], 0);
+        assert_eq!(grad.get_pixel(30, 30).0[3], 255);
     }
 }

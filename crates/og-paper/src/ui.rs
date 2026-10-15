@@ -355,6 +355,8 @@ pub enum AppItem {
     Layers,
     /// Frames (artboards): fly to one.
     Frames,
+    /// Flowchart, electrical and mechanical symbols to place.
+    Symbols,
     /// Rulers along the top and left edges.
     Rulers,
     /// Move the controls around (now inside the Layout window).
@@ -413,6 +415,7 @@ const APP_SECTIONS: [(&str, &[AppItem]); 5] = [
             AppItem::Library,
             AppItem::Import,
             AppItem::Diagram,
+            AppItem::Symbols,
             AppItem::Layers,
         ],
     ),
@@ -486,6 +489,7 @@ impl AppItem {
             AppItem::Diagram => "Diagram",
             AppItem::Layers => "Layers",
             AppItem::Frames => "Frames",
+            AppItem::Symbols => "Symbols",
             AppItem::Rulers => "Rulers",
             AppItem::Layout => "Edit layout",
             AppItem::Hotkeys => "Hotkeys",
@@ -525,6 +529,7 @@ impl AppItem {
             AppItem::Diagram => Action::Diagram,
             AppItem::Layers => Action::LayersPanel,
             AppItem::Frames => Action::FramesPanel,
+            AppItem::Symbols => Action::SymbolsPanel,
             AppItem::Rulers => Action::Rulers,
             AppItem::Layout => Action::EditLayout,
             AppItem::Hotkeys => Action::Hotkeys,
@@ -661,6 +666,9 @@ pub struct UiState {
     pub layer_rows: Vec<crate::layers::LayerRow>,
     /// Menu › Frames, and the frames it lists.
     pub frames_open: bool,
+    /// Menu › Symbols, and the category shown.
+    pub symbols_open: bool,
+    pub symbols_cat: usize,
     pub frame_rows: Vec<crate::frames::FrameRow>,
     /// Rulers on (Menu › Rulers), and their mapping this frame.
     pub rulers: bool,
@@ -956,6 +964,8 @@ impl Default for UiState {
             geo_dirty: [false; 5],
             geo_busy: false,
             frames_open: false,
+            symbols_open: false,
+            symbols_cat: 0,
             frame_rows: Vec::new(),
             frame_name: String::new(),
             frame_name_for: None,
@@ -1361,6 +1371,9 @@ pub enum Action {
     /// name); move the selection onto.
     LayersPanel,
     FramesPanel,
+    SymbolsPanel,
+    /// Put symbol k (in `symbols::SYMBOLS`) in the middle of the screen.
+    PlaceSymbol(u16),
     FrameGo(u32),
     FrameRename,
     Rulers,
@@ -2091,6 +2104,9 @@ pub fn draw(ctx: &egui::Context, st: &mut UiState) -> Vec<Action> {
     }
     if st.frames_open {
         frames_panel(ctx, st, &g, &mut actions);
+    }
+    if st.symbols_open {
+        symbols_panel(ctx, st, &g, &mut actions);
     }
     actions.append(&mut st.queued);
 
@@ -5048,7 +5064,7 @@ fn shape_section(
         part_heading(ui, "Shape");
         chips(
             ui,
-            &SHAPES,
+            &SHAPES[..shapes::PICKABLE],
             &mut sh.kind,
             sz,
             |k| k.name().into(),
@@ -6312,6 +6328,23 @@ fn app_icon(
             ]);
             line(&[vec2(0.1, 0.55), vec2(0.1, 0.1), vec2(0.55, 0.1)]);
         }
+        AppItem::Symbols => {
+            // A resistor's zigzag over a ground.
+            line(&[
+                vec2(-1.0, -0.4),
+                vec2(-0.6, -0.4),
+                vec2(-0.45, -0.8),
+                vec2(-0.15, 0.0),
+                vec2(0.15, -0.8),
+                vec2(0.45, 0.0),
+                vec2(0.6, -0.4),
+                vec2(1.0, -0.4),
+            ]);
+            line(&[vec2(0.0, -0.4), vec2(0.0, 0.3)]);
+            line(&[vec2(-0.6, 0.3), vec2(0.6, 0.3)]);
+            line(&[vec2(-0.35, 0.6), vec2(0.35, 0.6)]);
+            line(&[vec2(-0.1, 0.9), vec2(0.1, 0.9)]);
+        }
         AppItem::Rulers => {
             // An L of ruler with ticks.
             line(&[vec2(-0.9, 0.9), vec2(-0.9, -0.9), vec2(0.9, -0.9)]);
@@ -6695,6 +6728,16 @@ fn plugin_icon(p: &egui::Painter, c: Pos2, r: f32, icon: &str, ink: Color32) {
             p.line_segment([c + vec2(-s * 0.3, -s * 0.05), c + vec2(0.0, s * 0.8)], st);
             p.line_segment([c + vec2(s * 0.3, -s * 0.05), c + vec2(0.0, s * 0.8)], st);
         }
+        // A symbol (`symbol:<name>`, see `symbols`).
+        i if i.starts_with("symbol:") => match crate::symbols::find(&i[7..]) {
+            Some(sym) => symbol_icon(
+                p,
+                Rect::from_center_size(c, vec2(r * 1.3, r * 1.3)),
+                sym,
+                ink,
+            ),
+            None => plugin_icon(p, c, r, "puzzle", ink),
+        },
         // A puzzle piece.
         _ => {
             let b = Rect::from_center_size(c + vec2(-s * 0.08, s * 0.1), vec2(s * 1.1, s * 1.1));
@@ -8183,6 +8226,133 @@ fn paint_rulers(ctx: &egui::Context, r: crate::measure::Ruler, sel: Option<Rect>
         [left.right_top(), left.right_bottom()],
         Stroke::new(1.0, EDGE),
     );
+}
+
+/// A symbol drawn in `r` (UI points), in `col`.
+fn symbol_icon(p: &egui::Painter, r: Rect, sym: &crate::symbols::Symbol, col: Color32) {
+    use crate::symbols::{bounds, parse, Elem};
+    let e = parse(sym.spec);
+    let (lo, hi) = bounds(&e);
+    let k = ((r.width() - 6.0) / (hi[0] - lo[0]).max(1e-6) as f32)
+        .min((r.height() - 6.0) / (hi[1] - lo[1]).max(1e-6) as f32);
+    let o = r.center()
+        - vec2(
+            ((lo[0] + hi[0]) * 0.5) as f32 * k,
+            ((lo[1] + hi[1]) * 0.5) as f32 * k,
+        );
+    let at = |q: [f64; 2]| o + vec2(q[0] as f32 * k, q[1] as f32 * k);
+    let st = Stroke::new(1.3, col);
+    for el in e {
+        match el {
+            Elem::Line(pts, closed, filled) => {
+                let mut v: Vec<Pos2> = pts.iter().map(|&q| at(q)).collect();
+                if filled {
+                    p.add(Shape::convex_polygon(v, col, Stroke::NONE));
+                } else {
+                    if closed && !v.is_empty() {
+                        v.push(v[0]);
+                    }
+                    p.add(Shape::line(v, st));
+                }
+            }
+            Elem::Ellipse(c, rr, filled) => {
+                let c = at(c);
+                let rad = vec2(rr[0] as f32 * k, rr[1] as f32 * k);
+                if filled {
+                    p.add(Shape::ellipse_filled(c, rad, col));
+                } else {
+                    p.add(Shape::ellipse_stroke(c, rad, st));
+                }
+            }
+            Elem::Rect(a, s) => {
+                p.rect_stroke(
+                    Rect::from_min_size(at(a), vec2(s[0] as f32 * k, s[1] as f32 * k)),
+                    0.0,
+                    st,
+                    egui::StrokeKind::Middle,
+                );
+            }
+            Elem::Text(c, size, text) => {
+                p.text(
+                    at(c),
+                    Align2::CENTER_CENTER,
+                    text,
+                    egui::FontId::proportional((size as f32 * k).max(6.0)),
+                    col,
+                );
+            }
+            Elem::Pin(_) => {}
+        }
+    }
+}
+
+fn symbols_panel(ctx: &egui::Context, st: &mut UiState, g: &Geo, actions: &mut Vec<Action>) {
+    use crate::symbols::{Category, SYMBOLS};
+    let screen = ctx.content_rect();
+    let w = 320.0f32.min(screen.width() - 24.0);
+    let x = (g.app.x - g.r - 12.0).min(screen.right() - 12.0);
+    let y = (g.app.y + g.r + 34.0).max(screen.top() + 8.0);
+    egui::Area::new(Id::new("symbols"))
+        .order(Order::Foreground)
+        .pivot(Align2::RIGHT_TOP)
+        .fixed_pos(pos2(x, y))
+        .show(ctx, |ui| {
+            ui.style_mut().visuals = egui::Visuals::light();
+            egui::Frame::new()
+                .fill(FACE)
+                .stroke(Stroke::new(1.0, EDGE))
+                .corner_radius(12.0)
+                .inner_margin(10.0)
+                .shadow(egui::Shadow { offset: [0, 3], blur: 14, spread: 0, color: Color32::from_black_alpha(45) })
+                .show(ui, |ui| {
+                    ui.set_width(w);
+                    ui.horizontal(|ui| {
+                        ui.strong("Symbols");
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button("×").on_hover_text("Close").clicked() {
+                                st.symbols_open = false;
+                            }
+                        });
+                    });
+                    ui.horizontal(|ui| {
+                        for (i, c) in Category::ALL.iter().enumerate() {
+                            ui.selectable_value(&mut st.symbols_cat, i, c.name());
+                        }
+                    });
+                    ui.add_space(4.0);
+                    let cat = Category::ALL[st.symbols_cat.min(2)];
+                    let cell = 64.0;
+                    egui::ScrollArea::vertical()
+                        .max_height((screen.height() * 0.55).max(140.0))
+                        .show(ui, |ui| {
+                            ui.horizontal_wrapped(|ui| {
+                                ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
+                                for (i, s) in SYMBOLS.iter().enumerate().filter(|(_, s)| s.cat == cat) {
+                                    let (r, resp) = ui.allocate_exact_size(vec2(cell, cell + 12.0), Sense::click());
+                                    let p = ui.painter();
+                                    let fill = if resp.hovered() { Color32::from_rgb(252, 228, 236) } else { Color32::WHITE };
+                                    p.rect_filled(r, 6.0, fill);
+                                    p.rect_stroke(r, 6.0, Stroke::new(1.0, EDGE), egui::StrokeKind::Inside);
+                                    let icon = Rect::from_min_size(r.min + vec2(4.0, 4.0), vec2(cell - 8.0, cell - 12.0));
+                                    symbol_icon(p, icon, s, INKY);
+                                    p.text(
+                                        pos2(r.center().x, r.bottom() - 9.0),
+                                        Align2::CENTER_CENTER,
+                                        s.label(),
+                                        egui::FontId::proportional(9.0),
+                                        Color32::from_gray(90),
+                                    );
+                                    let resp = resp.on_hover_text(format!("{}: place it (with Diagram on, wires join its pins)", s.label()));
+                                    named(&resp, format!("Symbol {}", s.label()));
+                                    if resp.clicked() {
+                                        actions.push(Action::PlaceSymbol(i as u16));
+                                    }
+                                }
+                            });
+                        });
+                    help(ui, "Tap one to place it in the middle of the screen. With Diagram on, lines drawn to its pins stay joined.");
+                });
+        });
 }
 
 fn frames_panel(ctx: &egui::Context, st: &mut UiState, g: &Geo, actions: &mut Vec<Action>) {

@@ -31,9 +31,14 @@ pub enum ShapeKind {
     Path,
     /// Shapes › Frame makes a frame (`ObjData::Frame`), not a shape.
     Frame,
+    /// A symbol's pin (see `symbols`): where wires join it. Not drawn.
+    Pin,
 }
 
-pub const SHAPES: [ShapeKind; 10] = [
+/// The kinds the Shapes panel offers (not pins).
+pub const PICKABLE: usize = 10;
+
+pub const SHAPES: [ShapeKind; 11] = [
     ShapeKind::Rect,
     ShapeKind::Ellipse,
     ShapeKind::Diamond,
@@ -44,6 +49,7 @@ pub const SHAPES: [ShapeKind; 10] = [
     ShapeKind::Arrow,
     ShapeKind::Path,
     ShapeKind::Frame,
+    ShapeKind::Pin,
 ];
 
 impl ShapeKind {
@@ -59,6 +65,7 @@ impl ShapeKind {
             ShapeKind::Arrow => "Arrow",
             ShapeKind::Path => "Pen (curves)",
             ShapeKind::Frame => "Frame",
+            ShapeKind::Pin => "Pin",
         }
     }
 
@@ -480,7 +487,9 @@ fn lerp(a: [f64; 2], b: [f64; 2], t: f64) -> [f64; 2] {
 fn base_outline(kind: ShapeKind, half: [f64; 2], sides: u8) -> Vec<[f64; 2]> {
     let [w, h] = half;
     match kind {
-        ShapeKind::Rect | ShapeKind::Frame => vec![[-w, -h], [w, -h], [w, h], [-w, h]],
+        ShapeKind::Rect | ShapeKind::Frame | ShapeKind::Pin => {
+            vec![[-w, -h], [w, -h], [w, h], [-w, h]]
+        }
         ShapeKind::Diamond => vec![[0.0, -h], [w, 0.0], [0.0, h], [-w, 0.0]],
         ShapeKind::Triangle => vec![[0.0, -h], [w, h], [-w, h]],
         ShapeKind::Ellipse => (0..96)
@@ -911,6 +920,17 @@ pub fn pieces(st: &ShapeStyle, g: &Geom, width: f64, seed: u32) -> Vec<Piece> {
         return out;
     }
 
+    if st.kind == ShapeKind::Pin {
+        // An unseen dot: a fill with no color and no area.
+        return vec![Piece {
+            pts: vec![g.center; 3],
+            width: 0.0,
+            brush: Brush::Fill,
+            dash: Dash::Solid,
+            color: 0,
+            bridges: vec![],
+        }];
+    }
     if st.kind == ShapeKind::Path {
         let parts = subpaths(&g.pts);
         let closed: Vec<Vec<[f64; 2]>> = parts

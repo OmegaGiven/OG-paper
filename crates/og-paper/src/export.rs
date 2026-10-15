@@ -798,6 +798,11 @@ impl Page {
         let catalog = pdf.reserve();
         let pages = pdf.reserve();
         let page = pdf.reserve();
+        // The page's resources, shared with its layer groups (and their
+        // masks, which don't take the page's).
+        let res_id = pdf.reserve();
+        // Each layer group drawn so far (others may be clipped to it).
+        let mut forms: std::collections::HashMap<i32, usize> = Default::default();
         let mut gs: Vec<(String, String)> = Vec::new(); // (name, dict)
         let mut xobj: Vec<(String, usize)> = Vec::new();
         let gs_bm = |ca: f64, bm: &str, gs: &mut Vec<(String, String)>| -> String {
@@ -823,7 +828,7 @@ impl Page {
         };
         // A layer with a look of its own is a transparency group: the page
         // content before it waits here.
-        let mut outer: Vec<(String, f64, &'static str)> = Vec::new();
+        let mut outer: Vec<(String, f64, &'static str, i32, Option<i32>)> = Vec::new();
         let mut c = String::new();
         // y down, like the screen.
         let _ = writeln!(c, "1 0 0 -1 0 {} cm", num(h));
@@ -839,7 +844,7 @@ impl Page {
                 num(h)
             );
         }
-        let mut img_obj: std::collections::HashMap<u64, usize> = Default::default();
+        let mut img_obj: std::collections::HashMap<(u64, [u32; 3]), usize> = Default::default();
         for it in &self.items {
             match it {
                 Item::Ink {
@@ -925,17 +930,22 @@ impl Page {
                     corners,
                     opacity,
                     crop,
-                    // (PDF keeps pictures as they are.)
-                    ..
+                    adjust,
                 } => {
                     let Some(asset) = images.get(id) else {
                         continue;
                     };
-                    let obj = match img_obj.get(id) {
+                    // Adjusted colors: baked into the picture embedded.
+                    let key = (*id, adjust.map(f32::to_bits));
+                    let obj = match img_obj.get(&key) {
                         Some(&o) => o,
                         None => {
-                            let o = pdf_image(&mut pdf, &asset.bytes)?;
-                            img_obj.insert(*id, o);
+                            let o = if *adjust == crate::objects::NO_ADJUST {
+                                pdf_image(&mut pdf, &asset.bytes)?
+                            } else {
+                                pdf_image(&mut pdf, &adjusted_png(&asset.bytes, *adjust)?)?
+                            };
+                            img_obj.insert(key, o);
                             o
                         }
                     };
@@ -981,8 +991,12 @@ impl Page {
                     c.push_str("h W n\n");
                 }
                 Item::ClipEnd => c.push_str("Q\n"),
-                Item::LayerStart { opacity, blend, .. } => {
-                    // (Clipping masks are not kept in PDF.)
+                Item::LayerStart {
+                    opacity,
+                    blend,
+                    layer,
+                    clip_to,
+                } => {
                     let bm = match blend {
                         crate::layers::Blend::Normal => "",
                         crate::layers::Blend::Multiply => "Multiply",
@@ -990,21 +1004,40 @@ impl Page {
                         crate::layers::Blend::Darken => "Darken",
                         crate::layers::Blend::Lighten => "Lighten",
                     };
-                    outer.push((std::mem::take(&mut c), *opacity, bm));
+                    outer.push((std::mem::take(&mut c), *opacity, bm, *layer, *clip_to));
                 }
                 Item::LayerEnd => {
-                    let Some((before, opacity, bm)) = outer.pop() else {
+                    let Some((before, opacity, bm, layer, clip_to)) = outer.pop() else {
                         continue;
                     };
                     let body = std::mem::replace(&mut c, before);
-                    // No /Resources: the page's (its pictures and states).
                     let id = pdf.add_stream(
-                        "/Type /XObject /Subtype /Form /BBox [-100000 -100000 100000 100000] /Group << /S /Transparency >>",
+                        &format!("/Type /XObject /Subtype /Form /BBox [-100000 -100000 100000 100000] /Group << /S /Transparency >> /Resources {res_id} 0 R"),
                         body.as_bytes(),
                     );
+                    forms.insert(layer, id);
                     let xn = format!("X{}", xobj.len());
                     xobj.push((xn.clone(), id));
-                    let n = gs_bm(opacity, bm, &mut gs);
+                    let n = match clip_to {
+                        // Clipped: shown where the layer under it has
+                        // something (its group's alpha as a soft mask).
+                        Some(b) => {
+                            let Some(&m) = forms.get(&b) else {
+                                continue;
+                            };
+                            let name = format!("G{}", gs.len());
+                            gs.push((
+                                name.clone(),
+                                format!(
+                                    "<< /Type /ExtGState /CA {o} /ca {o}{} /SMask << /Type /Mask /S /Alpha /G {m} 0 R >> >>",
+                                    if bm.is_empty() { String::new() } else { format!(" /BM /{bm}") },
+                                    o = num(opacity)
+                                ),
+                            ));
+                            name
+                        }
+                        None => gs_bm(opacity, bm, &mut gs),
+                    };
                     let _ = writeln!(c, "q /{n} gs /{xn} Do Q");
                 }
             }
@@ -1026,6 +1059,8 @@ impl Page {
             res.push_str(">> ");
         }
         res.push_str(">>");
+        pdf.set(res_id, res);
+        let res = format!("{res_id} 0 R");
         pdf.set(catalog, format!("<< /Type /Catalog /Pages {pages} 0 R >>"));
         pdf.set(
             pages,
@@ -1153,6 +1188,27 @@ fn num6(v: f64) -> String {
 
 /// An image XObject: JPEGs as they are, anything else decoded to RGB with
 /// its alpha as a soft mask, both deflated.
+/// A picture with brightness, contrast and saturation applied (as the
+/// renderer does), as PNG.
+fn adjusted_png(bytes: &[u8], a: [f32; 3]) -> Result<Vec<u8>, String> {
+    let mut img = image::load_from_memory(bytes)
+        .map_err(|e| e.to_string())?
+        .to_rgba8();
+    for p in img.pixels_mut() {
+        let c = [p[0], p[1], p[2]].map(|v| v as f32 / 255.0);
+        let grey = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+        for k in 0..3 {
+            let v = grey + (c[k] - grey) * a[2];
+            let v = (v - 0.5) * a[1] + 0.5 + a[0];
+            p[k] = (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+        }
+    }
+    let mut out = std::io::Cursor::new(Vec::new());
+    img.write_to(&mut out, image::ImageFormat::Png)
+        .map_err(|e| e.to_string())?;
+    Ok(out.into_inner())
+}
+
 fn pdf_image(pdf: &mut Pdf, bytes: &[u8]) -> Result<usize, String> {
     let img = image::load_from_memory(bytes).map_err(|e| e.to_string())?;
     let (w, h) = (img.width(), img.height());
@@ -1374,6 +1430,11 @@ mod tests {
             "{g}"
         );
         assert!(g.contains("filter=\"url(#adjust"));
+        // PDF: the picture embedded with its colors changed.
+        let pdf = grey.pdf(&imgs).unwrap();
+        let plain = p.pdf(&imgs);
+        assert!(plain.is_ok());
+        assert!(pdf.len() > 200);
         let svg = p.svg(&imgs);
         assert!(svg.contains("href=\"data:image/png;base64,"));
         let pdf = String::from_utf8_lossy(&p.pdf(&imgs).unwrap()).into_owned();

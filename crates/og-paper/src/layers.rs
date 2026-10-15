@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 
 use ogpaper_core::{layer_base, layer_of};
 
-use crate::objects::ObjRef;
+use crate::objects::{ObjData, ObjRef};
 use crate::App;
 
 /// What is kept about a layer besides its strokes.
@@ -211,7 +211,7 @@ impl App {
             .get(&prefs_key(canvas))
             .map(|s| decode(s))
             .unwrap_or_default();
-        self.layer_meta = meta;
+        self.layer_local = meta;
         self.scene.hidden_layers = hidden;
         self.scene.locked_layers = locked;
         self.scene.layer = active;
@@ -222,13 +222,74 @@ impl App {
         p.insert(
             prefs_key(self.share.canvas),
             encode(
-                &self.layer_meta,
+                &self.layer_local,
                 &self.scene.hidden_layers,
                 &self.scene.locked_layers,
                 self.scene.layer,
             ),
         );
         crate::prefs::save(&p);
+    }
+
+    /// The layers' names and looks: those kept on the canvas (`LayerLook`,
+    /// the newest of each layer's), over those kept on this device, with a
+    /// look being dragged on top.
+    pub(crate) fn layers_refresh(&mut self) {
+        let mut meta = self.layer_local.clone();
+        for &g in &self.objs.looks {
+            let grp = &self.objs.groups[g as usize];
+            let Some(&s) = grp.strokes.first() else {
+                continue;
+            };
+            let st = &self.scene.strokes[s as usize];
+            if st.deleted {
+                continue;
+            }
+            if let ObjData::LayerLook { name, fx, .. } = &grp.data {
+                meta.insert(
+                    layer_of(st.z),
+                    LayerMeta {
+                        name: name.clone(),
+                        fx: *fx,
+                    },
+                );
+            }
+        }
+        if let Some((k, fx)) = self.layer_preview {
+            meta.entry(k).or_default().fx = fx;
+        }
+        self.layer_meta = meta;
+    }
+
+    /// Keep layer `k`'s name and look on the canvas (one undo step; it
+    /// replaces the one there was).
+    fn write_look(&mut self, k: i32, name: String, fx: LayerFx) {
+        let old: Vec<u32> = self
+            .objs
+            .looks
+            .iter()
+            .flat_map(|&g| self.objs.groups[g as usize].strokes.clone())
+            .filter(|&s| {
+                let st = &self.scene.strokes[s as usize];
+                !st.deleted && layer_of(st.z) == k
+            })
+            .collect();
+        let z = self.scene.layer_bottom(k) - 1.0;
+        let [w, h] = self.size();
+        let at = self.px_to_cam([w * 0.5, h * 0.5]);
+        let data = ObjData::LayerLook {
+            geom: crate::shapes::Geom {
+                center: at,
+                half: [0.0, 0.0],
+                rot: 0.0,
+                pts: vec![],
+            },
+            name,
+            fx,
+        };
+        let (_, ids) = self.add_group(&data, Some((z, z)));
+        self.record_edit(old, ids);
+        self.layers_refresh();
     }
 
     /// Every layer: in use, named, or active; bottom first.
@@ -257,7 +318,10 @@ impl App {
         let mut count: BTreeMap<i32, usize> = BTreeMap::new();
         let mut seen = std::collections::HashSet::new();
         for (i, s) in self.scene.strokes.iter().enumerate() {
-            if !s.deleted && seen.insert(self.objs.obj_of(i as u32)) {
+            if !s.deleted
+                && !self.objs.look_strokes.contains(&(i as u32))
+                && seen.insert(self.objs.obj_of(i as u32))
+            {
                 *count.entry(layer_of(s.z)).or_default() += 1;
             }
         }
@@ -328,14 +392,8 @@ impl App {
     pub(crate) fn layer_new(&mut self) {
         let k = self.layers_all().last().copied().unwrap_or(0) + 1;
         let n = self.layers_all().len() + 1;
-        self.layer_meta.insert(
-            k,
-            LayerMeta {
-                name: format!("Layer {n}"),
-                ..Default::default()
-            },
-        );
         self.scene.layer = k;
+        self.write_look(k, format!("Layer {n}"), LayerFx::default());
         self.layers_save();
         self.say(format!("Drawing on {}", self.layer_name(k)));
         self.redraw();
@@ -349,8 +407,8 @@ impl App {
 
     pub(crate) fn layer_rename(&mut self, k: i32, name: String) {
         let name: String = name.trim().chars().take(60).collect();
-        self.layer_meta.entry(k).or_default().name = name;
-        self.layers_save();
+        let fx = self.layer_meta.get(&k).map(|m| m.fx).unwrap_or_default();
+        self.write_look(k, name, fx);
     }
 
     /// Show or hide layer `k` (what is selected on it is let go).
@@ -364,10 +422,19 @@ impl App {
     /// Change layer `k`'s look; `save` when the change is done (a slider
     /// let go), so a drag doesn't write the prefs every frame.
     pub(crate) fn layer_set_fx(&mut self, k: i32, f: impl FnOnce(&mut LayerFx), save: bool) {
-        let m = self.layer_meta.entry(k).or_default();
-        f(&mut m.fx);
+        let mut fx = self
+            .layer_preview
+            .filter(|p| p.0 == k)
+            .map(|p| p.1)
+            .unwrap_or_else(|| self.layer_meta.get(&k).map(|m| m.fx).unwrap_or_default());
+        f(&mut fx);
         if save {
-            self.layers_save();
+            self.layer_preview = None;
+            let name = self.layer_name(k);
+            self.write_look(k, name, fx);
+        } else {
+            self.layer_preview = Some((k, fx));
+            self.layers_refresh();
         }
         self.redraw();
     }
@@ -458,15 +525,16 @@ impl App {
         // Names shown by position ("Layer 2") are kept as they read now.
         for x in [k, m] {
             let name = self.layer_name(x);
-            self.layer_meta.entry(x).or_default().name = name;
+            self.layer_local.entry(x).or_default().name = name;
         }
-        let (a, b) = (self.layer_meta.remove(&k), self.layer_meta.remove(&m));
+        let (a, b) = (self.layer_local.remove(&k), self.layer_local.remove(&m));
         if let Some(a) = a {
-            self.layer_meta.insert(m, a);
+            self.layer_local.insert(m, a);
         }
         if let Some(b) = b {
-            self.layer_meta.insert(k, b);
+            self.layer_local.insert(k, b);
         }
+        self.layers_refresh();
         for list in [&mut self.scene.hidden_layers, &mut self.scene.locked_layers] {
             for x in list.iter_mut() {
                 if *x == k {
@@ -515,7 +583,7 @@ impl App {
             self.edit.selection = refs;
             self.delete_selection();
         }
-        self.layer_meta.remove(&k);
+        self.layer_local.remove(&k);
         self.scene.hidden_layers.retain(|&x| x != k);
         self.scene.locked_layers.retain(|&x| x != k);
         if self.scene.layer == k {
@@ -731,14 +799,46 @@ mod tests {
         let faded = app.scene.layer;
         add(&mut app, "faded");
         assert!(app.layer_fx().is_empty(), "plain layers draw straight on");
-        app.layer_set_fx(top, |f| f.clip = true, false);
+        app.layer_set_fx(top, |f| f.clip = true, true);
+        // A drag shows the look before it is set.
+        app.layer_set_fx(faded, |f| f.opacity = 0.7, false);
+        assert_eq!(app.layer_fx()[&faded].fx.opacity, 0.7);
         app.layer_set_fx(
             faded,
             |f| {
                 f.opacity = 0.4;
                 f.blend = Blend::Multiply;
             },
-            false,
+            true,
+        );
+        // Kept on the canvas: another copy of it has the same looks.
+        let bytes = crate::snapshot::encode(
+            &app.scene,
+            &app.cam,
+            &app.timeline,
+            &[],
+            &app.objs,
+            &app.share.copy_log(),
+        );
+        let snap = crate::snapshot::decode(&bytes, 800.0).unwrap();
+        let mut other = App::new(None);
+        other.scene = snap.scene;
+        other.objs = snap.objs;
+        other.layers_refresh();
+        assert_eq!(
+            other.layer_fx().len(),
+            3,
+            "the looks travel with the canvas"
+        );
+        assert_eq!(other.layer_meta[&faded].fx.blend, Blend::Multiply);
+        // Not something to pick or list.
+        let list = app.run_commands(&serde_json::json!([{"get": "objects"}]))[0]["objects"].clone();
+        assert!(
+            list.as_array()
+                .unwrap()
+                .iter()
+                .all(|o| o["kind"] != "layer"),
+            "{list}"
         );
         let fx = app.layer_fx();
         // The clipped layer and the one it is clipped to, and the faded one.
@@ -781,5 +881,48 @@ mod tests {
             .unwrap();
         let pdf = String::from_utf8_lossy(&pdf);
         assert!(pdf.contains("/BM /Multiply"));
+        assert!(
+            pdf.contains("/SMask << /Type /Mask /S /Alpha /G "),
+            "the clipped layer is masked"
+        );
+    }
+
+    /// `OGP_DUMP=dir cargo test -- --ignored clip_pdf`: a PDF to look at.
+    #[test]
+    #[ignore]
+    fn clip_pdf() {
+        let mut app = App::new(None);
+        app.cam = crate::home_camera();
+        app.size_override = Some([800.0, 600.0]);
+        app.run_commands(&json!([{"add": "shape", "kind": "rect", "x": -200, "y": -60, "w": 120, "h": 120, "fill": "#2050d0", "color": "#2050d0"}]));
+        app.layer_new();
+        let k = app.scene.layer;
+        app.run_commands(&json!([{"add": "shape", "kind": "rect", "x": -170, "y": -30, "w": 260, "h": 60, "fill": "#d03030", "color": "#d03030"}]));
+        app.layer_set_fx(k, |f| f.clip = true, true);
+        ogpaper_core::query(
+            &app.scene,
+            &app.cam,
+            800.0,
+            600.0,
+            crate::VIEW,
+            &mut app.draw,
+        );
+        let opts = crate::export::Opts {
+            selection: false,
+            background: true,
+            scale: 1.0,
+        };
+        let dir = std::env::var("OGP_DUMP")
+            .unwrap_or_else(|_| std::env::temp_dir().display().to_string());
+        std::fs::write(
+            format!("{dir}/clip.pdf"),
+            app.export(crate::export::Format::Pdf, &opts).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            format!("{dir}/clip.png"),
+            app.export(crate::export::Format::Png, &opts).unwrap(),
+        )
+        .unwrap();
     }
 }

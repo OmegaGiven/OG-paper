@@ -121,6 +121,10 @@ impl App {
                                 }),
                             ),
                         ),
+                        ObjData::LayerLook { name, .. } => (
+                            "layer look".to_string(),
+                            ("Layer".to_string(), name.clone()),
+                        ),
                         ObjData::Frame { name, .. } => {
                             ("frame".to_string(), ("Frame".to_string(), name.clone()))
                         }

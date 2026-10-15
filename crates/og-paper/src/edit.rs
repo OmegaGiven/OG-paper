@@ -553,6 +553,14 @@ impl App {
         if t.group.is_some() {
             self.edit.selection = vec![ObjRef::Group(g)];
         }
+        // A text in a group stays in it.
+        if let Some(old) = t.group {
+            if let Some((b, r2, a2)) = self.rebundle(ObjRef::Group(old), ObjRef::Group(g)) {
+                removed.extend(r2);
+                ids.extend(a2);
+                self.edit.selection = vec![b];
+            }
+        }
         self.record_edit(removed, ids);
     }
 
@@ -623,7 +631,7 @@ impl App {
         // The topmost not on a locked layer.
         let top = ids
             .into_iter()
-            .filter(|&id| self.scene.editable(id))
+            .filter(|&id| self.scene.editable(id) && !self.objs.look_strokes.contains(&id))
             .max_by(|&a, &b| {
                 let (za, zb) = (
                     self.scene.strokes[a as usize].z,
@@ -1049,7 +1057,7 @@ impl App {
         );
         for inst in &fine.strokes {
             let id = inst.stroke;
-            if !self.scene.editable(id) {
+            if !self.scene.editable(id) || self.objs.look_strokes.contains(&id) {
                 continue;
             }
             let r = self.objs.obj_of(id);
@@ -1110,7 +1118,10 @@ impl App {
         let grouped: std::collections::HashSet<ObjRef> =
             each.iter().flatten().flatten().copied().collect();
         // Diagram mode: lines linked to the selection follow it.
-        let att = self.attached_to(&sel);
+        // (Groups too: wires join symbols by their pins.)
+        let mut targets = sel.clone();
+        targets.extend(sel0.iter().filter(|r| self.objs.is_bundle(r)));
+        let att = self.attached_to(&targets);
         let mut removed = Vec::new();
         let mut added = Vec::new();
         let mut new_sel = Vec::new();
@@ -1137,13 +1148,14 @@ impl App {
                 new_sel.push(r);
             }
         }
+        let _ = new_sel;
+        self.edit.selection = self.regroup(&sel0, &each, &map, false);
+        groups.extend(self.bundle_remade.iter().copied());
         for (old, new) in self.reroute(&att, &groups) {
             removed.extend_from_slice(&old);
             added.extend_from_slice(&new);
             pairs.push((old, new));
         }
-        let _ = new_sel;
-        self.edit.selection = self.regroup(&sel0, &each, &map, false);
         // Components' copies follow their main, in the same step.
         let mains = self.edit.selection.clone();
         let (r2, a2, p2) = self.remake_copies(&mains);
@@ -1276,6 +1288,7 @@ impl App {
         self.record_edit(removed, added);
     }
 
+    #[cfg(test)]
     pub(crate) fn duplicate_selection_pub(&mut self, offset: [f64; 2]) {
         let refs = self.edit.selection.clone();
         self.duplicate(&refs, offset);
@@ -1589,6 +1602,7 @@ impl App {
                 ObjData::Portal { .. } => SelKind::Portals,
                 ObjData::Bundle { .. } => SelKind::Mixed,
                 ObjData::Frame { .. } => SelKind::Frames,
+                ObjData::LayerLook { .. } => SelKind::Mixed,
             },
         });
         let first = kinds.next().unwrap_or(SelKind::None);
@@ -1620,7 +1634,10 @@ impl App {
                     s.opacity = *opacity;
                     s.adjust = *adjust;
                 }
-                ObjData::Audio { .. } | ObjData::Bundle { .. } | ObjData::Frame { .. } => {}
+                ObjData::Audio { .. }
+                | ObjData::Bundle { .. }
+                | ObjData::Frame { .. }
+                | ObjData::LayerLook { .. } => {}
             },
             None => {}
         }
@@ -1731,8 +1748,10 @@ impl App {
                             seed,
                         }
                     }
-                    d
-                    @ (ObjData::Audio { .. } | ObjData::Bundle { .. } | ObjData::Frame { .. }) => d,
+                    d @ (ObjData::Audio { .. }
+                    | ObjData::Bundle { .. }
+                    | ObjData::Frame { .. }
+                    | ObjData::LayerLook { .. }) => d,
                     ObjData::Image {
                         id,
                         geom,

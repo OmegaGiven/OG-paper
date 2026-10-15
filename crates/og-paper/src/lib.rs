@@ -64,6 +64,7 @@ mod shapes;
 mod share;
 mod snapshot;
 mod swatches;
+mod symbols;
 mod textpath;
 mod timeline;
 mod ui;
@@ -225,6 +226,14 @@ pub struct App {
     /// The canvas whose layer names and states are loaded (see `layers`).
     layers_for: Option<u128>,
     layer_meta: std::collections::BTreeMap<i32, layers::LayerMeta>,
+    /// Names and looks kept on this device only (from before they were
+    /// kept on the canvas), and a look being dragged but not yet set.
+    layer_local: std::collections::BTreeMap<i32, layers::LayerMeta>,
+    layer_preview: Option<(i32, layers::LayerFx)>,
+    /// Components' mains remade by the edit under way: (before, after).
+    comp_remade: Vec<(objects::ObjRef, objects::ObjRef)>,
+    /// Groups remade by the edit under way: (old, new) group.
+    bundle_remade: Vec<(u32, u32)>,
     /// Layer moves in the undo and redo histories: (undo steps with it
     /// done, the two layers), so their names follow on undo and redo.
     layer_undo: Vec<(usize, i32, i32)>,
@@ -389,6 +398,10 @@ impl App {
             follow: None,
             layers_for: None,
             layer_meta: Default::default(),
+            layer_local: Default::default(),
+            layer_preview: None,
+            comp_remade: Vec::new(),
+            bundle_remade: Vec::new(),
             layer_undo: Vec::new(),
             layer_redo: Vec::new(),
             view_only: false,
@@ -1120,6 +1133,7 @@ impl App {
                     objects::ObjData::Audio { .. } => "audio".into(),
                     objects::ObjData::Bundle { .. } => "group".into(),
                     objects::ObjData::Frame { .. } => "frame".into(),
+                    objects::ObjData::LayerLook { .. } => "layer".into(),
                 },
                 data: snapshot::data_bytes(&g.data),
                 strokes: g
@@ -1903,6 +1917,12 @@ impl App {
                 self.redraw();
             }
             Action::FrameGo(g) => self.frame_go(g),
+            Action::SymbolsPanel => {
+                self.ui.symbols_open = !self.ui.symbols_open;
+                self.ui.close_menus();
+                self.redraw();
+            }
+            Action::PlaceSymbol(i) => self.place_symbol(i as usize),
             Action::Rulers => {
                 self.ui.rulers = !self.ui.rulers;
                 let mut p = prefs::load();
@@ -3222,9 +3242,11 @@ impl App {
         web::set_status(format!(
             "{{\"ready\":true,\"zoom\":{:.3},\"strokes\":{},\"shown\":{},\"drawn\":{},\"erased\":{},\"undos\":{},\"deepDraw\":{:.2},\"flying\":{},\"dirty\":{},\"bookmarks\":[{}],\"timeline\":{},\"dark\":{},\"canvas\":\"{:032x}\",\"peer\":\"{:016x}\",\"net\":{},\"name\":{},\"passes\":{},\"hints\":{},\"tool\":{},\"hold\":{},\"viewOnly\":{},\"shared\":[{}],\"delKnob\":{},\"selected\":{},\"clips\":{}}}",
             self.cam.log10_zoom(),
-            self.scene.strokes.iter().filter(|s| !s.deleted).count(),
             (0..self.scene.strokes.len() as u32)
-                .filter(|&i| self.scene.shown(i))
+                .filter(|&i| !self.scene.strokes[i as usize].deleted && !self.objs.look_strokes.contains(&i))
+                .count(),
+            (0..self.scene.strokes.len() as u32)
+                .filter(|&i| self.scene.shown(i) && !self.objs.look_strokes.contains(&i))
                 .count(),
             st.drawn,
             st.erased,
@@ -3395,6 +3417,7 @@ impl App {
         if self.layers_for != Some(self.share.canvas) {
             self.layers_load();
         }
+        self.layers_refresh();
         self.ui.sel_count = self.edit.selection.len();
         self.ui.sel_grouped = self.edit.selection.iter().any(|r| self.objs.is_bundle(r));
         self.ui.sel_on_path = self.sel_on_path();

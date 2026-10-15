@@ -43,6 +43,8 @@
 //! - v12 components: count u32; each: group index u32, component id u64,
 //!   main u8, size across and down f64 x2, name (u32 length + UTF-8). The
 //!   group is a group (v10) to older apps.
+//! - v13 layer looks: count u32; each: group index u32, then `put_look`.
+//!   The look is stored as an invisible box that older apps never draw.
 //!
 //! Compatibility: a newer version may only add at the end (a new section
 //! after the last; never a field inside an existing record), so an older
@@ -61,7 +63,7 @@ use crate::shapes::{ArrowType, FillStyle, Geom, Head, ShapeKind, ShapeStyle, Slo
 use crate::timeline::{Bookmark, Event, Timeline};
 
 const MAGIC: &[u8; 4] = b"OGPT";
-const VERSION: u8 = 12;
+const VERSION: u8 = 13;
 /// Marks a portal's view after its shape in a lone object's bytes.
 const PORTAL_TAG: &[u8; 4] = b"OGPV";
 /// After a lone object's bytes: an audio clip's sound id and length.
@@ -71,6 +73,22 @@ const BUNDLE_TAG: &[u8; 4] = b"OGPB";
 /// After a lone object's bytes: it is a frame, then its name (u32 length +
 /// UTF-8).
 const FRAME_TAG: &[u8; 4] = b"OGPF";
+/// After a lone object's bytes: it is a layer's look (`put_look`).
+const LOOK_TAG: &[u8; 4] = b"OGPL";
+
+/// A layer's name (u32 length + UTF-8), opacity f32, blend u8, clip u8.
+fn put_look(b: &mut Vec<u8>, name: &str, fx: &crate::layers::LayerFx) {
+    b.extend_from_slice(&(name.len() as u32).to_le_bytes());
+    b.extend_from_slice(name.as_bytes());
+    b.extend_from_slice(&fx.opacity.to_le_bytes());
+    let blend = crate::layers::Blend::ALL
+        .iter()
+        .position(|x| *x == fx.blend)
+        .unwrap_or(0);
+    b.push(blend as u8);
+    b.push(fx.clip as u8);
+}
+
 /// After `BUNDLE_TAG`: the group is a component (`put_comp`).
 const COMP_TAG: &[u8; 4] = b"OGPC";
 
@@ -120,6 +138,7 @@ pub fn put_data(b: &mut Vec<u8>, d: &ObjData) {
         .or_else(|| d.audio_as_shape())
         .or_else(|| d.bundle_as_shape())
         .or_else(|| d.frame_as_shape())
+        .or_else(|| d.look_as_shape())
     {
         return put_data(b, &shape);
     }
@@ -227,7 +246,8 @@ pub fn put_data(b: &mut Vec<u8>, d: &ObjData) {
         ObjData::Portal { .. }
         | ObjData::Audio { .. }
         | ObjData::Bundle { .. }
-        | ObjData::Frame { .. } => {
+        | ObjData::Frame { .. }
+        | ObjData::LayerLook { .. } => {
             unreachable!("written as its shape")
         }
         ObjData::Table {
@@ -286,6 +306,9 @@ pub fn get_data(bytes: &[u8]) -> Result<ObjData, String> {
                 }
             }
             return Ok(d);
+        } else if tag == LOOK_TAG {
+            let (name, fx) = r.look()?;
+            return Ok(d.into_look(name, fx));
         } else if tag == FRAME_TAG && r.b.len() - r.at >= 4 {
             let len = r.u32()? as usize;
             let name = String::from_utf8_lossy(r.take(len)?).into_owned();
@@ -314,6 +337,10 @@ pub fn data_bytes(d: &ObjData) -> Vec<u8> {
             b.extend_from_slice(COMP_TAG);
             put_comp(&mut b, c);
         }
+    }
+    if let ObjData::LayerLook { name, fx, .. } = d {
+        b.extend_from_slice(LOOK_TAG);
+        put_look(&mut b, name, fx);
     }
     if let ObjData::Frame { name, .. } = d {
         b.extend_from_slice(FRAME_TAG);
@@ -487,6 +514,21 @@ pub fn encode(
         b.extend_from_slice(&(name.len() as u32).to_le_bytes());
         b.extend_from_slice(name.as_bytes());
     }
+    let looks: Vec<(usize, &str, &crate::layers::LayerFx)> = objs
+        .groups
+        .iter()
+        .enumerate()
+        .filter_map(|(i, g)| match &g.data {
+            ObjData::LayerLook { name, fx, .. } => Some((i, name.as_str(), fx)),
+            _ => None,
+        })
+        .collect();
+    let mut look_bytes = Vec::new();
+    look_bytes.extend_from_slice(&(looks.len() as u32).to_le_bytes());
+    for (i, name, fx) in looks {
+        look_bytes.extend_from_slice(&(i as u32).to_le_bytes());
+        put_look(&mut look_bytes, name, fx);
+    }
     let comps: Vec<(usize, &crate::objects::Comp)> = objs
         .groups
         .iter()
@@ -501,6 +543,7 @@ pub fn encode(
         b.extend_from_slice(&(i as u32).to_le_bytes());
         put_comp(&mut b, c);
     }
+    b.extend_from_slice(&look_bytes);
     b
 }
 
@@ -816,6 +859,17 @@ pub fn decode(bytes: &[u8], base_px: f64) -> Result<Snapshot, String> {
                 }
             }
         }
+        if v >= 13 && r.at < bytes.len() {
+            let n = r.u32()? as usize;
+            for _ in 0..n.min(objs.groups.len()) {
+                let i = r.u32()? as usize;
+                let (name, fx) = r.look()?;
+                if let Some(g) = objs.groups.get_mut(i) {
+                    g.data = g.data.clone().into_look(name, fx);
+                }
+            }
+            objs.reindex();
+        }
         Some(crate::share::CopyLog {
             canvas,
             events,
@@ -886,6 +940,26 @@ impl<'a> Reader<'a> {
             self.take(8)?.try_into().expect("8 bytes"),
         ))
     }
+    /// See `put_look`.
+    fn look(&mut self) -> Result<(String, crate::layers::LayerFx), String> {
+        let n = self.u32()? as usize;
+        let name = String::from_utf8_lossy(self.take(n)?).into_owned();
+        let opacity = f32::from_le_bytes(self.take(4)?.try_into().expect("4 bytes"));
+        let blend = crate::layers::Blend::ALL
+            .get(self.u8()? as usize)
+            .copied()
+            .unwrap_or_default();
+        let clip = self.u8()? != 0;
+        Ok((
+            name,
+            crate::layers::LayerFx {
+                opacity: opacity.clamp(0.0, 1.0),
+                blend,
+                clip,
+            },
+        ))
+    }
+
     /// See `put_comp`.
     fn comp(&mut self) -> Result<crate::objects::Comp, String> {
         let id = u64::from_le_bytes(self.take(8)?.try_into().expect("8 bytes"));

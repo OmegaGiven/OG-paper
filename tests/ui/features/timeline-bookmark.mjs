@@ -30,10 +30,14 @@ export default {
     await t.caption('Back to now, and keep drawing');
     await t.tap(await t.el('.og-tl .close'));
     await t.wait(async () => !(await t.state()).timeline?.on, 'back to now');
+    // (An emulated touch may not reach the bar's button: close it surely.)
+    await t.b.eval(`(() => { const e = document.querySelector('.og-tl'); if (e && !e.hidden) e.querySelector('.close').click(); })()`);
     await t.scribble(cx, t.h * 0.55, span);
 
     await t.caption('Later: Views › First line');
     await t.tap('Menu');
+    // (The menu slides in on a phone: let it settle before tapping.)
+    await t.beat(700);
     await t.tap('Views');
     const card = '.og-card[data-name=Views]';
     const item = await t.el(`${card} .og-marks li:first-child .go`);

@@ -57,7 +57,8 @@ pub struct Plugin {
 pub struct Button {
     pub id: i32,
     pub label: String,
-    /// Its icon in the fan: one of `ICONS` (else a puzzle piece).
+    /// Its icon in the fan: one of `ICONS`, or `symbol:<name>` (a symbol
+    /// of `symbols`), else a puzzle piece.
     pub icon: String,
     /// Picking it waits for a tap on the canvas, and runs it there.
     pub place: bool,
@@ -97,10 +98,16 @@ pub const PERMISSIONS: &[(&str, &str)] =
     &[("microphone", "the microphone (to record audio clips)")];
 
 /// Plugins that come with the app, ready to install: name, file.
-pub const BUNDLED: &[(&str, &[u8])] = &[(
-    "Audio notes",
-    include_bytes!("../../../plugins/examples/audio-notes.wasm"),
-)];
+pub const BUNDLED: &[(&str, &[u8])] = &[
+    (
+        "Audio notes",
+        include_bytes!("../../../plugins/examples/audio-notes.wasm"),
+    ),
+    (
+        "Diagram symbols",
+        include_bytes!("../../../plugins/examples/diagram-symbols.wasm"),
+    ),
+];
 
 /// Whether the person allowed plugin `name` what it asks for.
 pub fn allowed(name: &str) -> bool {
@@ -222,7 +229,11 @@ impl Plugin {
                         Some(Button {
                             id: b.get("id")?.as_i64()? as i32,
                             label: b.get("label")?.as_str()?.chars().take(60).collect(),
-                            icon: if ICONS.contains(&icon) {
+                            icon: if ICONS.contains(&icon)
+                                || icon
+                                    .strip_prefix("symbol:")
+                                    .is_some_and(|k| crate::symbols::find(k).is_some())
+                            {
                                 icon
                             } else {
                                 "puzzle"
@@ -602,5 +613,34 @@ mod tests {
         // Not a sound: refused.
         let r = app.run_commands(&json!([{"add": "audio", "data": "aGVsbG8="}]));
         assert_eq!(r[0]["ok"], false);
+    }
+
+    #[test]
+    fn diagram_symbols_places_symbols_with_pins() {
+        let p = Plugin::load(BUNDLED[1].1.to_vec()).unwrap();
+        assert_eq!(p.name, "Diagram symbols");
+        assert!(p.buttons.len() >= 8);
+        assert!(
+            p.buttons
+                .iter()
+                .all(|b| b.place && b.icon.starts_with("symbol:")),
+            "{:?}",
+            p.buttons
+        );
+        let input = json!({"at": {"x": 40, "y": 20}, "button": 3,
+                           "view": {"x": -350, "y": -350, "w": 700, "h": 700}, "texts": []});
+        let cmds = p.press(3, &input).unwrap();
+        assert_eq!(cmds[0]["add"], "symbol");
+        assert_eq!(cmds[0]["name"], "resistor");
+        let mut app = App::new(None);
+        app.cam = crate::home_camera();
+        let r = app.run_commands(&cmds);
+        assert_eq!(r[0]["ok"], true, "{r}");
+        // Centred where it was tapped, ten points a unit.
+        let (x, w) = (r[0]["x"].as_f64().unwrap(), r[0]["w"].as_f64().unwrap());
+        assert!(
+            (x + w / 2.0 - 40.0).abs() < 1.0 && (w - 60.0).abs() < 3.0,
+            "{r}"
+        );
     }
 }

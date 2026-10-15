@@ -125,6 +125,14 @@ pub enum ObjData {
     /// canvas, listed in Menu › Frames to fly to and export. Older apps read
     /// it as a white box (see `frame_as_shape`).
     Frame { geom: Geom, name: String },
+    /// A layer's name and look (`layers::LayerFx`), kept on the layer
+    /// itself (its draw order is in the layer's band), so they save, sync,
+    /// undo and move with it. It draws nothing and can't be picked.
+    LayerLook {
+        geom: Geom,
+        name: String,
+        fx: crate::layers::LayerFx,
+    },
 }
 
 /// A group made a component (see `components`): its main, or a copy that
@@ -196,6 +204,9 @@ pub struct Objects {
     pub image_adj: HashMap<u32, [f32; 3]>,
     /// A portal's window (its first stroke, a fill): the portal's group.
     pub portal_of: HashMap<u32, u32>,
+    /// Layers' looks (`ObjData::LayerLook`): their groups, and strokes.
+    pub looks: Vec<u32>,
+    pub look_strokes: std::collections::HashSet<u32>,
     /// A stroke in a group (`ObjData::Bundle`): that group. Its own
     /// object (the shape, text… or ink it is) stays in `of_stroke`.
     pub bundle_of: HashMap<u32, u32>,
@@ -253,6 +264,10 @@ impl Objects {
                 }
             }
         }
+        if matches!(g.data, ObjData::LayerLook { .. }) {
+            self.looks.push(gi);
+            self.look_strokes.extend(g.strokes.iter().copied());
+        }
         if let (ObjData::Portal { .. }, Some(&s)) = (&g.data, g.strokes.first()) {
             self.portal_of.insert(s, gi);
         }
@@ -285,6 +300,8 @@ impl Objects {
         self.bundle_of.clear();
         self.image_of.clear();
         self.image_adj.clear();
+        self.looks.clear();
+        self.look_strokes.clear();
         self.portal_of.clear();
         for g in groups {
             self.add(g);
@@ -438,7 +455,8 @@ impl ObjData {
             | ObjData::Audio { geom, .. }
             | ObjData::Portal { geom, .. }
             | ObjData::Bundle { geom, .. }
-            | ObjData::Frame { geom, .. } => geom,
+            | ObjData::Frame { geom, .. }
+            | ObjData::LayerLook { geom, .. } => geom,
         }
     }
 
@@ -453,6 +471,11 @@ impl ObjData {
             ObjData::Frame { geom, name } => ObjData::Frame {
                 geom: geom_map(geom, &f, k),
                 name: name.clone(),
+            },
+            ObjData::LayerLook { geom, name, fx } => ObjData::LayerLook {
+                geom: geom_map(geom, &f, k),
+                name: name.clone(),
+                fx: *fx,
             },
             ObjData::Shape {
                 style,
@@ -542,6 +565,7 @@ impl ObjData {
                 geom: op.geom(geom),
                 name: name.clone(),
             },
+            d @ ObjData::LayerLook { .. } => d.clone(),
             ObjData::Shape {
                 style,
                 geom,
@@ -633,6 +657,15 @@ impl ObjData {
     pub fn pieces(&self) -> Vec<Piece> {
         match self {
             ObjData::Bundle { .. } => vec![],
+            // An unseen dot: a fill with no color and no area.
+            ObjData::LayerLook { geom, .. } => vec![Piece {
+                pts: vec![geom.center; 3],
+                width: 0.0,
+                brush: ogpaper_core::Brush::Fill,
+                dash: ogpaper_core::Dash::Solid,
+                color: 0,
+                bridges: vec![],
+            }],
             d @ ObjData::Frame { .. } => d.frame_as_shape().map(|s| s.pieces()).unwrap_or_default(),
             ObjData::Shape {
                 style,
@@ -728,6 +761,32 @@ impl ObjData {
             width: 0.0,
             seed: 0,
         })
+    }
+
+    /// A layer's look as a plain shape: invisible.
+    pub fn look_as_shape(&self) -> Option<ObjData> {
+        let ObjData::LayerLook { geom, .. } = self else {
+            return None;
+        };
+        Some(ObjData::Shape {
+            style: ShapeStyle {
+                opacity: 0,
+                ..ShapeStyle::default()
+            },
+            geom: geom.clone(),
+            width: 0.0,
+            seed: 0,
+        })
+    }
+
+    /// A shape made a layer's look (see `look_as_shape`).
+    pub fn into_look(self, name: String, fx: crate::layers::LayerFx) -> ObjData {
+        match self {
+            ObjData::Shape { geom, .. } | ObjData::LayerLook { geom, .. } => {
+                ObjData::LayerLook { geom, name, fx }
+            }
+            other => other,
+        }
     }
 
     /// A frame as a plain shape: a white page with a light edge.

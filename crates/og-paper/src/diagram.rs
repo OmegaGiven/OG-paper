@@ -70,11 +70,14 @@ enum Outline {
     Box,
     Ellipse,
     Diamond,
+    /// A symbol (a group with pins, `geom.pts`): its box, joined at its pins.
+    Pins,
 }
 
 fn outline_of(d: &ObjData) -> Option<(Outline, &Geom)> {
     match d {
-        ObjData::Bundle { .. } | ObjData::Frame { .. } => None,
+        ObjData::Bundle { geom, .. } if !geom.pts.is_empty() => Some((Outline::Pins, geom)),
+        ObjData::Bundle { .. } | ObjData::Frame { .. } | ObjData::LayerLook { .. } => None,
         ObjData::Portal { style, geom, .. } if geom.pts.len() < 3 => match style.kind {
             ShapeKind::Ellipse => Some((Outline::Ellipse, geom)),
             ShapeKind::Diamond => Some((Outline::Diamond, geom)),
@@ -82,7 +85,7 @@ fn outline_of(d: &ObjData) -> Option<(Outline, &Geom)> {
         },
         ObjData::Portal { geom, .. } => Some((Outline::Box, geom)),
         ObjData::Shape { style, geom, .. } => match style.kind {
-            ShapeKind::Line | ShapeKind::Arrow => None,
+            ShapeKind::Line | ShapeKind::Arrow | ShapeKind::Pin => None,
             ShapeKind::Ellipse => Some((Outline::Ellipse, geom)),
             ShapeKind::Diamond => Some((Outline::Diamond, geom)),
             _ => Some((Outline::Box, geom)),
@@ -97,7 +100,7 @@ fn outline_of(d: &ObjData) -> Option<(Outline, &Geom)> {
 /// The outline point in the unit frame in direction `u` from the centre.
 fn edge_dir(kind: Outline, u: [f64; 2]) -> [f64; 2] {
     let n = match kind {
-        Outline::Box => u[0].abs().max(u[1].abs()),
+        Outline::Box | Outline::Pins => u[0].abs().max(u[1].abs()),
         Outline::Ellipse => u[0].hypot(u[1]),
         Outline::Diamond => u[0].abs() + u[1].abs(),
     };
@@ -107,9 +110,10 @@ fn edge_dir(kind: Outline, u: [f64; 2]) -> [f64; 2] {
     [u[0] / n, u[1] / n]
 }
 
-/// The connection points of an outline, in its unit frame.
-fn ports(kind: Outline) -> Vec<[f64; 2]> {
+/// The connection points of an outline (`g` its frame), in its unit frame.
+fn ports(kind: Outline, g: &Geom) -> Vec<[f64; 2]> {
     match kind {
+        Outline::Pins => g.pts.iter().filter_map(|&p| to_unit(g, p)).collect(),
         // The middle and quarters of each side.
         Outline::Box => {
             let mut v = Vec::new();
@@ -140,7 +144,7 @@ fn ports(kind: Outline) -> Vec<[f64; 2]> {
 
 fn inside(kind: Outline, u: [f64; 2]) -> bool {
     match kind {
-        Outline::Box => u[0].abs().max(u[1].abs()) <= 1.0,
+        Outline::Box | Outline::Pins => u[0].abs().max(u[1].abs()) <= 1.0,
         Outline::Ellipse => u[0].hypot(u[1]) <= 1.0,
         Outline::Diamond => u[0].abs() + u[1].abs() <= 1.0,
     }
@@ -151,7 +155,13 @@ fn inside(kind: Outline, u: [f64; 2]) -> bool {
 fn outline_dist(kind: Outline, g: &Geom, p: [f64; 2]) -> Option<f64> {
     let u = to_unit(g, p)?;
     let e = from_unit(g, edge_dir(kind, u));
-    Some(crate::dist(e, p))
+    let d = crate::dist(e, p);
+    // A symbol's pins may be inside its box: near one is on it.
+    Some(if kind == Outline::Pins {
+        g.pts.iter().map(|&q| crate::dist(q, p)).fold(d, f64::min)
+    } else {
+        d
+    })
 }
 
 /// The box around some points: low and high corners.
@@ -176,6 +186,8 @@ pub(crate) struct Link {
     unit: [f64; 2],
     /// On a connection point (stays there) or floating (faces the other end).
     pub fixed: bool,
+    /// On a symbol's pin.
+    pub pin: bool,
 }
 
 /// A line or arrow with an end linked to an object being edited.
@@ -194,7 +206,16 @@ impl App {
         let mut seen = std::collections::HashSet::new();
         let mut v = Vec::new();
         for inst in &self.draw.strokes {
-            let Some(&g) = self.objs.of_stroke.get(&inst.stroke) else {
+            // A symbol's member: the symbol.
+            let Some(&g) = self
+                .objs
+                .bundle_of
+                .get(&inst.stroke)
+                .filter(|&&b| {
+                    matches!(&self.objs.groups[b as usize].data, ObjData::Bundle { geom, .. } if !geom.pts.is_empty())
+                })
+                .or_else(|| self.objs.of_stroke.get(&inst.stroke))
+            else {
                 continue;
             };
             if !seen.insert(g) || self.scene.strokes[inst.stroke as usize].deleted {
@@ -248,8 +269,19 @@ impl App {
                 let (k, geom) = outline_of(d)?;
                 let dd = outline_dist(k, geom, p)?;
                 (dd <= self.stick_tol(geom)).then(|| {
-                    let unit = edge_dir(k, to_unit(geom, p).unwrap_or([1.0, 0.0]));
-                    let fixed = ports(k)
+                    let pin = (k == Outline::Pins)
+                        .then(|| {
+                            geom.pts
+                                .iter()
+                                .filter(|&&q| crate::dist(q, p) <= self.stick_tol(geom))
+                                .min_by(|a, b| crate::dist(**a, p).total_cmp(&crate::dist(**b, p)))
+                        })
+                        .flatten();
+                    let unit = match pin {
+                        Some(&q) => to_unit(geom, q).unwrap_or([1.0, 0.0]),
+                        None => edge_dir(k, to_unit(geom, p).unwrap_or([1.0, 0.0])),
+                    };
+                    let fixed = ports(k, geom)
                         .iter()
                         .any(|q| (q[0] - unit[0]).abs().max((q[1] - unit[1]).abs()) < PORT_EPS);
                     (
@@ -259,11 +291,17 @@ impl App {
                             data: d.clone(),
                             unit,
                             fixed,
+                            pin: pin.is_some(),
                         },
                     )
                 })
             })
-            .min_by(|a, b| a.0.total_cmp(&b.0))
+            // A symbol's pin first, then the nearest.
+            .min_by(|a, b| {
+                (!a.1.pin, a.0)
+                    .partial_cmp(&(!b.1.pin, b.0))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
             .map(|(_, l)| l)
     }
 
@@ -368,8 +406,19 @@ impl App {
         }
         for (link, &at) in a.links.iter().zip(&idx) {
             if let Some(l) = link.as_ref().filter(|l| l.fixed) {
-                if let Some((_, g)) = now(l) {
-                    geom.pts[at] = from_unit(&g, l.unit);
+                if let Some((k, g)) = now(l) {
+                    // A symbol's pin: the same pin, wherever it went (the
+                    // symbol may have turned).
+                    let pin = (k == Outline::Pins)
+                        .then(|| was(l))
+                        .flatten()
+                        .and_then(|old| {
+                            ports(Outline::Pins, &old).iter().position(|q| {
+                                (q[0] - l.unit[0]).abs().max((q[1] - l.unit[1]).abs()) < PORT_EPS
+                            })
+                        })
+                        .and_then(|i| g.pts.get(i).copied());
+                    geom.pts[at] = pin.unwrap_or_else(|| from_unit(&g, l.unit));
                 }
             }
         }
@@ -516,7 +565,7 @@ impl App {
     /// The connection point of `t` within reach of `p` (camera units).
     fn port_near(&self, t: &(Outline, Geom), p: [f64; 2]) -> Option<[f64; 2]> {
         let reach = PORT_PX * self.ppp() / self.cam.ppc();
-        ports(t.0)
+        ports(t.0, &t.1)
             .into_iter()
             .map(|u| from_unit(&t.1, u))
             .map(|q| (crate::dist(q, p), q))
@@ -624,7 +673,7 @@ impl App {
                 continue;
             }
             let hot = self.port_near(&t, pc);
-            for u in ports(t.0) {
+            for u in ports(t.0, &t.1) {
                 let q = from_unit(&t.1, u);
                 let big = hot == Some(q);
                 let qp = self.cam_to_px(q);
@@ -875,9 +924,9 @@ mod tests {
             rot: 0.0,
             pts: vec![],
         };
-        assert_eq!(ports(Outline::Box).len(), 12);
+        assert_eq!(ports(Outline::Box, &Geom::default()).len(), 12);
         for k in [Outline::Box, Outline::Ellipse, Outline::Diamond] {
-            for u in ports(k) {
+            for u in ports(k, &Geom::default()) {
                 let p = from_unit(&g, u);
                 assert!(outline_dist(k, &g, p).unwrap() < 1e-9, "{k:?} {u:?}");
             }
