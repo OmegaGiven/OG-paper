@@ -22,6 +22,8 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--platform", required=True)
     p.add_argument("--version", default="1.0")
+    p.add_argument("--fresh", action="store_true",
+                   help="cancel a rejected submission and make a new one")
     a = p.parse_args()
     aid, v = version(a.platform, a.version)
     if not call("GET", f"/v1/appStoreVersions/{v['id']}/build").get("data"):
@@ -30,6 +32,11 @@ def main():
         "filter[app]": aid, "filter[platform]": a.platform, "limit": 20})["data"]
     open_sub = next((s for s in subs if s["attributes"]["state"] in
                      ("UNRESOLVED_ISSUES", "READY_FOR_REVIEW")), None)
+    if open_sub and a.fresh and open_sub["attributes"]["state"] == "UNRESOLVED_ISSUES":
+        call("PATCH", f"/v1/reviewSubmissions/{open_sub['id']}", {"data": {
+            "type": "reviewSubmissions", "id": open_sub["id"], "attributes": {"canceled": True}}})
+        print("canceled the rejected submission", open_sub["id"])
+        open_sub = None
     if open_sub is None:
         open_sub = call("POST", "/v1/reviewSubmissions", {"data": {
             "type": "reviewSubmissions", "attributes": {"platform": a.platform},
