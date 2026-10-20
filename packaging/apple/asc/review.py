@@ -48,8 +48,9 @@ def main():
                 if url:
                     urllib.request.urlretrieve(url, os.path.join(a.out, f"{kind}-{i + 1}.png"))
         for s in call("GET", f"/v1/appStoreVersionLocalizations/{l['id']}/appPreviewSets")["data"]:
-            n = len(call("GET", f"/v1/appPreviewSets/{s['id']}/appPreviews")["data"])
-            print(f"previews {s['attributes']['previewType']}: {n}")
+            pvs = call("GET", f"/v1/appPreviewSets/{s['id']}/appPreviews")["data"]
+            states = [p["attributes"].get("assetDeliveryState", {}).get("state") for p in pvs]
+            print(f"previews {s['attributes']['previewType']}: {len(pvs)} {states}")
 
 
 if __name__ == "__main__":
