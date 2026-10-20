@@ -51,6 +51,10 @@ def main():
             pvs = call("GET", f"/v1/appPreviewSets/{s['id']}/appPreviews")["data"]
             states = [p["attributes"].get("assetDeliveryState", {}).get("state") for p in pvs]
             print(f"previews {s['attributes']['previewType']}: {len(pvs)} {states}")
+            for p in pvs:
+                errs = p["attributes"].get("assetDeliveryState", {}).get("errors")
+                if errs:
+                    print(f"  {p['attributes'].get('fileName')}: {errs}")
 
 
 if __name__ == "__main__":
