@@ -69,6 +69,10 @@ jobs:
           mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
           lipo -create -output "$APP/Contents/MacOS/og-paper" \
             target/aarch64-apple-darwin/release/og-paper target/x86_64-apple-darwin/release/og-paper
+          # Private APIs App Review has refused (Guideline 2.5.1): fail here first.
+          if nm -u "$APP/Contents/MacOS/og-paper" | grep -E "_CGS[A-Z]|_CGSSetWindowBackgroundBlurRadius"; then
+            echo "::error::the binary references private CoreGraphics (CGS) APIs"; exit 1
+          fi
           # The build number must grow with every upload.
           sed -e "s/__VERSION__/${{ inputs.version }}/" -e "s/__BUILD__/${{ github.run_number }}/" \
             packaging/apple/macos/Info.plist.in > "$APP/Contents/Info.plist"
