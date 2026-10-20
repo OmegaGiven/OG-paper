@@ -8,6 +8,8 @@
       attach the newest processed build of that version
   listing.py --platform IOS --version 1.0 --shots DIR --display APP_IPAD_PRO_3GEN_129
       replace that screenshot set (en-US) with the PNGs in DIR, in name order
+  listing.py --platform MAC_OS --version 1.0 --notes FILE
+      set the App Review notes from FILE
 
 It never submits for review. Needs ASC_KEY, ASC_KEY_ID, ASC_ISSUER."""
 
@@ -92,6 +94,16 @@ def replace_shots(v, folder, display):
     time.sleep(2)
 
 
+def set_notes(v, path):
+    notes = open(path).read().strip()
+    rd = call("GET", f"/v1/appStoreVersions/{v['id']}/appStoreReviewDetail").get("data")
+    if not rd:
+        sys.exit("no review details yet: add a contact in App Store Connect first")
+    call("PATCH", f"/v1/appStoreReviewDetails/{rd['id']}", {"data": {
+        "type": "appStoreReviewDetails", "id": rd["id"], "attributes": {"notes": notes}}})
+    print("review notes set from", path)
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--platform", default="IOS")
@@ -99,12 +111,15 @@ def main():
     p.add_argument("--build")
     p.add_argument("--shots")
     p.add_argument("--display")
+    p.add_argument("--notes")
     a = p.parse_args()
     aid, v = version(a.platform, a.version)
     if a.build:
         attach_latest(aid, v, a.platform, a.version)
     if a.shots:
         replace_shots(v, a.shots, a.display)
+    if a.notes:
+        set_notes(v, a.notes)
 
 
 if __name__ == "__main__":

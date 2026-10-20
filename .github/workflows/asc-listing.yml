@@ -17,6 +17,9 @@ on:
       shots:
         description: Screenshot folder under packaging/apple/appstore (empty = none)
         default: ""
+      notes:
+        description: Review notes file under packaging/apple/appstore (empty = leave)
+        default: ""
       display:
         description: Screenshot display type (APP_IPAD_PRO_3GEN_129 = 13" iPad, APP_IPHONE_67 = 6.9" iPhone)
         default: APP_IPAD_PRO_3GEN_129
@@ -40,5 +43,6 @@ jobs:
           args=(--platform "${{ inputs.platform }}" --version "${{ inputs.version }}")
           if [ "${{ inputs.attach_build }}" = "true" ]; then args+=(--build latest); fi
           if [ -n "${{ inputs.shots }}" ]; then args+=(--shots "packaging/apple/appstore/${{ inputs.shots }}" --display "${{ inputs.display }}"); fi
+          if [ -n "${{ inputs.notes }}" ]; then args+=(--notes "packaging/apple/appstore/${{ inputs.notes }}"); fi
           python3 packaging/apple/asc/listing.py "${args[@]}"
           python3 packaging/apple/asc/status.py

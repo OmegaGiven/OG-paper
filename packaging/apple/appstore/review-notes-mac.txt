@@ -1,0 +1,12 @@
+OG Paper is an infinite-canvas drawing app. No account or sign-in is needed, and it works fully offline.
+
+To review:
+1. Draw with the round tool button (bottom right) or the quick toolbar; zoom with pinch or the trackpad. There is no zoom limit.
+2. Portals: open the tool button, pick Portal, tap "This view" in its panel, then drag a rectangle somewhere. The rectangle shows that view live; zoom into it to go through it.
+3. Settings (gear, top right) has Pages, Export, Search, Bookmarks, the Timeline, UI options and Plugins.
+
+Network features are optional and only used when the user chooses them: Share live (end-to-end encrypted, to a host or server the user picks) and Pages servers added by link. No data is collected; canvases stay on the device.
+
+Why the app has the com.apple.security.network.server entitlement: Settings (gear) > Share live > "Host this canvas" makes this Mac the host of a live drawing session. The app then listens on a TCP port for incoming connections from the other people's OG Paper apps (desktop, mobile or web) that join with the link it shows, and relays everyone's drawing to them, end-to-end encrypted. Hosting starts only when the user presses that button and stops when they press Stop hosting. To test it: press Host this canvas, copy the link, and open it from another device or another copy of OG Paper on the same network (Settings > Share live > Join).
+
+The binary no longer references _CGSSetWindowBackgroundBlurRadius (it came from the windowing library; that call has been removed).

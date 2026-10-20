@@ -13,3 +13,8 @@ opt-level = 2
 
 [profile.release]
 debug = "line-tables-only"
+
+# winit without its private macOS window-blur API (the Mac App Store
+# refuses binaries that reference it; OG Paper never blurs its window).
+[patch.crates-io]
+winit = { path = "third_party/winit" }
