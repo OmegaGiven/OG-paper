@@ -1,0 +1,33 @@
+name: App Store listing review
+
+# Run by hand: prints a version's whole listing and keeps its screenshots
+# (artifact "listing"). Reads only.
+on:
+  workflow_dispatch:
+    inputs:
+      platform:
+        default: IOS
+      version:
+        default: "1.0"
+
+permissions:
+  contents: read
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: pip install pyjwt cryptography
+      - name: Review
+        env:
+          ASC_KEY: ${{ secrets.APPLE_API_KEY }}
+          ASC_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          ASC_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          python3 packaging/apple/asc/review.py --platform "${{ inputs.platform }}" --version "${{ inputs.version }}" --out listing
+          python3 packaging/apple/asc/status.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: listing
+          path: listing/
