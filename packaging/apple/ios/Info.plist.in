@@ -37,6 +37,8 @@
   <key>UIApplicationSupportsIndirectInputEvents</key><true/>
   <key>UIStatusBarHidden</key><true/>
   <!-- Canvases live in Documents: show them in the Files app. -->
+  <!-- Live sharing and page servers may be on the local network. -->
+  <key>NSLocalNetworkUsageDescription</key><string>OG Paper connects to drawing pages hosted on your local network when you join or share one live.</string>
   <key>UIFileSharingEnabled</key><true/>
   <key>LSSupportsOpeningDocumentsInPlace</key><true/>
 </dict>
