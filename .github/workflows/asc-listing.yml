@@ -20,6 +20,9 @@ on:
       notes:
         description: Review notes file under packaging/apple/appstore (empty = leave)
         default: ""
+      description:
+        description: Description file under packaging/apple/appstore (empty = leave)
+        default: ""
       previews:
         description: Preview folder under packaging/apple/appstore (empty = none)
         default: ""
@@ -50,6 +53,7 @@ jobs:
           if [ "${{ inputs.attach_build }}" = "true" ]; then args+=(--build latest); fi
           if [ -n "${{ inputs.shots }}" ]; then args+=(--shots "packaging/apple/appstore/${{ inputs.shots }}" --display "${{ inputs.display }}"); fi
           if [ -n "${{ inputs.notes }}" ]; then args+=(--notes "packaging/apple/appstore/${{ inputs.notes }}"); fi
+          if [ -n "${{ inputs.description }}" ]; then args+=(--description "packaging/apple/appstore/${{ inputs.description }}"); fi
           if [ -n "${{ inputs.previews }}" ]; then args+=(--previews "packaging/apple/appstore/${{ inputs.previews }}" --preview-type "${{ inputs.preview_type }}"); fi
           python3 packaging/apple/asc/listing.py "${args[@]}"
           python3 packaging/apple/asc/status.py

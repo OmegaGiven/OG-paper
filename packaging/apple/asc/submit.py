@@ -22,10 +22,21 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--platform", required=True)
     p.add_argument("--version", default="1.0")
+    p.add_argument("--cancel", action="store_true",
+                   help="pull the version from review (cancel its waiting submission)")
     p.add_argument("--fresh", action="store_true",
                    help="cancel a rejected submission and make a new one")
     a = p.parse_args()
     aid, v = version(a.platform, a.version)
+    if a.cancel:
+        subs = call("GET", "/v1/reviewSubmissions", **{
+            "filter[app]": aid, "filter[platform]": a.platform, "limit": 20})["data"]
+        for s in subs:
+            if s["attributes"]["state"] in ("WAITING_FOR_REVIEW", "READY_FOR_REVIEW"):
+                call("PATCH", f"/v1/reviewSubmissions/{s['id']}", {"data": {
+                    "type": "reviewSubmissions", "id": s["id"], "attributes": {"canceled": True}}})
+                print("canceled", s["id"], s["attributes"]["state"])
+        return
     if not call("GET", f"/v1/appStoreVersions/{v['id']}/build").get("data"):
         sys.exit("no build attached")
     subs = call("GET", "/v1/reviewSubmissions", **{

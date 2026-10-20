@@ -126,6 +126,17 @@ def replace_previews(v, folder, kind):
         print("uploaded preview", name)
 
 
+def set_description(v, path):
+    text = open(path).read().strip()
+    if len(text) > 4000:
+        sys.exit(f"description is {len(text)} characters (most 4000)")
+    for l in call("GET", f"/v1/appStoreVersions/{v['id']}/appStoreVersionLocalizations")["data"]:
+        if l["attributes"]["locale"] == "en-US":
+            call("PATCH", f"/v1/appStoreVersionLocalizations/{l['id']}", {"data": {
+                "type": "appStoreVersionLocalizations", "id": l["id"], "attributes": {"description": text}}})
+            print("description set from", path)
+
+
 def set_notes(v, path):
     notes = open(path).read().strip()
     rd = call("GET", f"/v1/appStoreVersions/{v['id']}/appStoreReviewDetail").get("data")
@@ -145,6 +156,7 @@ def main():
     p.add_argument("--display")
     p.add_argument("--notes")
     p.add_argument("--previews")
+    p.add_argument("--description")
     p.add_argument("--preview-type")
     a = p.parse_args()
     aid, v = version(a.platform, a.version)
@@ -154,6 +166,8 @@ def main():
         replace_shots(v, a.shots, a.display)
     if a.notes:
         set_notes(v, a.notes)
+    if a.description:
+        set_description(v, a.description)
     if a.previews:
         replace_previews(v, a.previews, a.preview_type)
 

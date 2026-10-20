@@ -1,0 +1,36 @@
+OG Paper is an endless canvas: sketch, write, paste and arrange anything, then zoom in forever. There is no edge and no bottom: draw a city, zoom into a window, and write a note inside it a trillion times smaller. Everything stays sharp at any depth.
+
+DRAW YOUR WAY
+• A brush with pressure, dashes and opacity, or a full brush engine: pencil, charcoal, watercolor, airbrush, ink, neon and more, with every setting behind them
+• Highlighter, eraser, bucket fill, textures and stamps
+• Shapes with hand-drawn or clean outlines, and a pen for smooth curves
+• Text in bundled fonts or your own, with letter spacing, line height and words that follow any curve
+• Pictures and PDFs to write on, cropped in place, with brightness, contrast, saturation and background removal
+
+DESIGN
+• Layers you can hide, lock, reorder, fade, blend (multiply, screen and more) and clip to the layer below
+• Linear and radial gradients, saved swatches
+• Combine shapes: union, subtract, intersect, exclude
+• Group things, align and spread them out, snap to what's around, type exact sizes and positions, show rulers
+• Frames for pages and artboards, and components whose copies update with the original
+
+DIAGRAMS
+Turn on diagram mode and lines and arrows stay joined to what they connect. Place flowchart, electrical and mechanical symbols with pins: wires stay on their pins as you move and turn them.
+
+PORTALS
+Draw a window that shows another part of your canvas, live. Zoom into it and you go through it. Put a portal at the end of a street that shows the street itself and the zoom never ends.
+
+KEEP YOUR TOOLS AT HAND
+Save tools with their exact settings in toolbars and an inventory, give each toolbar a press-and-hold tool, and switch toolbars in a tap. Resize the whole interface, hide what you don't need, or go dark.
+
+FIND YOUR WAY
+Search every word on the canvas, save views and fly back to them across any zoom depth, and scrub the timeline to watch your canvas being drawn.
+
+YOURS, AND PRIVATE
+Your canvases are files on your device in an open, documented format. No account, no ads, no tracking: OG Paper collects no data.
+
+DRAW TOGETHER, WHEN YOU WANT
+Share a canvas live with end-to-end encryption, host it yourself, sync through a folder, or merge copies later. Offline work joins in when you reconnect.
+
+FREE AND OPEN SOURCE
+OG Paper is free and open source (MPL-2.0), and runs on Mac, iPhone, iPad, Windows, Linux, Android and the web.

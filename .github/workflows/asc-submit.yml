@@ -9,6 +9,10 @@ on:
         default: IOS
       version:
         default: "1.0"
+      cancel:
+        description: Pull the version from review instead of submitting
+        type: boolean
+        default: false
       fresh:
         description: Cancel a rejected submission and make a new one
         type: boolean
@@ -29,5 +33,5 @@ jobs:
           ASC_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           ASC_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
         run: |
-          python3 packaging/apple/asc/submit.py --platform "${{ inputs.platform }}" --version "${{ inputs.version }}" $([ "${{ inputs.fresh }}" = "true" ] && echo --fresh)
+          python3 packaging/apple/asc/submit.py --platform "${{ inputs.platform }}" --version "${{ inputs.version }}" $([ "${{ inputs.fresh }}" = "true" ] && echo --fresh) $([ "${{ inputs.cancel }}" = "true" ] && echo --cancel)
           python3 packaging/apple/asc/status.py
