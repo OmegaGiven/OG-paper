@@ -1,7 +1,7 @@
 // App Store screenshots from the web app (the same app as the native
 // builds), with a caption bar. Needs a local server (scripts/serve-web.py)
 // and a headless Chromium-family browser on port 9334.
-//   node store-shots.mjs mac|iphone OUTDIR
+//   node store-shots.mjs mac|iphone|ipad OUTDIR
 import { writeFileSync, mkdirSync } from 'fs';
 
 const KIND = process.argv[2];
@@ -10,6 +10,8 @@ mkdirSync(OUT, { recursive: true });
 const SIZES = {
   mac: { width: 1440, height: 900, deviceScaleFactor: 2, mobile: false },
   iphone: { width: 440, height: 956, deviceScaleFactor: 3, mobile: true },
+  // 13" iPad: 2064 x 2752.
+  ipad: { width: 1032, height: 1376, deviceScaleFactor: 2, mobile: true },
 };
 const size = SIZES[KIND];
 
@@ -131,6 +133,7 @@ await shot('deep');
 await fresh('radialbar=off\nhints=off\n');
 await key('h', 'KeyH');
 if (KIND === 'mac') await tap(W / 2 - 200, H - 40);
+else if (KIND === 'ipad') await tap(45, 403);
 else await tap(36, 290);
 await caption('Keep your tools, exactly as you set them', 'Your tools, kept');
 await shot('tools');

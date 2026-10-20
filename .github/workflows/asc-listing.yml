@@ -1,0 +1,44 @@
+name: App Store listing
+
+# Run by hand: attach the newest processed build to the version being
+# prepared, and/or replace a screenshot set from packaging/apple/appstore.
+# Never submits for review.
+on:
+  workflow_dispatch:
+    inputs:
+      platform:
+        default: IOS
+      version:
+        default: "1.0"
+      attach_build:
+        description: Attach the newest processed build
+        type: boolean
+        default: true
+      shots:
+        description: Screenshot folder under packaging/apple/appstore (empty = none)
+        default: ""
+      display:
+        description: Screenshot display type (APP_IPAD_PRO_3GEN_129 = 13" iPad, APP_IPHONE_67 = 6.9" iPhone)
+        default: APP_IPAD_PRO_3GEN_129
+
+permissions:
+  contents: read
+
+jobs:
+  listing:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: pip install pyjwt cryptography
+      - name: Update
+        env:
+          ASC_KEY: ${{ secrets.APPLE_API_KEY }}
+          ASC_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          ASC_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          set -euo pipefail
+          args=(--platform "${{ inputs.platform }}" --version "${{ inputs.version }}")
+          if [ "${{ inputs.attach_build }}" = "true" ]; then args+=(--build latest); fi
+          if [ -n "${{ inputs.shots }}" ]; then args+=(--shots "packaging/apple/appstore/${{ inputs.shots }}" --display "${{ inputs.display }}"); fi
+          python3 packaging/apple/asc/listing.py "${args[@]}"
+          python3 packaging/apple/asc/status.py
