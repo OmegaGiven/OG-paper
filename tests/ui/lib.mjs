@@ -25,6 +25,12 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 export const SIZES = {
   desktop: { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false },
   phone: { width: 412, height: 860, deviceScaleFactor: 2, mobile: true },
+  // App Store: 6.9" iPhone and 13" iPad screenshots, and previews (laid out
+  // like the device, every pixel real; see DEMO_SIZES).
+  'iphone-shot': { width: 1320, height: 2868, deviceScaleFactor: 1, mobile: true, zoom: 3 },
+  'ipad-shot': { width: 2064, height: 2752, deviceScaleFactor: 1, mobile: true, zoom: 2 },
+  'iphone-preview': { width: 886, height: 1920, deviceScaleFactor: 1, mobile: true, zoom: 2 },
+  'ipad-preview': { width: 1200, height: 1600, deviceScaleFactor: 1, mobile: true, zoom: 1.5 },
 };
 /** Demos record at sizes made for publishing: 1920 x 1200 for desktop,
  *  1080 x 1920 (Shorts, TikTok, Reels) for phone. The page is laid out at
@@ -33,6 +39,12 @@ export const SIZES = {
 export const DEMO_SIZES = {
   desktop: { width: 1920, height: 1200, deviceScaleFactor: 1, mobile: false, zoom: 1.5 },
   phone: { width: 1080, height: 1920, deviceScaleFactor: 1, mobile: true, zoom: 1080 / 412 },
+  // App Store: 6.9" iPhone and 13" iPad screenshots, and previews (laid out
+  // like the device, every pixel real; see DEMO_SIZES).
+  'iphone-shot': { width: 1320, height: 2868, deviceScaleFactor: 1, mobile: true, zoom: 3 },
+  'ipad-shot': { width: 2064, height: 2752, deviceScaleFactor: 1, mobile: true, zoom: 2 },
+  'iphone-preview': { width: 886, height: 1920, deviceScaleFactor: 1, mobile: true, zoom: 2 },
+  'ipad-preview': { width: 1200, height: 1600, deviceScaleFactor: 1, mobile: true, zoom: 1.5 },
 };
 let SIZE_SET = SIZES;
 export const sizeOf = size => SIZE_SET[size];

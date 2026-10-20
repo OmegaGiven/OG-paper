@@ -322,9 +322,9 @@ impl Patch {
                 )),
                 None => None,
             },
-            width: num(c, "width").map(|w| w.clamp(0.1, 1000.0) / ppc),
+            width: num(c, "width").map(|w| w.clamp(1e-200, 1e200) / ppc),
             text: s("text").map(|t| t.chars().take(10_000).collect()),
-            size: num(c, "size").map(|v| v.clamp(1.0, 10_000.0) / ppc),
+            size: num(c, "size").map(|v| v.clamp(1e-200, 1e200) / ppc),
             font: s("font").map(font_of).transpose()?,
             align: s("align")
                 .map(|a| align_of(a).ok_or(format!("unknown align: {a}")))
@@ -645,7 +645,7 @@ impl App {
                     .take(10_000)
                     .collect();
                 let (x, y) = (num(c, "x").unwrap_or(0.0), num(c, "y").unwrap_or(0.0));
-                let size = num(c, "size").unwrap_or(24.0).clamp(1.0, 10_000.0) / ppc;
+                let size = num(c, "size").unwrap_or(24.0).clamp(1e-200, 1e200) / ppc;
                 let mut style = text_style(color)?;
                 if let Some(v) = num(c, "letter_spacing") {
                     style.letter = v.clamp(-0.5, 5.0) as f32;
@@ -712,7 +712,7 @@ impl App {
             "table" => {
                 let cells = cells_of(c.get("cells").ok_or("table needs \"cells\"")?)?;
                 let (x, y) = (num(c, "x").unwrap_or(0.0), num(c, "y").unwrap_or(0.0));
-                let size = num(c, "size").unwrap_or(18.0).clamp(1.0, 10_000.0) / ppc;
+                let size = num(c, "size").unwrap_or(18.0).clamp(1e-200, 1e200) / ppc;
                 let style = text_style(color)?;
                 let b = objects::table_layout(&cells, &style, size).size();
                 let half = [b[0] * 0.5, b[1] * 0.5];
@@ -746,7 +746,7 @@ impl App {
                     )
                 })?;
                 // "size": points per grid unit (10 by default).
-                let unit = num(c, "size").unwrap_or(10.0).clamp(0.01, 10_000.0);
+                let unit = num(c, "size").unwrap_or(10.0).clamp(1e-200, 1e200);
                 let (lo, hi) = crate::symbols::bounds(&crate::symbols::parse(sym.spec));
                 let (x, y) = (num(c, "x").unwrap_or(0.0), num(c, "y").unwrap_or(0.0));
                 // Placed by its top left corner, or centred on "cx", "cy".
@@ -806,6 +806,21 @@ impl App {
                     rot: 0.0,
                     pts: if linear { vec![a, b] } else { vec![] },
                 };
+                // A line or arrow through "points" (bends at each), not x..x+w.
+                if let (true, Some(list)) = (linear, c.get("points").and_then(Value::as_array)) {
+                    let pts: Vec<[f64; 2]> = list
+                        .iter()
+                        .take(MAX_POINTS)
+                        .filter_map(|p| {
+                            let a = p.as_array()?;
+                            Some(to_cam(cam, a.first()?.as_f64()?, a.get(1)?.as_f64()?))
+                        })
+                        .collect();
+                    if pts.len() >= 2 {
+                        (geom.center, geom.half) = crate::shapes::bounds_of(&pts);
+                        geom.pts = pts;
+                    }
+                }
                 if kind == ShapeKind::Path {
                     // Through "points", straight or "smooth", maybe "closed".
                     let anchors: Vec<[f64; 2]> = c
@@ -830,7 +845,7 @@ impl App {
                 let data = ObjData::Shape {
                     style,
                     geom,
-                    width: num(c, "width").unwrap_or(3.0).clamp(0.1, 1000.0) / ppc,
+                    width: num(c, "width").unwrap_or(3.0).clamp(1e-200, 1e200) / ppc,
                     seed: crate::uid::new() as u32,
                 };
                 let (g, ids) = self.add_group(&data, None);
@@ -852,7 +867,7 @@ impl App {
                 if pts.is_empty() {
                     return Err("stroke needs at least one point".into());
                 }
-                let width = num(c, "width").unwrap_or(3.0).clamp(0.1, 1000.0) / ppc;
+                let width = num(c, "width").unwrap_or(3.0).clamp(1e-200, 1e200) / ppc;
                 let (anchor, local, side) = Scene::anchor_for_min(&cam.cell, &pts, width);
                 let pts: Vec<Point> = local.iter().map(|q| [q[0], q[1], 1.0, 0.0]).collect();
                 let style = Style {
@@ -1245,11 +1260,14 @@ impl App {
             }
             "group" | "ungroup" => {
                 self.edit.selection = refs;
+                // (No "Grouped" note for a script: it says nothing to the person.)
+                let note = self.ui.message.clone();
                 if verb == "group" {
                     self.group_selection();
                 } else {
                     self.ungroup_selection();
                 }
+                self.ui.message = note;
                 let sel = std::mem::take(&mut self.edit.selection);
                 Ok(json!({ "ids": ids(self, &sel) }))
             }

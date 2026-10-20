@@ -94,6 +94,38 @@ def replace_shots(v, folder, display):
     time.sleep(2)
 
 
+def replace_previews(v, folder, kind):
+    """Replace preview set `kind` (IPHONE_67, IPAD_PRO_3GEN_129) with the
+    .mp4 files in `folder`, in name order (at most 3)."""
+    locs = call("GET", f"/v1/appStoreVersions/{v['id']}/appStoreVersionLocalizations")["data"]
+    loc = next(l for l in locs if l["attributes"]["locale"] == "en-US")
+    sets = call("GET", f"/v1/appStoreVersionLocalizations/{loc['id']}/appPreviewSets")["data"]
+    s = next((x for x in sets if x["attributes"]["previewType"] == kind), None)
+    if s is None:
+        s = call("POST", "/v1/appPreviewSets", {"data": {
+            "type": "appPreviewSets", "attributes": {"previewType": kind},
+            "relationships": {"appStoreVersionLocalization": {"data": {
+                "type": "appStoreVersionLocalizations", "id": loc["id"]}}}}})["data"]
+    for old in call("GET", f"/v1/appPreviewSets/{s['id']}/appPreviews")["data"]:
+        call("DELETE", f"/v1/appPreviews/{old['id']}")
+    for name in sorted(f for f in os.listdir(folder) if f.endswith(".mp4"))[:3]:
+        data = open(os.path.join(folder, name), "rb").read()
+        pv = call("POST", "/v1/appPreviews", {"data": {
+            "type": "appPreviews",
+            "attributes": {"fileName": name, "fileSize": len(data), "mimeType": "video/mp4",
+                           "previewFrameTimeCode": "00:00:05:00"},
+            "relationships": {"appPreviewSet": {"data": {"type": "appPreviewSets", "id": s["id"]}}}}})["data"]
+        for op in pv["attributes"]["uploadOperations"]:
+            part = data[op["offset"]: op["offset"] + op["length"]]
+            req = urllib.request.Request(op["url"], data=part, method=op["method"],
+                                         headers={h["name"]: h["value"] for h in op["requestHeaders"]})
+            urllib.request.urlopen(req).read()
+        call("PATCH", f"/v1/appPreviews/{pv['id']}", {"data": {
+            "type": "appPreviews", "id": pv["id"],
+            "attributes": {"uploaded": True, "sourceFileChecksum": hashlib.md5(data).hexdigest()}}})
+        print("uploaded preview", name)
+
+
 def set_notes(v, path):
     notes = open(path).read().strip()
     rd = call("GET", f"/v1/appStoreVersions/{v['id']}/appStoreReviewDetail").get("data")
@@ -112,6 +144,8 @@ def main():
     p.add_argument("--shots")
     p.add_argument("--display")
     p.add_argument("--notes")
+    p.add_argument("--previews")
+    p.add_argument("--preview-type")
     a = p.parse_args()
     aid, v = version(a.platform, a.version)
     if a.build:
@@ -120,6 +154,8 @@ def main():
         replace_shots(v, a.shots, a.display)
     if a.notes:
         set_notes(v, a.notes)
+    if a.previews:
+        replace_previews(v, a.previews, a.preview_type)
 
 
 if __name__ == "__main__":
