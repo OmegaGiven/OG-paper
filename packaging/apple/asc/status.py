@@ -83,7 +83,9 @@ def main():
         rd = get(f"/v1/appStoreVersions/{v['id']}/appStoreReviewDetail")
         if rd.get("data"):
             ra = rd["data"]["attributes"]
-            print(f"  review contact: {bool(ra.get('contactEmail'))} notes: {bool(ra.get('notes'))}")
+            print(f"  review contact: {bool(ra.get('contactEmail'))} notes:")
+            for line in (ra.get("notes") or "").splitlines():
+                print("    | " + line)
         else:
             print("  review details: none yet")
 
