@@ -1,0 +1,29 @@
+name: App Store submit
+
+# Run by hand: send the prepared version of a platform to App Review.
+on:
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: IOS or MAC_OS
+        default: IOS
+      version:
+        default: "1.0"
+
+permissions:
+  contents: read
+
+jobs:
+  submit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: pip install pyjwt cryptography
+      - name: Submit
+        env:
+          ASC_KEY: ${{ secrets.APPLE_API_KEY }}
+          ASC_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          ASC_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          python3 packaging/apple/asc/submit.py --platform "${{ inputs.platform }}" --version "${{ inputs.version }}"
+          python3 packaging/apple/asc/status.py
