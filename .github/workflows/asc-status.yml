@@ -1,0 +1,22 @@
+name: App Store Connect status
+
+# Run by hand: prints where OG Paper stands in App Store Connect (versions,
+# builds, what each listing lacks, review submissions). Reads only.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  status:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: pip install pyjwt cryptography
+      - name: Status
+        env:
+          ASC_KEY: ${{ secrets.APPLE_API_KEY }}
+          ASC_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          ASC_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: python3 packaging/apple/asc/status.py
