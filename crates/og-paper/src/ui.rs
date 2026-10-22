@@ -659,6 +659,10 @@ pub struct UiState {
     pub relay_text: Option<String>,
     pub pages_open: bool,
     pub layout_open: bool,
+    /// Whose tools and settings: (server URL, "" this device; label), and
+    /// the one in use (see `profile`).
+    pub profile_choices: Vec<(String, String)>,
+    pub profile_in_use: String,
     pub plugins_open: bool,
     /// The Layers panel: open, its rows (top first), a name being edited,
     /// and how many things are selected (for "Move selection here").
@@ -955,6 +959,8 @@ impl Default for UiState {
             relay_text: None,
             pages_open: false,
             layout_open: false,
+            profile_choices: Vec::new(),
+            profile_in_use: String::new(),
             plugins_open: false,
             layers_open: false,
             layer_rows: Vec::new(),
@@ -1372,6 +1378,8 @@ pub enum Action {
     LayersPanel,
     FramesPanel,
     SymbolsPanel,
+    /// Use the tools and settings choice k (`UiState::profile_choices`).
+    UseProfile(u8),
     /// Put symbol k (in `symbols::SYMBOLS`) in the middle of the screen.
     PlaceSymbol(u16),
     FrameGo(u32),
@@ -8708,6 +8716,22 @@ fn layout_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>
                         });
                     });
                     ui.add_space(4.0);
+                    // Whose tools and settings: this device's, or an account's.
+                    if st.profile_choices.len() > 1 {
+                        ui.label(egui::RichText::new("Tools & settings").strong());
+                        for (i, (url, label)) in st.profile_choices.clone().iter().enumerate() {
+                            let r = ui.radio(*url == st.profile_in_use, label.as_str()).on_hover_text(if url.is_empty() {
+                                "The toolbars and settings kept on this device"
+                            } else {
+                                "Your account's toolbars and settings, kept on that server: the same on every device you sign in on"
+                            });
+                            named(&r, format!("Tools from {label}"));
+                            if r.clicked() && *url != st.profile_in_use {
+                                actions.push(Action::UseProfile(i as u8));
+                            }
+                        }
+                        ui.add_space(6.0);
+                    }
                     ui.label(egui::RichText::new("Show").strong());
                     // Each tick changes it at once (and is remembered).
                     let mut tick =

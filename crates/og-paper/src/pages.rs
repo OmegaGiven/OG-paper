@@ -159,6 +159,30 @@ fn save_servers(all: &[ServerConn]) {
 }
 
 /// A server's short name: its host.
+/// A server's name to show: its host.
+pub fn host_label(url: &str) -> String {
+    host_of(url)
+}
+
+impl ServerConn {
+    /// Signed in to an account there.
+    pub fn signed_in(&self) -> bool {
+        self.account.as_ref().is_some_and(|a| !a.2.is_empty())
+    }
+
+    /// A request to it is under way.
+    pub fn busy(&self) -> bool {
+        self.state == "Checking…" || self.state == "Signing in…"
+    }
+
+    pub fn account_user(&self) -> String {
+        self.account
+            .as_ref()
+            .map(|a| a.0.clone())
+            .unwrap_or_default()
+    }
+}
+
 fn host_of(url: &str) -> String {
     url.split("://")
         .nth(1)
@@ -399,6 +423,16 @@ impl App {
             return;
         };
         s.pending = vec![m];
+        s.state = "Checking…".into();
+        self.dir_connect(i);
+    }
+
+    /// Send `msgs` to server `i`'s directory (signed in with its account).
+    pub(crate) fn server_send(&mut self, i: usize, msgs: Vec<Msg>) {
+        let Some(s) = self.servers.get_mut(i) else {
+            return;
+        };
+        s.pending = msgs;
         s.state = "Checking…".into();
         self.dir_connect(i);
     }
@@ -694,6 +728,15 @@ impl App {
                         );
                     }
                 }
+                // Signed in: the account's tools and settings come too
+                // (unless this is sending them, which would race).
+                if matches!(out.first(), Some(Msg::AccountIn { .. }))
+                    && !out
+                        .iter()
+                        .any(|m| matches!(m, Msg::Settings(_) | Msg::GetSettings))
+                {
+                    out.insert(1, Msg::GetSettings);
+                }
                 let sealed: Vec<Vec<u8>> =
                     out.iter().map(|m| s.keys.seal(&m.encode(), true)).collect();
                 for b in sealed {
@@ -716,6 +759,11 @@ impl App {
                     let say = if token.is_empty() {
                         s.account = None;
                         save_account(&s.link.url, None);
+                        // Signed out: back to this device's tools.
+                        if crate::profile::in_use() == s.link.url {
+                            let url = String::new();
+                            self.pending_profile = Some(url);
+                        }
                         Some(note)
                     } else {
                         let a = (user, role, token);
@@ -731,6 +779,10 @@ impl App {
                     // A page of this server open view-only: the account may draw.
                     self.sign_in_page_with_account();
                     self.redraw();
+                    return;
+                }
+                if let Some(Ok(Msg::Settings(text))) = msg {
+                    self.profile_arrived(i, text);
                     return;
                 }
                 if let Some(Ok(Msg::Folders { folders, pages })) = msg {

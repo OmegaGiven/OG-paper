@@ -58,7 +58,7 @@ enum Conn {
     Page(u128),
     /// In the directory (apps' Pages list), signed in to an account or
     /// not.
-    Dir(Option<Role>),
+    Dir(Option<(Role, String)>),
     /// The automation API: whether it may change things (once signed in),
     /// and the pages it watches.
     Api(Option<bool>, HashSet<u128>),
@@ -566,6 +566,26 @@ fn open_page(dir: &Path, canvas: u128, server: &Server) -> Page {
     }
 }
 
+/// Where account `user`'s tools and settings are kept: `.profiles/` in the
+/// pages folder, by a name made safe for a file.
+fn profile_path(dir: &Path, user: &str) -> PathBuf {
+    let safe: String = user
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .take(64)
+        .collect();
+    dir.join(".profiles").join(format!(
+        "{safe}-{:08x}.txt",
+        crate::plugin::key(user) as u32
+    ))
+}
+
 /// A directory request: list, make, rename or delete pages.
 #[allow(clippy::too_many_arguments)]
 fn directory(
@@ -573,7 +593,7 @@ fn directory(
     keys: &Keys,
     server: &Server,
     console: &Mutex<Console>,
-    account: &mut Option<Role>,
+    account: &mut Option<(Role, String)>,
     id: u64,
     b: &[u8],
 ) {
@@ -595,7 +615,7 @@ fn directory(
             .account(&user, &password, &token);
         let reply = match r {
             Ok((role, token)) => {
-                *account = Some(role);
+                *account = Some((role, user.clone()));
                 Msg::Account {
                     note: format!("Signed in as {user}"),
                     user,
@@ -616,11 +636,35 @@ fn directory(
         server.send(id, keys.seal(&reply.encode(), false));
         return;
     }
+    // An account's saved tools and settings: kept for it, or handed back.
+    match (&m, account.as_ref()) {
+        (Msg::GetSettings, Some((_, user))) => {
+            let text = std::fs::read_to_string(profile_path(dir, user)).unwrap_or_default();
+            server.send(id, keys.seal(&Msg::Settings(text).encode(), false));
+            return;
+        }
+        (Msg::Settings(text), Some((_, user))) => {
+            if text.len() <= crate::profile::MAX_BYTES {
+                let p = profile_path(dir, user);
+                if let Some(d) = p.parent() {
+                    let _ = std::fs::create_dir_all(d);
+                }
+                let _ = std::fs::write(p, text);
+            }
+            return;
+        }
+        (Msg::GetSettings | Msg::Settings(_), None) => return,
+        _ => {}
+    }
     let _g = INDEX.lock().unwrap_or_else(|e| e.into_inner());
     // The edit form of the server link (it signs) may do anything; an
     // account, what its role allows. Viewers and the plain view link see
     // only the pages' view keys.
-    let role = if signed { Some(Role::Admin) } else { *account };
+    let role = if signed {
+        Some(Role::Admin)
+    } else {
+        account.as_ref().map(|a| a.0)
+    };
     let draws = role.is_some_and(Role::can_draw);
     let op = match m {
         Msg::NewPage(name) => Some(PageOp::New {
@@ -939,7 +983,12 @@ mod tests {
         let mut out = Vec::new();
         let want = msgs
             .iter()
-            .filter(|m| !matches!(m, Msg::AccountIn { .. }))
+            .filter(|m| {
+                !matches!(
+                    m,
+                    Msg::AccountIn { .. } | Msg::GetSettings | Msg::Settings(_)
+                )
+            })
             .count();
         let start = Instant::now();
         while start.elapsed() < Duration::from_secs(10)
@@ -968,6 +1017,97 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         out
+    }
+
+    #[test]
+    fn accounts_keep_their_tools_and_settings() {
+        let dir = std::env::temp_dir().join(format!("ogp-prof-{}", crate::uid::new()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let console = Mutex::new(Console::load(&dir));
+        console
+            .lock()
+            .unwrap()
+            .add_user("val", Role::Viewer, "viewpass1");
+        let server_keys = Keys::parse(&Keys::edit_token(&crate::seal::random_secret())).unwrap();
+        let view = Keys::parse(&server_keys.view_token()).unwrap();
+        let server = Server::start(0).unwrap();
+        let login = |user: &str, password: &str| Msg::AccountIn {
+            user: user.into(),
+            password: password.into(),
+            token: String::new(),
+        };
+        let settings = |r: &[Msg]| {
+            r.iter().find_map(|m| match m {
+                Msg::Settings(t) => Some(t.clone()),
+                _ => None,
+            })
+        };
+        // None kept yet: an empty set.
+        let r = dir_talk(
+            &server,
+            &console,
+            &dir,
+            &view,
+            &[login("admin", "password"), Msg::GetSettings, Msg::ListPages],
+        );
+        assert_eq!(settings(&r).as_deref(), Some(""));
+        // Kept, and handed back to the same account on its next visit.
+        let set = "og-paper-profile 1\npref dark=on\nhotbar\n".to_string();
+        dir_talk(
+            &server,
+            &console,
+            &dir,
+            &view,
+            &[
+                login("admin", "password"),
+                Msg::Settings(set.clone()),
+                Msg::ListPages,
+            ],
+        );
+        let r = dir_talk(
+            &server,
+            &console,
+            &dir,
+            &view,
+            &[login("admin", "password"), Msg::GetSettings, Msg::ListPages],
+        );
+        assert_eq!(settings(&r), Some(set));
+        // Not to another account, nor to anyone not signed in.
+        let r = dir_talk(
+            &server,
+            &console,
+            &dir,
+            &view,
+            &[login("val", "viewpass1"), Msg::GetSettings, Msg::ListPages],
+        );
+        assert_eq!(settings(&r).as_deref(), Some(""));
+        let r = dir_talk(
+            &server,
+            &console,
+            &dir,
+            &view,
+            &[Msg::GetSettings, Msg::ListPages],
+        );
+        assert_eq!(settings(&r), None);
+        dir_talk(
+            &server,
+            &console,
+            &dir,
+            &view,
+            &[Msg::Settings("x".into()), Msg::ListPages],
+        );
+        let r = dir_talk(
+            &server,
+            &console,
+            &dir,
+            &view,
+            &[login("val", "viewpass1"), Msg::GetSettings, Msg::ListPages],
+        );
+        assert_eq!(
+            settings(&r).as_deref(),
+            Some(""),
+            "a signed-out visitor kept nothing"
+        );
     }
 
     #[test]

@@ -30,6 +30,11 @@ fn encode(v: &[u32]) -> String {
         .join(",")
 }
 
+/// Read them again (another set of settings was put in place).
+pub fn forget() {
+    CACHE.with(|c| *c.borrow_mut() = None);
+}
+
 /// The saved colors (RGBA8, as `u32::from_le_bytes`), oldest first.
 pub fn list() -> Vec<u32> {
     CACHE.with(|c| {

@@ -138,6 +138,12 @@ pub enum Msg {
     },
     /// Public views (see `views` and `snapshot::encode_views`).
     Views(Vec<u8>),
+    /// To a server's directory, signed in to an account: that account's
+    /// saved tools and settings, please (see `profile`).
+    GetSettings,
+    /// An account's tools and settings (`profile` text; empty: none kept
+    /// yet): to the server to keep, or from it.
+    Settings(String),
 }
 
 /// One page a server hosts.
@@ -431,6 +437,11 @@ impl Msg {
                 w.u8(22);
                 w.bytes(b);
             }
+            Msg::GetSettings => w.u8(23),
+            Msg::Settings(t) => {
+                w.u8(24);
+                w.str(t);
+            }
         }
         w.0
     }
@@ -574,6 +585,8 @@ impl Msg {
                 made: r.u128()?,
             },
             22 => Msg::Views(r.bytes()?),
+            23 => Msg::GetSettings,
+            24 => Msg::Settings(r.str()?),
             t => return Err(format!("unknown message {t}")),
         })
     }
@@ -679,6 +692,8 @@ mod tests {
                 ok: true,
                 made: 0,
             },
+            Msg::GetSettings,
+            Msg::Settings("og-paper-profile 1\npref dark=on\n".into()),
         ];
         for m in all {
             assert_eq!(Msg::decode(&m.encode()).unwrap(), m);

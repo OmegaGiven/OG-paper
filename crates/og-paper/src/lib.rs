@@ -54,6 +54,7 @@ mod plugin;
 mod portal;
 mod prefs;
 mod presence;
+mod profile;
 #[cfg(desktop)]
 mod relay;
 mod render;
@@ -232,6 +233,11 @@ pub struct App {
     layer_preview: Option<(i32, layers::LayerFx)>,
     /// Components' mains remade by the edit under way: (before, after).
     comp_remade: Vec<(objects::ObjRef, objects::ObjRef)>,
+    /// Tools and settings: the set last sent to the server in use, when
+    /// that was checked, and a switch asked for (see `profile`).
+    profile_sent: Option<String>,
+    profile_checked: Instant,
+    pending_profile: Option<String>,
     /// Groups remade by the edit under way: (old, new) group.
     bundle_remade: Vec<(u32, u32)>,
     /// Layer moves in the undo and redo histories: (undo steps with it
@@ -361,24 +367,7 @@ impl App {
         egui_ctx.set_theme(egui::Theme::Light);
         let mut ui = UiState::default();
         ui.load_saved(hotbar::load());
-        let prefs = prefs::load();
-        ui.grid = ui::GridMode::from_key(prefs.get("grid").map_or("off", |s| s.as_str()));
-        ui.rulers = prefs.get("rulers").is_some_and(|s| s == "on");
-        ui.diagram = prefs.get("diagram").is_some_and(|v| v == "on");
-        ui.radial_bar = prefs.get("radialbar").is_some_and(|v| v == "on");
-        ui.dark = prefs.get("dark").is_some_and(|v| v == "on");
-        ui.hints = prefs.get("hints").is_none_or(|v| v != "off");
-        ui.basics_open = prefs.get("basictools").is_none_or(|v| v != "closed");
-        ui.views_open = prefs.get("invviews").is_none_or(|v| v != "closed");
-        ui.ui_scale = prefs
-            .get("uiscale")
-            .and_then(|v| v.parse::<f32>().ok())
-            .map_or(1.0, |v| v.clamp(ui::UI_SCALE_MIN, ui::UI_SCALE_MAX));
-        ui.hide_tools = prefs.get("hide_tools").is_some_and(|v| v == "on");
-        ui.hide_panel = prefs.get("hide_panel").is_some_and(|v| v == "on");
-        ui.hide_bar = prefs.get("hide_bar").is_some_and(|v| v == "on");
-        ui.layout = layout::Layout::decode(prefs.get("layout").map_or("", |s| s.as_str()));
-        ui.keys = hotkeys::Keymap::load(prefs.get("keys").map_or("", |s| s.as_str()));
+        apply_prefs(&mut ui, &prefs::load());
         Self {
             window: None,
             gpu: None,
@@ -401,6 +390,9 @@ impl App {
             layer_local: Default::default(),
             layer_preview: None,
             comp_remade: Vec::new(),
+            profile_sent: None,
+            profile_checked: Instant::now(),
+            pending_profile: None,
             bundle_remade: Vec::new(),
             layer_undo: Vec::new(),
             layer_redo: Vec::new(),
@@ -1917,6 +1909,11 @@ impl App {
                 self.redraw();
             }
             Action::FrameGo(g) => self.frame_go(g),
+            Action::UseProfile(k) => {
+                if let Some((url, _)) = self.profile_choices().get(k as usize).cloned() {
+                    self.profile_use(&url);
+                }
+            }
             Action::SymbolsPanel => {
                 self.ui.symbols_open = !self.ui.symbols_open;
                 self.ui.close_menus();
@@ -3418,6 +3415,14 @@ impl App {
             self.layers_load();
         }
         self.layers_refresh();
+        if let Some(u) = self.pending_profile.take() {
+            self.profile_use(&u);
+        }
+        if self.ui.layout_open {
+            self.ui.profile_choices = self.profile_choices();
+            self.ui.profile_in_use = profile::in_use();
+        }
+        self.profile_tick();
         self.ui.sel_count = self.edit.selection.len();
         self.ui.sel_grouped = self.edit.selection.iter().any(|r| self.objs.is_bundle(r));
         self.ui.sel_on_path = self.sel_on_path();
@@ -3879,6 +3884,28 @@ impl ApplicationHandler for App {
             _ => {}
         }
     }
+}
+
+/// The settings kept in the prefs, onto the UI (at start, and when another
+/// set of tools and settings is put in place; see `profile`).
+pub(crate) fn apply_prefs(ui: &mut UiState, prefs: &prefs::Prefs) {
+    ui.grid = ui::GridMode::from_key(prefs.get("grid").map_or("off", |s| s.as_str()));
+    ui.rulers = prefs.get("rulers").is_some_and(|s| s == "on");
+    ui.diagram = prefs.get("diagram").is_some_and(|v| v == "on");
+    ui.radial_bar = prefs.get("radialbar").is_some_and(|v| v == "on");
+    ui.dark = prefs.get("dark").is_some_and(|v| v == "on");
+    ui.hints = prefs.get("hints").is_none_or(|v| v != "off");
+    ui.basics_open = prefs.get("basictools").is_none_or(|v| v != "closed");
+    ui.views_open = prefs.get("invviews").is_none_or(|v| v != "closed");
+    ui.ui_scale = prefs
+        .get("uiscale")
+        .and_then(|v| v.parse::<f32>().ok())
+        .map_or(1.0, |v| v.clamp(ui::UI_SCALE_MIN, ui::UI_SCALE_MAX));
+    ui.hide_tools = prefs.get("hide_tools").is_some_and(|v| v == "on");
+    ui.hide_panel = prefs.get("hide_panel").is_some_and(|v| v == "on");
+    ui.hide_bar = prefs.get("hide_bar").is_some_and(|v| v == "on");
+    ui.layout = layout::Layout::decode(prefs.get("layout").map_or("", |s| s.as_str()));
+    ui.keys = hotkeys::Keymap::load(prefs.get("keys").map_or("", |s| s.as_str()));
 }
 
 /// Shapes and texts read from a file, matched to the strokes loaded.

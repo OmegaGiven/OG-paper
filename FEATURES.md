@@ -93,6 +93,7 @@ reports features without tests and tests named here that don't exist.
 | WS-04 | Workspace changes by role: new page / folder, rename, move, delete | Menu › Pages › select a server, folder or page › the bar (New page, New folder, Rename, Move to, Delete); drag a page onto a folder to move it | W D M | ui:workspace, rust:hub::tests::directory_accounts_decide_what_the_page_list_gives, ui:drag-upload |
 | WS-05 | Upload a page into a workspace: the open one into a folder, or any page on this device | Menu › Pages › select a server or folder › Upload open page; or select a page on This device › Upload; or drag a page from This device onto a server or folder | W D M | ui:workspace, ui:upload-local, ui:drag-upload |
 | WS-06 | Sign in on a page to get drawing rights (viewers stay view-only) | Share live (joined with a view link) › Sign in to draw | W D M | rust:hub::tests::page_sign_in_gives_drawing_rights_but_not_to_viewers, todo |
+| WS-07 | Tools and settings follow your account: signed in to a server, your toolbars, inventory, views and settings (grid, rulers, dark mode, hints, diagram mode, hotkeys, swatches) are kept there and come to every device you sign in on; changes go back to it; this device's own set is kept aside and UI settings › Tools & settings switches between them | Pages › sign in; Menu › UI settings › Tools & settings | W D M | ui:settings-sync, rust:hub::tests::accounts_keep_their_tools_and_settings, rust:profile::tests::a_set_round_trips_and_keeps_device_settings_out |
 
 ## Sharing: live sessions
 
