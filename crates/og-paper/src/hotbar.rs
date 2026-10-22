@@ -86,6 +86,8 @@ pub struct Preset {
 pub enum SlotCmd {
     Undo,
     Redo,
+    /// Fly back to the page's home view.
+    Home,
     /// A plugin's tool: the plugin (`plugin::key` of its name) and button.
     Plugin(u64, i32),
 }
@@ -353,6 +355,7 @@ fn put(p: &Preset) -> String {
     match p.cmd {
         Some(SlotCmd::Undo) => out += " cmd undo",
         Some(SlotCmd::Redo) => out += " cmd redo",
+        Some(SlotCmd::Home) => out += " cmd home",
         Some(SlotCmd::Plugin(k, b)) => out += &format!(" cmd plugin {k:016x} {b}"),
         None => {}
     }
@@ -414,6 +417,7 @@ fn get(s: &str) -> Option<Preset> {
                 p.cmd = Some(match w.next()? {
                     "undo" => SlotCmd::Undo,
                     "redo" => SlotCmd::Redo,
+                    "home" => SlotCmd::Home,
                     "plugin" => SlotCmd::Plugin(
                         u64::from_str_radix(w.next()?, 16).ok()?,
                         w.next()?.parse().ok()?,

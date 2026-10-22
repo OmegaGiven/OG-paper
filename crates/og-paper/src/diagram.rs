@@ -546,20 +546,36 @@ impl App {
         }
     }
 
-    /// The topmost object (camera units) at or near `p` (camera units) that
-    /// a drawn end snaps to.
+    /// The object (camera units) at or near `p` (camera units) that a drawn
+    /// end snaps to: the one whose outline it is nearest, within reach;
+    /// else the innermost one it is inside (so things in a box can be
+    /// linked, not only the box drawn around them). Ties go to the topmost.
     fn snap_target(&self, p: [f64; 2]) -> Option<(Outline, Geom)> {
         let reach = SNAP_PX * self.ppp() / self.cam.ppc();
-        self.stick_targets()
+        let mut near: Option<(f64, (Outline, Geom))> = None;
+        let mut within: Option<(f64, (Outline, Geom))> = None;
+        for (k, g) in self
+            .stick_targets()
             .into_iter()
             .rev()
             .filter(|(_, d)| !is_connector(d))
             .filter_map(|(_, d)| outline_of(&d).map(|(k, g)| (k, g.clone())))
-            .find(|(k, g)| {
-                to_unit(g, p).is_some_and(|u| {
-                    inside(*k, u) || outline_dist(*k, g, p).is_some_and(|d| d <= reach)
-                })
-            })
+        {
+            let Some(u) = to_unit(&g, p) else {
+                continue;
+            };
+            if let Some(d) = outline_dist(k, &g, p).filter(|&d| d <= reach) {
+                if near.as_ref().is_none_or(|(best, _)| d < *best) {
+                    near = Some((d, (k, g)));
+                }
+            } else if inside(k, u) {
+                let area = (g.half[0] * g.half[1]).abs();
+                if within.as_ref().is_none_or(|(best, _)| area < *best) {
+                    within = Some((area, (k, g)));
+                }
+            }
+        }
+        near.or(within).map(|(_, t)| t)
     }
 
     /// The connection point of `t` within reach of `p` (camera units).
@@ -914,6 +930,35 @@ mod tests {
         // Mid-side, between ports: floats, facing the other end.
         let (a, _) = app.snap_ends(px(-200.0, 30.0), px(-200.0 + 300.0, 30.0 + 300.0 * 0.0));
         assert!((a[0] - px(-200.0, 0.0)[0]).abs() < 0.05, "{a:?}");
+    }
+
+    #[test]
+    fn ends_in_a_box_take_the_things_in_it() {
+        let mut app = app();
+        // Two boxes, then a big one drawn around them (on top of them).
+        run(
+            &mut app,
+            json!([{"add": "shape", "kind": "rect", "x": -250, "y": -50, "w": 100, "h": 100},
+                   {"add": "shape", "kind": "rect", "x": 150, "y": -50, "w": 100, "h": 100},
+                   {"add": "shape", "kind": "rect", "x": -400, "y": -200, "w": 800, "h": 400}]),
+        );
+        app.size_override = Some([1200.0, 800.0]);
+        ogpaper_core::query(
+            &app.scene,
+            &app.cam,
+            1200.0,
+            800.0,
+            crate::VIEW,
+            &mut app.draw,
+        );
+        let px = |x: f64, y: f64| [x + 600.0, y + 400.0];
+        // From inside one inner box to inside the other: their sides.
+        let (a, b) = app.snap_ends(px(-200.0, 0.0), px(200.0, 0.0));
+        assert!(near(a, px(-150.0, 0.0)), "{a:?}");
+        assert!(near(b, px(150.0, 0.0)), "{b:?}");
+        // Inside the big box only: the big box, its side facing the other end.
+        let (_, b) = app.snap_ends(px(-200.0, 0.0), px(0.0, 150.0));
+        assert!(near(b, px(-400.0, 0.0)), "{b:?}");
     }
 
     #[test]

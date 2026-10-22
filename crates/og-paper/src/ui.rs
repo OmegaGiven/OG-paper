@@ -1113,6 +1113,7 @@ impl UiState {
             self.queued.push(match c {
                 hotbar::SlotCmd::Undo => Action::Undo,
                 hotbar::SlotCmd::Redo => Action::Redo,
+                hotbar::SlotCmd::Home => Action::Home,
                 hotbar::SlotCmd::Plugin(k, b) => Action::PluginTool(k, b),
             });
             return;
@@ -2771,9 +2772,9 @@ fn inventory_at(
     } else {
         30.0
     };
-    // Then the canvas's saved views, to fly to from a slot.
-    st.view_items = (0..st.bookmark_views.len())
-        .map(|i| Some(Preset::view(VIEW_ITEM + i as u32)))
+    // Then the home view and the canvas's saved views, to fly to from a slot.
+    st.view_items = std::iter::once(Some(Preset::cmd(hotbar::SlotCmd::Home)))
+        .chain((0..st.bookmark_views.len()).map(|i| Some(Preset::view(VIEW_ITEM + i as u32))))
         .collect();
     let view_rows = st.view_items.len().div_ceil(cols);
     let footer = footer
@@ -2782,6 +2783,7 @@ fn inventory_at(
             (true, 0) => 52.0,
             (true, r) => r as f32 * (s + gap) - gap + 34.0,
         }
+        + if st.views_open && st.bookmark_views.is_empty() { 20.0 } else { 0.0 }
         + if st.view_naming.is_some() { 40.0 } else { 0.0 };
     // Fill the panel with empty slots, like a game's inventory grid.
     let fit = (((area.height() - 90.0 - footer) + gap) / (s + gap))
@@ -2825,24 +2827,7 @@ fn inventory_at(
                                 st.held = None;
                                 fx.changed = true;
                             }
-                            // A tool dragged onto the bin is thrown away.
-                            if st.drag_src.is_some() {
-                                let at = ui.input(|i| i.pointer.interact_pos());
-                                if at.is_some_and(|p| bin.rect.expand(6.0).contains(p)) {
-                                    ui.painter().rect_stroke(
-                                        bin.rect.expand(3.0),
-                                        6.0,
-                                        Stroke::new(2.0, Color32::from_rgb(200, 40, 60)),
-                                        egui::StrokeKind::Outside,
-                                    );
-                                    if ui.input(|i| i.pointer.any_released()) {
-                                        st.drag_src = None;
-                                        st.held = None;
-                                        fx.changed = true;
-                                        fx.say = Some("Thrown away".into());
-                                    }
-                                }
-                            }
+                            bin_drop(ui, st, bin.rect, fx);
                             if ui
                                 .button(if narrow { "+" } else { "+ Save current" })
                                 .on_hover_text("Keep the current tool and its settings")
@@ -2990,25 +2975,54 @@ fn inventory_at(
                     }
                     if st.views_open {
                         let n = st.view_items.len();
-                        if n == 0 {
-                            help(ui, "No saved views yet: + saves the current one.");
-                        } else {
-                            let (all, _) = ui.allocate_exact_size(
-                                vec2(inner, view_rows as f32 * (s + gap) - gap),
-                                Sense::hover(),
+                        let (all, _) = ui.allocate_exact_size(
+                            vec2(inner, view_rows as f32 * (s + gap) - gap),
+                            Sense::hover(),
+                        );
+                        for i in 0..n {
+                            let r = Rect::from_min_size(
+                                all.min
+                                    + vec2((i % cols) as f32 * (s + gap), (i / cols) as f32 * (s + gap)),
+                                Vec2::splat(s),
                             );
-                            for i in 0..n {
-                                let r = Rect::from_min_size(
-                                    all.min
-                                        + vec2((i % cols) as f32 * (s + gap), (i / cols) as f32 * (s + gap)),
-                                    Vec2::splat(s),
-                                );
-                                slot(ui, st, r, Slots::Views, i, fx);
-                            }
+                            slot(ui, st, r, Slots::Views, i, fx);
+                        }
+                        if st.bookmark_views.is_empty() && !narrow {
+                            help(ui, "+ saves the current view here too.");
                         }
                     }
                 });
         });
+}
+
+/// A tool dragged onto a bin (`rect`, any 🗑) is thrown away: lights the
+/// bin while one is over it; true when one was dropped there.
+fn bin_drop(ui: &egui::Ui, st: &mut UiState, rect: Rect, fx: &mut SlotFx) -> bool {
+    let Some((w, j)) = st.drag_src else {
+        return false;
+    };
+    let at = ui.input(|i| i.pointer.interact_pos());
+    if !at.is_some_and(|p| rect.expand(6.0).contains(p)) {
+        return false;
+    }
+    ui.painter().rect_stroke(
+        rect.expand(3.0),
+        6.0,
+        Stroke::new(2.0, Color32::from_rgb(200, 40, 60)),
+        egui::StrokeKind::Outside,
+    );
+    if !ui.input(|i| i.pointer.any_released()) {
+        return false;
+    }
+    st.drag_src = None;
+    let held = st.held.take();
+    if w.is_source() {
+        // The basic tools and views stay: only the copy in hand goes.
+        *slot_mut(st, w, j) = held;
+    }
+    fx.changed = true;
+    fx.say = Some("Thrown away".into());
+    true
 }
 
 /// Every toolbar, Factorio style: a row of slots each, newest on top. Tick
@@ -3221,6 +3235,7 @@ fn toolbar_menu(
                                 Vec2::splat(s),
                             );
                             let resp = ui.interact(dr, Id::new(("bar_del", k)), Sense::click());
+                            named(&resp, format!("Delete toolbar {}", k + 1));
                             let can = total > 1;
                             let p = ui.painter();
                             p.rect_filled(
@@ -3244,11 +3259,14 @@ fn toolbar_menu(
                                 s * 0.5,
                                 if can { INKY } else { Color32::from_gray(190) },
                             );
-                            if resp.clicked() && can {
+                            // A tool dropped on it is thrown away (the
+                            // toolbar stays).
+                            let dropped = bin_drop(ui, st, dr, fx);
+                            if resp.clicked() && can && !dropped {
                                 gone = Some(k);
                             }
                             resp.on_hover_text(if can {
-                                "Delete this toolbar (its tools are not kept)"
+                                "Delete this toolbar (its tools are not kept); drop a tool here to throw it away"
                             } else {
                                 "The last toolbar stays"
                             });
@@ -3406,9 +3424,10 @@ fn slot(ui: &mut egui::Ui, st: &mut UiState, rect: Rect, which: Slots, i: usize,
                 ),
             },
             Slots::Inventory => format!("Inventory {}", i + 1),
+            Slots::Views if i == 0 => "View Home".to_string(),
             Slots::Views => format!(
                 "View {}",
-                st.bookmark_views.get(i).map_or("", |v| v.name.as_str())
+                st.bookmark_views.get(i - 1).map_or("", |v| v.name.as_str())
             ),
             Slots::Extra => format!("Extra {}", i + 1),
             _ => format!("Slot {}", i + 1),
@@ -3613,6 +3632,7 @@ fn describe(p: &Preset) -> String {
     match p.cmd {
         Some(hotbar::SlotCmd::Undo) => return "Undo".into(),
         Some(hotbar::SlotCmd::Redo) => return "Redo".into(),
+        Some(hotbar::SlotCmd::Home) => return "Home view".into(),
         Some(hotbar::SlotCmd::Plugin(k, b)) => {
             return crate::plugin::tool(k, b)
                 .map_or("A plugin's tool (not installed)".into(), |b| b.label)
@@ -6666,11 +6686,36 @@ fn cmd_icon(p: &egui::Painter, c: Pos2, r: f32, cmd: hotbar::SlotCmd, st: &UiSta
             let on = !dim || if redo { st.can_redo } else { st.can_undo };
             undo_icon(p, c, r * 0.8, redo, if on { INKY } else { grey });
         }
+        hotbar::SlotCmd::Home => home_icon(p, c, r * 0.8, INKY),
         hotbar::SlotCmd::Plugin(k, b) => match crate::plugin::tool(k, b) {
             Some(b) => plugin_icon(p, c, r, &b.icon, INKY),
             None => plugin_icon(p, c, r, "puzzle", grey),
         },
     }
+}
+
+/// A house: the home view.
+fn home_icon(p: &egui::Painter, c: Pos2, r: f32, ink: Color32) {
+    let s = r * 0.5;
+    let st = Stroke::new((r * 0.1).max(1.5), ink);
+    let roof = vec![
+        c + vec2(-s * 0.85, -s * 0.05),
+        c + vec2(0.0, -s * 0.8),
+        c + vec2(s * 0.85, -s * 0.05),
+    ];
+    p.add(egui::Shape::line(roof, st));
+    let walls = vec![
+        c + vec2(-s * 0.6, -s * 0.25),
+        c + vec2(-s * 0.6, s * 0.7),
+        c + vec2(s * 0.6, s * 0.7),
+        c + vec2(s * 0.6, -s * 0.25),
+    ];
+    p.add(egui::Shape::line(walls, st));
+    p.rect_filled(
+        Rect::from_min_max(c + vec2(-s * 0.18, s * 0.2), c + vec2(s * 0.18, s * 0.7)),
+        1.0,
+        ink,
+    );
 }
 
 /// A plugin tool's icon (see `plugin::ICONS`).
