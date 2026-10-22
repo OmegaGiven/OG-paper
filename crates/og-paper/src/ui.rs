@@ -835,6 +835,14 @@ pub struct UiState {
     pub basics_open: bool,
     /// A saved tool picked up in the inventory, to put in another slot.
     pub held: Option<Preset>,
+    /// What is in hand was bumped out of a slot (a cancel puts it back in
+    /// the inventory); else it is a copy, and a cancel just lets it go.
+    held_keep: bool,
+    /// A slot (or the bin, or "+") took this frame's tap.
+    held_hit: bool,
+    /// The canvas press being handled let go of the tool in hand (so it
+    /// doesn't close the inventory too).
+    pub let_go_press: bool,
     /// The basic tools row's slots, refilled every frame (see `Slots::Basic`).
     basic: Vec<Option<Preset>>,
     /// The hold tool: what a right click, or a press and hold, uses.
@@ -1047,6 +1055,9 @@ impl Default for UiState {
             bag_open: false,
             basics_open: true,
             held: None,
+            held_keep: false,
+            held_hit: false,
+            let_go_press: false,
             hold: None,
             drag_src: None,
             basic: Vec::new(),
@@ -1074,9 +1085,33 @@ impl UiState {
         self.bag_open = false;
     }
 
-    /// Esc: close every menu and panel that is open (not the tool panel).
-    /// False when nothing was.
+    /// Let go of the tool in hand without putting it anywhere: one bumped
+    /// out of a slot goes back to the inventory, a copy just goes. False
+    /// when nothing was in hand.
+    pub fn cancel_held(&mut self) -> bool {
+        let Some(h) = self.held.take() else {
+            return false;
+        };
+        if std::mem::take(&mut self.held_keep) {
+            if let Some(k) = self.inventory.iter().position(|x| x.is_none()) {
+                self.inventory[k] = Some(h);
+            } else {
+                self.inventory.push(Some(h));
+            }
+            self.presets_dirty = true;
+            self.message = Some("Put back in the inventory".into());
+        } else {
+            self.message = Some("Cancelled".into());
+        }
+        true
+    }
+
+    /// Esc: let go of a tool in hand; else close every menu and panel that
+    /// is open (not the tool panel). False when nothing was.
     pub fn close_all(&mut self) -> bool {
+        if self.cancel_held() {
+            return true;
+        }
         let any = self.menu != Menu::None
             || self.bar_menu
             || self.bag_open
@@ -1218,6 +1253,7 @@ impl UiState {
         } else {
             // Full: in hand, with the inventory open, to drop on any slot.
             self.held = Some(p);
+            self.held_keep = false;
             self.bag_open = true;
             self.bar_menu = false;
             format!("Tap a slot to put {name} there")
@@ -1790,12 +1826,17 @@ pub fn draw(ctx: &egui::Context, st: &mut UiState) -> Vec<Action> {
         if st.menu != Menu::None && !on_fan && !on(&["app_menu_list"]) {
             st.menu = Menu::None;
         }
-        if st.bar_menu && !on(&["toolbar_menu", "inventory", "quick_bar", "radial_bar"]) && !on_fan
-        {
-            st.bar_menu = false;
-        }
-        if st.bag_open && !on(&["inventory", "quick_bar", "radial_bar"]) && !on_fan {
-            st.bag_open = false;
+        let off_bars = !on(&["toolbar_menu", "inventory", "quick_bar", "radial_bar"]) && !on_fan;
+        // Holding a tool from the inventory, a press off it only lets go
+        // of the tool (the inventory stays open).
+        let let_go = off_bars && (std::mem::take(&mut st.let_go_press) || st.cancel_held());
+        if !let_go {
+            if st.bar_menu && off_bars {
+                st.bar_menu = false;
+            }
+            if st.bag_open && !on(&["inventory", "quick_bar", "radial_bar"]) && !on_fan {
+                st.bag_open = false;
+            }
         }
         if st.live_open && !on(&["live"]) && !on_fan {
             st.live_open = false;
@@ -2259,6 +2300,7 @@ fn quick_bar(ctx: &egui::Context, st: &mut UiState, g: &Geo) {
         changed: false,
         say: None,
     };
+    st.held_hit = false;
     // The other toolbars ticked "shown" stack on the active one, away from
     // the screen edge the bar sits on.
     let up = y > screen.center().y;
@@ -2421,6 +2463,17 @@ fn quick_bar(ctx: &egui::Context, st: &mut UiState, g: &Geo) {
         fx.changed = true;
     }
 
+    // A tap on nothing in a panel while holding a tool lets go of it (the
+    // inventory stays open; a tap on the canvas does the same, see
+    // `App::begin`).
+    if st.held.is_some()
+        && !st.held_hit
+        && ctx.is_pointer_over_egui()
+        && ctx.input(|i| i.pointer.primary_clicked())
+        && st.cancel_held()
+    {
+        fx.changed = true;
+    }
     // The held tool follows the pointer.
     if let (Some(h), Some(at)) = (st.held, ctx.pointer_hover_pos()) {
         let p = ctx.layer_painter(egui::LayerId::new(Order::Tooltip, Id::new("held")));
@@ -2504,6 +2557,7 @@ fn add_extra(ui: &mut egui::Ui, st: &mut UiState, rect: Rect, fx: &mut SlotFx) {
         }
         held
     } else if resp.clicked() {
+        st.held_hit = true;
         match st.held.take() {
             Some(h) => Some(h),
             None if !st.bag_open => Some(fx.current),
@@ -2824,6 +2878,7 @@ fn inventory_at(
                                 .add_enabled(st.held.is_some(), egui::Button::new("🗑"))
                                 .on_hover_text("Throw away the tool in hand (or drag a tool here)");
                             if bin.clicked() {
+                                st.held_hit = true;
                                 st.held = None;
                                 fx.changed = true;
                             }
@@ -3539,8 +3594,10 @@ fn slot(ui: &mut egui::Ui, st: &mut UiState, rect: Rect, which: Slots, i: usize,
         // Tap: a copy in hand, to tap onto a slot (or use it straight away
         // with the inventory closed).
         if st.bag_open {
+            st.held_hit = true;
             if st.held.is_none() {
                 st.held = item.map(|it| st.held_from(which, it));
+                st.held_keep = false;
                 fx.say = Some(format!(
                     "{}: tap a slot to put it there",
                     item.map_or(String::new(), |it| describe(&it))
@@ -3554,8 +3611,10 @@ fn slot(ui: &mut egui::Ui, st: &mut UiState, rect: Rect, which: Slots, i: usize,
     } else if resp.clicked() {
         if st.bag_open && st.held.is_some() {
             // Put down (or swap with what is here) what is in hand.
+            st.held_hit = true;
             let held = st.held.take();
             st.held = std::mem::replace(slot_mut(st, which, i), held);
+            st.held_keep = st.held.is_some();
             fx.changed = true;
         } else if st.bag_open && item.is_none() {
             // An empty slot with nothing in hand: nothing to do.

@@ -24,9 +24,17 @@ pub fn encode(p: &Prefs) -> String {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn path() -> Option<std::path::PathBuf> {
-    // Tests keep theirs aside (hosting keys are written here).
+    // Tests keep theirs aside (hosting keys are written here), each test
+    // its own (they run at once, and one's save could undo another's).
     #[cfg(test)]
-    return Some(std::env::temp_dir().join(format!("ogp-test-prefs-{}.txt", std::process::id())));
+    return Some(std::env::temp_dir().join(format!(
+        "ogp-test-prefs-{}-{}.txt",
+        std::process::id(),
+        std::thread::current()
+            .name()
+            .unwrap_or("other")
+            .replace(|c: char| !c.is_ascii_alphanumeric(), "_")
+    )));
     #[cfg(not(test))]
     Some(crate::fonts_dir()?.parent()?.join("prefs.txt"))
 }

@@ -740,9 +740,14 @@ impl App {
     }
 
     fn begin(&mut self, p: [f64; 2], pressure: f32) {
-        // A tap on the canvas while a menu is open only closes the menu.
+        // A tap on the canvas while a menu is open only closes the menu (or,
+        // holding a tool from the inventory, lets go of it).
         if self.ui.menu_open() {
-            self.ui.close_menus();
+            if self.ui.cancel_held() {
+                self.ui.let_go_press = true;
+            } else {
+                self.ui.close_menus();
+            }
             self.gesture = Gesture::None;
             self.redraw();
             return;
@@ -3237,7 +3242,7 @@ impl App {
             -99.0
         };
         web::set_status(format!(
-            "{{\"ready\":true,\"zoom\":{:.3},\"strokes\":{},\"shown\":{},\"drawn\":{},\"erased\":{},\"undos\":{},\"deepDraw\":{:.2},\"flying\":{},\"dirty\":{},\"bookmarks\":[{}],\"timeline\":{},\"dark\":{},\"canvas\":\"{:032x}\",\"peer\":\"{:016x}\",\"net\":{},\"name\":{},\"passes\":{},\"hints\":{},\"tool\":{},\"hold\":{},\"viewOnly\":{},\"shared\":[{}],\"delKnob\":{},\"selected\":{},\"clips\":{}}}",
+            "{{\"ready\":true,\"zoom\":{:.3},\"strokes\":{},\"shown\":{},\"drawn\":{},\"erased\":{},\"undos\":{},\"deepDraw\":{:.2},\"flying\":{},\"dirty\":{},\"bookmarks\":[{}],\"timeline\":{},\"dark\":{},\"canvas\":\"{:032x}\",\"peer\":\"{:016x}\",\"net\":{},\"name\":{},\"passes\":{},\"hints\":{},\"tool\":{},\"hold\":{},\"inHand\":{},\"viewOnly\":{},\"shared\":[{}],\"delKnob\":{},\"selected\":{},\"clips\":{}}}",
             self.cam.log10_zoom(),
             (0..self.scene.strokes.len() as u32)
                 .filter(|&i| !self.scene.strokes[i as usize].deleted && !self.objs.look_strokes.contains(&i))
@@ -3262,6 +3267,7 @@ impl App {
             self.ui.hints,
             web::json_str(self.ui.tool.name()),
             web::json_str(self.ui.hold.map_or("", |h| h.tool.name())),
+            self.ui.held.is_some(),
             self.view_only,
             self.shared_views
                 .iter()
