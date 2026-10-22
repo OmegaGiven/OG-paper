@@ -1,7 +1,7 @@
 //! Spell check, never autocorrect: while typing, words not in the
 //! dictionary are underlined, and the one at the cursor offers spellings to
 //! pick, Add to dictionary and Ignore. The native apps check with a bundled
-//! English (US) Hunspell dictionary (res/spell, SCOWL: MIT and BSD); on the
+//! English (US) Hunspell dictionary (dict/, SCOWL: MIT and BSD); on the
 //! web the browser's own spell check does it (see og-web.js).
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -29,8 +29,8 @@ mod dict {
             return;
         }
         let load = || {
-            let aff = include_str!("../res/spell/en_US.aff");
-            let dic = include_str!("../res/spell/en_US.dic");
+            let aff = include_str!("../dict/en_US.aff");
+            let dic = include_str!("../dict/en_US.dic");
             if let Ok(d) = spellbook::Dictionary::new(aff, dic) {
                 let _ = DICT.set(d);
             }

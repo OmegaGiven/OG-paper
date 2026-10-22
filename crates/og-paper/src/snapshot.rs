@@ -45,6 +45,9 @@
 //!   group is a group (v10) to older apps.
 //! - v13 layer looks: count u32; each: group index u32, then `put_look`.
 //!   The look is stored as an invisible box that older apps never draw.
+//! - v14 text boxes (Text › Text box): count u32; each: group index u32,
+//!   then `put_textbox`. The box is stored as its words as wrapped, a text
+//!   older apps show.
 //!
 //! Compatibility: a newer version may only add at the end (a new section
 //! after the last; never a field inside an existing record), so an older
@@ -63,7 +66,7 @@ use crate::shapes::{ArrowType, FillStyle, Geom, Head, ShapeKind, ShapeStyle, Slo
 use crate::timeline::{Bookmark, Event, Timeline};
 
 const MAGIC: &[u8; 4] = b"OGPT";
-const VERSION: u8 = 13;
+const VERSION: u8 = 14;
 /// Marks a portal's view after its shape in a lone object's bytes.
 const PORTAL_TAG: &[u8; 4] = b"OGPV";
 /// After a lone object's bytes: an audio clip's sound id and length.
@@ -75,6 +78,8 @@ const BUNDLE_TAG: &[u8; 4] = b"OGPB";
 const FRAME_TAG: &[u8; 4] = b"OGPF";
 /// After a lone object's bytes: it is a layer's look (`put_look`).
 const LOOK_TAG: &[u8; 4] = b"OGPL";
+/// After a lone object's bytes: a text box's words, size and border.
+const TEXTBOX_TAG: &[u8; 4] = b"OGPX";
 
 /// A layer's name (u32 length + UTF-8), opacity f32, blend u8, clip u8.
 fn put_look(b: &mut Vec<u8>, name: &str, fx: &crate::layers::LayerFx) {
@@ -139,6 +144,7 @@ pub fn put_data(b: &mut Vec<u8>, d: &ObjData) {
         .or_else(|| d.bundle_as_shape())
         .or_else(|| d.frame_as_shape())
         .or_else(|| d.look_as_shape())
+        .or_else(|| d.textbox_as_text())
     {
         return put_data(b, &shape);
     }
@@ -247,6 +253,7 @@ pub fn put_data(b: &mut Vec<u8>, d: &ObjData) {
         | ObjData::Audio { .. }
         | ObjData::Bundle { .. }
         | ObjData::Frame { .. }
+        | ObjData::TextBox { .. }
         | ObjData::LayerLook { .. } => {
             unreachable!("written as its shape")
         }
@@ -280,6 +287,36 @@ pub fn put_data(b: &mut Vec<u8>, d: &ObjData) {
     }
 }
 
+/// A text box's own part: its words (u32 length + UTF-8), size f64, border
+/// flag u8, then (when set) the border as a shape over the box.
+fn put_textbox(b: &mut Vec<u8>, d: &ObjData) {
+    let ObjData::TextBox {
+        text,
+        geom,
+        size,
+        border,
+        ..
+    } = d
+    else {
+        return;
+    };
+    b.extend_from_slice(&(text.len() as u32).to_le_bytes());
+    b.extend_from_slice(text.as_bytes());
+    b.extend_from_slice(&size.to_le_bytes());
+    b.push(border.is_some() as u8);
+    if let Some((style, width)) = border {
+        put_data(
+            b,
+            &ObjData::Shape {
+                style: *style,
+                geom: geom.clone(),
+                width: *width,
+                seed: 0,
+            },
+        );
+    }
+}
+
 /// A portal's view: name (u32 length + UTF-8), camera, view_px f64.
 fn put_portal(b: &mut Vec<u8>, v: &crate::objects::PortalView) {
     b.extend_from_slice(&(v.name.len() as u32).to_le_bytes());
@@ -306,6 +343,9 @@ pub fn get_data(bytes: &[u8]) -> Result<ObjData, String> {
                 }
             }
             return Ok(d);
+        } else if tag == TEXTBOX_TAG {
+            let (text, size, border) = r.textbox()?;
+            return Ok(d.into_textbox(text, size, border));
         } else if tag == LOOK_TAG {
             let (name, fx) = r.look()?;
             return Ok(d.into_look(name, fx));
@@ -341,6 +381,10 @@ pub fn data_bytes(d: &ObjData) -> Vec<u8> {
     if let ObjData::LayerLook { name, fx, .. } = d {
         b.extend_from_slice(LOOK_TAG);
         put_look(&mut b, name, fx);
+    }
+    if let ObjData::TextBox { .. } = d {
+        b.extend_from_slice(TEXTBOX_TAG);
+        put_textbox(&mut b, d);
     }
     if let ObjData::Frame { name, .. } = d {
         b.extend_from_slice(FRAME_TAG);
@@ -544,6 +588,18 @@ pub fn encode(
         put_comp(&mut b, c);
     }
     b.extend_from_slice(&look_bytes);
+    let boxes: Vec<(usize, &ObjData)> = objs
+        .groups
+        .iter()
+        .enumerate()
+        .filter(|(_, g)| matches!(g.data, ObjData::TextBox { .. }))
+        .map(|(i, g)| (i, &g.data))
+        .collect();
+    b.extend_from_slice(&(boxes.len() as u32).to_le_bytes());
+    for (i, d) in boxes {
+        b.extend_from_slice(&(i as u32).to_le_bytes());
+        put_textbox(&mut b, d);
+    }
     b
 }
 
@@ -870,6 +926,17 @@ pub fn decode(bytes: &[u8], base_px: f64) -> Result<Snapshot, String> {
             }
             objs.reindex();
         }
+        if v >= 14 && r.at < bytes.len() {
+            let n = r.u32()? as usize;
+            for _ in 0..n.min(objs.groups.len()) {
+                let i = r.u32()? as usize;
+                let (text, size, border) = r.textbox()?;
+                if let Some(g) = objs.groups.get_mut(i) {
+                    g.data = g.data.clone().into_textbox(text, size, border);
+                }
+            }
+            objs.reindex();
+        }
         Some(crate::share::CopyLog {
             canvas,
             events,
@@ -941,6 +1008,22 @@ impl<'a> Reader<'a> {
         ))
     }
     /// See `put_look`.
+    /// See `put_textbox`.
+    #[allow(clippy::type_complexity)]
+    fn textbox(&mut self) -> Result<(String, f64, Option<(ShapeStyle, f64)>), String> {
+        let len = self.u32()? as usize;
+        let text = String::from_utf8_lossy(self.take(len)?).into_owned();
+        let size = f64::from_le_bytes(self.take(8)?.try_into().expect("8 bytes"));
+        let border = match self.take(1)?[0] {
+            0 => None,
+            _ => match self.data()? {
+                ObjData::Shape { style, width, .. } => Some((style, width)),
+                _ => None,
+            },
+        };
+        Ok((text, size, border))
+    }
+
     fn look(&mut self) -> Result<(String, crate::layers::LayerFx), String> {
         let n = self.u32()? as usize;
         let name = String::from_utf8_lossy(self.take(n)?).into_owned();

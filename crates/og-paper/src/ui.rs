@@ -185,6 +185,8 @@ pub struct SelStyle {
     pub opacity: u8,
     /// Pictures' brightness, contrast and saturation.
     pub adjust: [f32; 3],
+    /// The first picked thing is a text box: its border (None: none).
+    pub textbox: Option<Option<ShapeStyle>>,
 }
 
 /// Which color the shape panel's dial edits.
@@ -802,6 +804,12 @@ pub struct UiState {
     pub text: TextStyle,
     /// Text cap height, screen pixels at the zoom typed at.
     pub text_size: f32,
+    /// The native text editor's width (a text box's), else its own.
+    pub text_edit_width: Option<f32>,
+    /// The Text tool makes text boxes (drag one out; words wrap in it).
+    pub text_box: bool,
+    /// A new text box's border and fill (None: none).
+    pub text_box_border: Option<ShapeStyle>,
     /// The selection, for the panel (app fills it; panel edits it).
     pub sel: SelStyle,
     /// The selection's Details tab: label, value rows.
@@ -1035,6 +1043,9 @@ impl Default for UiState {
             color_target: ColorTarget::Stroke,
             text: TextStyle::default(),
             text_size: 24.0,
+            text_box: false,
+            text_edit_width: None,
+            text_box_border: None,
             sel: SelStyle::default(),
             sel_details: Vec::new(),
             tab_heights: Default::default(),
@@ -4429,6 +4440,12 @@ fn tool_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) 
                         st.pen.advanced = i == 1;
                     }
                 }
+                if tool == Tool::Text {
+                    let now = st.text_box as usize;
+                    if let Some(i) = segmented(ui, &["Text", "Text box"], now, touch) {
+                        st.text_box = i == 1;
+                    }
+                }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let (rect, resp) = ui.allocate_exact_size(
                         Vec2::splat(if touch { 30.0 } else { 22.0 }),
@@ -4897,6 +4914,7 @@ fn panel_body(
             ui,
             &mut st.text,
             Some(&mut st.text_size),
+            st.text_box.then_some(&mut st.text_box_border),
             touch,
             dial_hue,
             &st.egui_fonts,
@@ -4933,6 +4951,7 @@ fn sel_body(
                 ui,
                 &mut st.sel.text,
                 None,
+                st.sel.textbox.as_mut(),
                 touch,
                 dial_hue,
                 &st.egui_fonts,
@@ -5314,6 +5333,7 @@ fn text_section(
     ui: &mut egui::Ui,
     tx: &mut TextStyle,
     size: Option<&mut f32>,
+    border: Option<&mut Option<ShapeStyle>>,
     touch: bool,
     dial_hue: &mut f32,
     egui_fonts: &std::collections::HashSet<String>,
@@ -5369,6 +5389,9 @@ fn text_section(
                 }
             },
         );
+        if let Some(border) = border {
+            textbox_border(ui, border, tx.color);
+        }
         heading(ui, "Spacing");
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new("Letters").small());
@@ -5393,6 +5416,72 @@ fn text_section(
     let pick = color_dial(ui, &mut c, false, dial_hue, touch);
     tx.color = u32c(c);
     pick
+}
+
+/// A text box's border and fill: on or off, and their colors.
+fn textbox_border(ui: &mut egui::Ui, border: &mut Option<ShapeStyle>, text_color: u32) {
+    const LINES: [u32; 8] = [
+        0xff24_1c1c, 0xff8a_8a8a, 0xff3c_3cd6, 0xff2a_8ae0, 0xff4a_a83c, 0xffd6_7a2a, 0xff9a_3cb4, 0xffff_ffff,
+    ];
+    const FILLS: [u32; 8] = [
+        0xffff_ffff, 0xfff2_f2f2, 0xffd6_e0ff, 0xffcc_f2ff, 0xffd0_f2d6, 0xffff_e8d0, 0xfff0_d6f6, 0xff24_1c1c,
+    ];
+    heading(ui, "Text box");
+    let mut on = border.is_some();
+    let t = ui.checkbox(&mut on, "Border").on_hover_text("An outline around the box");
+    if t.changed() {
+        *border = on.then(|| ShapeStyle {
+            kind: shapes::ShapeKind::Rect,
+            stroke: text_color,
+            fill_style: shapes::FillStyle::None,
+            sloppiness: shapes::Sloppiness::Architect,
+            ..ShapeStyle::default()
+        });
+    }
+    let Some(b) = border.as_mut() else {
+        help(ui, "No border: just the words, wrapped in the box.");
+        return;
+    };
+    let swatches = |ui: &mut egui::Ui, colors: &[u32], cur: &mut u32, what: &str| {
+        ui.horizontal_wrapped(|ui| {
+            for &c in colors {
+                let (r, resp) = ui.allocate_exact_size(vec2(22.0, 22.0), Sense::click());
+                let [r8, g8, b8, _] = c.to_le_bytes();
+                named(&resp, format!("{what} #{r8:02x}{g8:02x}{b8:02x}"));
+                let p = ui.painter();
+                p.circle_filled(r.center(), 9.0, c32(c));
+                p.circle_stroke(
+                    r.center(),
+                    9.0,
+                    Stroke::new(if *cur == c { 2.5 } else { 1.0 }, if *cur == c { ACCENT } else { EDGE }),
+                );
+                if resp.clicked() {
+                    *cur = c;
+                }
+            }
+        });
+    };
+    swatches(ui, &LINES, &mut b.stroke, "Border color");
+    let mut fill = b.fill_style != shapes::FillStyle::None;
+    if ui.checkbox(&mut fill, "Fill").changed() {
+        b.fill_style = if fill {
+            shapes::FillStyle::Solid
+        } else {
+            shapes::FillStyle::None
+        };
+        if fill && b.fill == 0 {
+            b.fill = FILLS[0];
+        }
+    }
+    if fill {
+        swatches(ui, &FILLS, &mut b.fill, "Fill color");
+    }
+    ui.horizontal(|ui| {
+        let mut round = b.round;
+        if ui.checkbox(&mut round, "Round corners").changed() {
+            b.round = round;
+        }
+    });
 }
 
 /// Fonts by style, each name shown in its own font, plus "Add your own".
@@ -5863,6 +5952,7 @@ fn text_editor(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>)
             egui::Frame::popup(ui.style()).show(ui, |ui| {
                 // Spell check: misspelled words underlined in red.
                 let spell = st.spell;
+                let width = st.text_edit_width.unwrap_or(240.0);
                 let mut layouter = |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap: f32| {
                     let text = buf.as_str();
                     let font = egui::TextStyle::Body.resolve(ui.style());
@@ -5889,7 +5979,7 @@ fn text_editor(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>)
                 let out = egui::TextEdit::multiline(text)
                     .id(edit_id)
                     .desired_rows(2)
-                    .desired_width(240.0)
+                    .desired_width(width)
                     // Tab types a tab: tables are edited as tab-separated cells.
                     .lock_focus(true)
                     .layouter(&mut layouter)

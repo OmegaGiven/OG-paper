@@ -226,7 +226,7 @@ fn tools(can_edit: bool) -> Vec<Value> {
     read.insert(
         "kinds".into(),
         json!({"type": "array", "items": {"type": "string",
-               "enum": ["text", "shape", "table", "ink", "fill", "image", "audio", "portal"]},
+               "enum": ["text", "textbox", "shape", "table", "ink", "fill", "image", "audio", "portal"]},
                "description": "Only these kinds"}),
     );
     read.insert(
@@ -291,13 +291,14 @@ fn tools(can_edit: bool) -> Vec<Value> {
                 \"round\" (rounded corners), \"opacity\" (0-1), \"gradient\": {\"to\": #rrggbb, \"angle\" (degrees, 90 = down), \"radial\"} (fill from \"fill\" to \"to\"), \"neat\" (false: hand-drawn look). Lines and arrows run from x,y to x+w,y+h, or through \"points\": [[x, y], …] (bending at each).\n\
                 {\"add\": \"shape\", \"kind\": \"path\", \"points\": [[x, y], …], \"smooth\" (curves through the points), \"closed\", plus the shape options above} (a pen path)\n\
                 {\"add\": \"symbol\", \"name\", \"x\", \"y\" (top left) or \"cx\", \"cy\" (centre), \"size\" (points per grid unit, default 10; a resistor is 6 units wide), \"color\"}: a draw.io-style symbol, a group with pins that lines drawn to them stay joined to (in diagram mode). Names: flowchart process, decision, terminator, data, document, database, predefined-process, manual-input, preparation, delay, connector, off-page, note, actor; electrical resistor, potentiometer, capacitor, polarized-capacitor, inductor, diode, led, battery, dc-source, ac-source, ground, switch, push-button, lamp, fuse, crystal, npn-transistor, pnp-transistor, op-amp, and-gate, nand-gate, or-gate, not-gate, speaker, microphone, antenna, motor, transformer; mechanical gear, spring, damper, bearing, pulley, belt-drive, shaft, fixed-support, pin-support, roller-support, electric-motor, pump, valve, check-valve, cylinder, cam, wheel\n\
+                {\"add\": \"textbox\", \"x\", \"y\", \"w\", \"h\" (the box), \"text\", \"size\" (cap height to start from, default 24; smaller when the words need it), \"color\", \"font\", \"align\", \"border\" (#rrggbb outline, or leave out for none), \"border_width\", \"fill\"}: words that wrap inside the box\n\
                 {\"add\": \"table\", \"x\", \"y\", \"cells\": [[\"Name\", \"Qty\"], [\"Pens\", \"4\"]], \"size\" (default 18), \"color\"}\n\
                 {\"add\": \"stroke\", \"points\": [[x, y], …], \"width\", \"color\", \"dash\"} (freehand ink)\n\
                 Colours are #rrggbb or #rrggbbaa.",
             "inputSchema": {"type": "object", "properties": {
                 "page": page_arg(),
                 "items": {"type": "array", "items": {"type": "object", "properties": {
-                    "add": {"type": "string", "enum": ["text", "shape", "table", "stroke"]}}, "required": ["add"]},
+                    "add": {"type": "string", "enum": ["text", "textbox", "shape", "symbol", "table", "stroke"]}}, "required": ["add"]},
                     "description": "The things to add"},
             }, "required": ["page", "items"]},
             "annotations": {"readOnlyHint": false, "destructiveHint": false, "openWorldHint": false},

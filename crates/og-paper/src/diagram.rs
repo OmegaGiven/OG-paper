@@ -91,6 +91,7 @@ fn outline_of(d: &ObjData) -> Option<(Outline, &Geom)> {
             _ => Some((Outline::Box, geom)),
         },
         ObjData::Text { geom, .. }
+        | ObjData::TextBox { geom, .. }
         | ObjData::Table { geom, .. }
         | ObjData::Image { geom, .. }
         | ObjData::Audio { geom, .. } => Some((Outline::Box, geom)),

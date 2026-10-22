@@ -406,7 +406,9 @@ export class T {
   /** Type text into whatever has the keyboard (app text box or page input). */
   async type(text) {
     for (const ch of text) {
-      const vk = ch.toUpperCase().charCodeAt(0);
+      // Key codes only for letters, digits and space ('.' is 46, which is
+      // Delete's).
+      const vk = /^[a-z0-9 ]$/i.test(ch) ? ch.toUpperCase().charCodeAt(0) : 0;
       await this.b.send('Input.dispatchKeyEvent', { type: 'keyDown', key: ch, text: ch, windowsVirtualKeyCode: vk });
       await this.b.send('Input.dispatchKeyEvent', { type: 'keyUp', key: ch, windowsVirtualKeyCode: vk });
       await sleep(this.demo ? 70 : 10);

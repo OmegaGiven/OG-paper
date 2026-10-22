@@ -15,7 +15,7 @@ use ogpaper_core::{hit, Change, Point, Scene, Style};
 use web_time::{Duration, Instant};
 
 use crate::objects::{self, home, to_cam, Group, ObjData, ObjRef, Op, TextStyle};
-use crate::shapes::{self, Geom};
+use crate::shapes::{self, Geom, ShapeStyle};
 use crate::ui::{self, Action, SelKind, SelStyle, Tool};
 use crate::{uid, App, Gesture};
 
@@ -63,6 +63,8 @@ pub struct TextEdit {
     pub cam: ogpaper_core::Camera,
     /// The text tool's size before editing an existing text, to put back.
     pub prev_size: Option<f32>,
+    /// A text box: its box (camera units) and border; the words wrap in it.
+    pub boxed: Option<(Geom, Option<(ShapeStyle, f64)>)>,
 }
 
 /// Editing state kept by the app.
@@ -73,6 +75,9 @@ pub struct EditState {
     /// Shape being dragged out: start and current (px).
     pub shape_drag: Option<([f64; 2], [f64; 2])>,
     pub marquee: Option<([f64; 2], [f64; 2])>,
+    /// A text box being dragged out with the Text tool: start and current
+    /// (px).
+    pub box_drag: Option<([f64; 2], [f64; 2])>,
     /// A press that began on a bucket fill: a drag from it draws a box
     /// (fills are usually the background of what is wanted); a tap
     /// selects the fill.
@@ -376,6 +381,12 @@ impl App {
             self.text_edit_group(g);
             return;
         }
+        // Text box mode, a tap: a box of a handy size, from there.
+        if self.ui.text_box {
+            let k = self.ppp();
+            self.textbox_begin(p, [p[0] + 280.0 * k, p[1] + 140.0 * k]);
+            return;
+        }
         let ppc = self.cam.ppc();
         self.edit.text = Some(TextEdit {
             at: self.px_to_cam(p),
@@ -387,6 +398,48 @@ impl App {
             table: false,
             cam: self.cam.clone(),
             prev_size: None,
+            boxed: None,
+        });
+        self.text_open_editor();
+    }
+
+    /// Start typing in a new text box over screen points `a`..`b` (a box
+    /// too small to type in gets a handy size).
+    pub(crate) fn textbox_begin(&mut self, a: [f64; 2], b: [f64; 2]) {
+        if self.edit.text.is_some() {
+            #[cfg(not(target_arch = "wasm32"))]
+            self.text_commit();
+            return;
+        }
+        let k = self.ppp();
+        let (lo, mut hi) = (
+            [a[0].min(b[0]), a[1].min(b[1])],
+            [a[0].max(b[0]), a[1].max(b[1])],
+        );
+        if hi[0] - lo[0] < 24.0 * k || hi[1] - lo[1] < 16.0 * k {
+            hi = [lo[0] + 280.0 * k, lo[1] + 140.0 * k];
+        }
+        let (p, q) = (self.px_to_cam(lo), self.px_to_cam(hi));
+        let ppc = self.cam.ppc();
+        let size = self.ui.text_size as f64 * k / ppc;
+        let geom = Geom {
+            center: [(p[0] + q[0]) * 0.5, (p[1] + q[1]) * 0.5],
+            half: [(q[0] - p[0]).abs() * 0.5, (q[1] - p[1]).abs() * 0.5],
+            rot: 0.0,
+            pts: vec![],
+        };
+        let border = self.ui.text_box_border.map(|st| (st, 2.0 * k / ppc));
+        self.edit.text = Some(TextEdit {
+            at: p,
+            rot: 0.0,
+            size,
+            style: self.ui.text,
+            text: String::new(),
+            group: None,
+            table: false,
+            cam: self.cam.clone(),
+            prev_size: None,
+            boxed: Some((geom, border)),
         });
         self.text_open_editor();
     }
@@ -394,7 +447,19 @@ impl App {
     /// Edit an existing text group (or a table, as tab-separated text).
     pub(crate) fn text_edit_group(&mut self, g: u32) {
         let grp = &self.objs.groups[g as usize];
+        let mut boxed = None;
         let (text, style, geom, size, table) = match to_cam(&grp.cell, &grp.data, &self.cam) {
+            ObjData::TextBox {
+                text,
+                style,
+                geom,
+                size,
+                border,
+                ..
+            } => {
+                boxed = Some((geom.clone(), border));
+                (text, style, geom, size, false)
+            }
             ObjData::Text {
                 text,
                 style,
@@ -431,6 +496,7 @@ impl App {
             table,
             cam: self.cam.clone(),
             prev_size,
+            boxed,
         });
         self.text_open_editor();
     }
@@ -445,8 +511,12 @@ impl App {
             // The page's editor is placed in CSS px.
             let ppp = self.ppp();
             let [r, g, b, _] = t.style.color.to_le_bytes();
+            // A text box: the editor wraps at the box's width.
+            let wrap = t.boxed.as_ref().map_or("null".to_string(), |(g, _)| {
+                format!("{:.1}", g.half[0].abs() * 2.0 * self.cam.ppc() / ppp)
+            });
             crate::web::text_request(format!(
-                "{{\"x\":{:.1},\"y\":{:.1},\"size\":{:.1},\"color\":\"#{:02x}{:02x}{:02x}\",\"font\":{},\"single\":{},\"table\":{},\"text\":{}}}",
+                "{{\"x\":{:.1},\"y\":{:.1},\"size\":{:.1},\"color\":\"#{:02x}{:02x}{:02x}\",\"font\":{},\"single\":{},\"table\":{},\"box\":{},\"text\":{}}}",
                 px[0] / ppp,
                 px[1] / ppp,
                 t.size * self.cam.ppc() / ppp,
@@ -456,6 +526,7 @@ impl App {
                 crate::web::json_str(&crate::font::name_of(t.style.font)),
                 crate::font::is_single_line(t.style.font),
                 t.table,
+                wrap,
                 crate::web::json_str(&t.text)
             ));
         }
@@ -464,6 +535,10 @@ impl App {
             let k = self.uipp();
             self.ui.text_edit =
                 Some((pos2((px[0] / k) as f32, (px[1] / k) as f32), t.text.clone()));
+            // A text box: the editor as wide as the box (within reason).
+            self.ui.text_edit_width = t.boxed.as_ref().map(|(g, _)| {
+                ((g.half[0].abs() * 2.0 * self.cam.ppc() / k) as f32).clamp(120.0, 900.0)
+            });
         }
         self.redraw();
     }
@@ -489,12 +564,23 @@ impl App {
             z = Some(self.z_range(&ids));
             removed = ids;
         }
-        if text.trim().is_empty() {
+        // An empty text box stays when it has a border to show.
+        let keep_box = t.boxed.as_ref().is_some_and(|b| b.1.is_some());
+        if text.trim().is_empty() && !keep_box {
             self.record_edit(removed, vec![]);
             return;
         }
         let seed = self.next_seed();
-        let data = if t.table {
+        let data = if let Some((geom, border)) = t.boxed.clone() {
+            ObjData::TextBox {
+                text,
+                style: t.style,
+                geom,
+                size: t.size,
+                border,
+                seed,
+            }
+        } else if t.table {
             let cells = objects::parse_tsv(&text);
             let b = objects::table_layout(&cells, &t.style, t.size).size();
             let half = [b[0] * 0.5, b[1] * 0.5];
@@ -582,7 +668,10 @@ impl App {
         let slack = crate::PICK_PT * self.ppp() / self.cam.ppc();
         let mut best: Option<(f64, u32)> = None;
         for (g, grp) in self.objs.groups.iter().enumerate() {
-            if !matches!(grp.data, ObjData::Text { .. } | ObjData::Table { .. }) {
+            if !matches!(
+                grp.data,
+                ObjData::Text { .. } | ObjData::TextBox { .. } | ObjData::Table { .. }
+            ) {
                 continue;
             }
             if !self.objs.alive(&self.scene, &ObjRef::Group(g as u32)) {
@@ -597,7 +686,9 @@ impl App {
             // far into a big text (or out past a tiny one), a tap starts a
             // new text instead of opening that one at a giant or speck size.
             let cap = match &cam_data {
-                ObjData::Text { size, .. } | ObjData::Table { size, .. } => size * self.cam.ppc(),
+                ObjData::Text { size, .. }
+                | ObjData::TextBox { size, .. }
+                | ObjData::Table { size, .. } => size * self.cam.ppc(),
                 _ => 0.0,
             };
             if !(4.0 * self.ppp()..=self.size()[1] / 3.0).contains(&cap) {
@@ -877,9 +968,12 @@ impl App {
                 let k = |a: f64, b: f64| if a.abs() < 1e-6 { 1.0 } else { b / a };
                 let (mut sx, mut sy) = (k(u0[0], u1[0]), k(u0[1], u1[1]));
                 // Keep proportions with Shift, and always for text, tables
-                // and pictures.
+                // and pictures (a text box's words refit its new shape).
                 let text = matches!(self.edit.selection.as_slice(), [ObjRef::Group(g)]
-                    if !matches!(self.objs.groups[*g as usize].data, ObjData::Shape { .. }));
+                    if !matches!(
+                        self.objs.groups[*g as usize].data,
+                        ObjData::Shape { .. } | ObjData::TextBox { .. }
+                    ));
                 if self.mods.shift_key() || text {
                     let m = sx.abs().max(sy.abs());
                     sx = m * sx.signum();
@@ -1596,7 +1690,9 @@ impl App {
             ObjRef::Ink(_) => SelKind::Ink,
             ObjRef::Group(g) => match self.objs.groups[*g as usize].data {
                 ObjData::Shape { .. } => SelKind::Shapes,
-                ObjData::Text { .. } | ObjData::Table { .. } => SelKind::Text,
+                ObjData::Text { .. } | ObjData::TextBox { .. } | ObjData::Table { .. } => {
+                    SelKind::Text
+                }
                 ObjData::Image { .. } => SelKind::Images,
                 ObjData::Audio { .. } => SelKind::Audio,
                 ObjData::Portal { .. } => SelKind::Portals,
@@ -1628,6 +1724,13 @@ impl App {
             Some(ObjRef::Group(g)) => match &self.objs.groups[*g as usize].data {
                 ObjData::Shape { style, .. } | ObjData::Portal { style, .. } => s.shape = *style,
                 ObjData::Text { style, .. } | ObjData::Table { style, .. } => s.text = *style,
+                ObjData::TextBox { style, border, .. } => {
+                    s.text = *style;
+                    s.textbox = Some(border.map(|(b, _)| b));
+                    if let Some((b, _)) = border {
+                        s.shape = *b;
+                    }
+                }
                 ObjData::Image {
                     opacity, adjust, ..
                 } => {
@@ -1720,6 +1823,31 @@ impl App {
                             style,
                             geom,
                             size,
+                            seed,
+                        }
+                    }
+                    ObjData::TextBox {
+                        text,
+                        mut style,
+                        geom,
+                        size,
+                        mut border,
+                        seed,
+                    } => {
+                        merge_text(&mut style, &b.text, &a.text);
+                        // The border turned on or off, or recolored.
+                        if a.textbox != b.textbox {
+                            if let Some(new) = a.textbox {
+                                let w = border.map_or(size * 0.08, |(_, w)| w);
+                                border = new.map(|st| (st, w));
+                            }
+                        }
+                        ObjData::TextBox {
+                            text,
+                            style,
+                            geom,
+                            size,
+                            border,
                             seed,
                         }
                     }
@@ -1842,7 +1970,7 @@ impl App {
                 ov.lines.push((pts, (pc.width / k) as f32, col, fill));
             }
         }
-        if let Some((a, b)) = self.edit.marquee {
+        if let Some((a, b)) = self.edit.marquee.or(self.edit.box_drag) {
             ov.marquee = Some(egui::Rect::from_two_pos(to_pt(a), to_pt(b)));
         }
         if let Some(l) = &self.edit.lasso {

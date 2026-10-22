@@ -67,6 +67,7 @@ mod share;
 mod snapshot;
 mod swatches;
 mod symbols;
+mod textbox;
 mod textpath;
 mod timeline;
 mod ui;
@@ -187,6 +188,8 @@ enum Gesture {
     /// A text tap: where it went down. Lifting without moving makes (or
     /// edits) a text there; moving first pans instead.
     Text([f64; 2]),
+    /// Dragging out a text box (Text › Text box) from this point.
+    TextBox([f64; 2]),
     /// A touch with a hold tool set, not yet decided: held still for
     /// `HOLD` it becomes the hold tool's gesture; moving or lifting first,
     /// the normal tool's (from where it went down).
@@ -860,6 +863,18 @@ impl App {
                     self.moved(a, to, pressure);
                 }
             }
+            // Text box mode: a drag outlines the box.
+            Gesture::Text(a) if self.ui.text_box && self.edit.text.is_none() => {
+                if dist(a, to) > TAP_SLOP_PT * self.ppp() {
+                    self.gesture = Gesture::TextBox(a);
+                    self.edit.box_drag = Some((a, to));
+                    self.redraw();
+                }
+            }
+            Gesture::TextBox(a) => {
+                self.edit.box_drag = Some((a, to));
+                self.redraw();
+            }
             // Past a tap's slop it is a pan, from where it went down.
             Gesture::Text(a) | Gesture::Place(a) => {
                 if dist(a, to) > TAP_SLOP_PT * self.ppp() {
@@ -1014,6 +1029,13 @@ impl App {
             Gesture::Select => self.select_end(cancel),
             Gesture::Bucket(p) if !cancel && self.tl_view.is_none() => self.bucket_fill(p),
             Gesture::Text(p) if !cancel && self.tl_view.is_none() => self.text_begin(p),
+            Gesture::TextBox(_) => {
+                if let Some((a, b)) = self.edit.box_drag.take() {
+                    if !cancel && self.tl_view.is_none() {
+                        self.textbox_begin(a, b);
+                    }
+                }
+            }
             Gesture::Place(p) if !cancel && self.tl_view.is_none() => {
                 if let Some((plugin, button, _)) = self.ui.plugin_tool.take() {
                     self.plugin_press(plugin, button, Some(p));
@@ -1125,6 +1147,7 @@ impl App {
                 kind: match g.data {
                     objects::ObjData::Shape { .. } => "shape".into(),
                     objects::ObjData::Text { .. } => "text".into(),
+                    objects::ObjData::TextBox { .. } => "textbox".into(),
                     objects::ObjData::Image { .. } => "image".into(),
                     objects::ObjData::Table { .. } => "table".into(),
                     objects::ObjData::Portal { .. } => "portal".into(),

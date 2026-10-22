@@ -1116,6 +1116,14 @@ export async function start({ mode = 'app' } = {}) {
     // Fit the text: shrink first, then measure (scrollWidth never reports
     // less than the current width, so measuring at the old width only grows).
     const grow = () => {
+      // A text box: as wide as the box, the words wrapping in it.
+      if (req.box) {
+        area.style.whiteSpace = 'pre-wrap';
+        area.style.width = `${Math.max(80, req.box)}px`;
+        area.style.height = 'auto';
+        area.style.height = `${area.scrollHeight + 2}px`;
+        return;
+      }
       const max = Math.max(160, innerWidth - req.x - 12);
       area.style.width = '160px';
       area.style.height = 'auto';

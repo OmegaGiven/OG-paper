@@ -77,6 +77,18 @@ pub enum ObjData {
         size: f64,
         seed: u32,
     },
+    /// A text box (Text › Text box): `geom` is the box; the words wrap to
+    /// stay inside it and get smaller to fit (`size` is the cap height they
+    /// start from). `border` is its outline and fill, when it has one.
+    /// Older apps read it as a text (see `textbox_as_text`).
+    TextBox {
+        text: String,
+        style: TextStyle,
+        geom: Geom,
+        size: f64,
+        border: Option<(ShapeStyle, f64)>,
+        seed: u32,
+    },
     /// A picture: `geom` is its box; its file is in [`Objects::images`].
     /// `crop` is the part shown: left, top, right, bottom as fractions of
     /// the picture ([0, 0, 1, 1] is all of it).
@@ -450,6 +462,7 @@ impl ObjData {
         match self {
             ObjData::Shape { geom, .. }
             | ObjData::Text { geom, .. }
+            | ObjData::TextBox { geom, .. }
             | ObjData::Image { geom, .. }
             | ObjData::Table { geom, .. }
             | ObjData::Audio { geom, .. }
@@ -464,6 +477,21 @@ impl ObjData {
     /// scales lengths.
     pub fn map(&self, f: impl Fn([f64; 2]) -> [f64; 2], k: f64) -> ObjData {
         match self {
+            ObjData::TextBox {
+                text,
+                style,
+                geom,
+                size,
+                border,
+                seed,
+            } => ObjData::TextBox {
+                text: text.clone(),
+                style: *style,
+                geom: geom_map(geom, &f, k),
+                size: size * k,
+                border: border.map(|(s, w)| (s, w * k)),
+                seed: *seed,
+            },
             ObjData::Bundle { geom, comp } => ObjData::Bundle {
                 geom: geom_map(geom, &f, k),
                 comp: comp.clone(),
@@ -557,6 +585,22 @@ impl ObjData {
     /// The edit applied (camera units).
     pub fn edited(&self, op: &Op) -> ObjData {
         match self {
+            // Resized, the box changes and the words fit it again.
+            ObjData::TextBox {
+                text,
+                style,
+                geom,
+                size,
+                border,
+                seed,
+            } => ObjData::TextBox {
+                text: text.clone(),
+                style: *style,
+                geom: op.geom(geom),
+                size: *size,
+                border: *border,
+                seed: *seed,
+            },
             ObjData::Bundle { geom, comp } => ObjData::Bundle {
                 geom: op.geom(geom),
                 comp: comp.clone(),
@@ -680,6 +724,14 @@ impl ObjData {
                 size,
                 seed,
             } => text_pieces(text, style, geom, *size, *seed),
+            ObjData::TextBox {
+                text,
+                style,
+                geom,
+                size,
+                border,
+                seed,
+            } => textbox_pieces(text, style, geom, *size, border.as_ref(), *seed),
             // One invisible polygon on the picture's corners: it places the
             // picture (the renderer draws it there) and makes it selectable.
             ObjData::Image { .. } => vec![Piece {
@@ -705,6 +757,58 @@ impl ObjData {
                 ..
             } => portal_pieces(style, geom, *width, *seed),
             ObjData::Audio { geom, seed, .. } => audio_pieces(geom, *seed),
+        }
+    }
+
+    /// A text box as the text older apps read: its words as wrapped, at
+    /// the size that fits (see `snapshot`).
+    pub fn textbox_as_text(&self) -> Option<ObjData> {
+        let ObjData::TextBox {
+            text,
+            style,
+            geom,
+            size,
+            border,
+            seed,
+        } = self
+        else {
+            return None;
+        };
+        let pad = textbox_pad(geom, *size, border.is_some());
+        let (lines, fit) = textbox_fit(
+            text,
+            style,
+            geom.half[0].abs() * 2.0 - 2.0 * pad,
+            geom.half[1].abs() * 2.0 - 2.0 * pad,
+            *size,
+        );
+        Some(ObjData::Text {
+            text: lines,
+            style: *style,
+            geom: geom.clone(),
+            size: fit,
+            seed: *seed,
+        })
+    }
+
+    /// A text made a text box with the words `text`, starting at cap
+    /// height `size` (see `textbox_as_text`).
+    pub fn into_textbox(self, text: String, size: f64, border: Option<(ShapeStyle, f64)>) -> ObjData {
+        match self {
+            ObjData::Text {
+                style, geom, seed, ..
+            }
+            | ObjData::TextBox {
+                style, geom, seed, ..
+            } => ObjData::TextBox {
+                text,
+                style,
+                geom,
+                size,
+                border,
+                seed,
+            },
+            other => other,
         }
     }
 
@@ -1217,6 +1321,169 @@ fn table_pieces(
         }
         y += lay.rows[i];
     }
+    out
+}
+
+/// Room between a text box's edge and its words (frame units): some when
+/// it has a border, none when it doesn't.
+pub fn textbox_pad(g: &Geom, size: f64, border: bool) -> f64 {
+    if border {
+        (size * 0.6).min(g.half[0].abs().min(g.half[1].abs()) * 0.2)
+    } else {
+        0.0
+    }
+}
+
+/// `text` wrapped to lines at most `w` wide (frame units) and the cap
+/// height (at most `max`) at which those lines fit `h` too: (the lines
+/// joined by newlines, the size). Words longer than a line are broken.
+pub fn textbox_fit(text: &str, style: &TextStyle, w: f64, h: f64, max: f64) -> (String, f64) {
+    let (w, h) = (w.max(1e-300), h.max(1e-300));
+    let sp = style.spacing();
+    let mut widths: HashMap<String, f64> = HashMap::new();
+    let mut measure = |t: &str| -> f64 {
+        if let Some(&v) = widths.get(t) {
+            return v;
+        }
+        let v = font::layout_spaced(t, style.font, Align::Left, 0, sp).1[0];
+        widths.insert(t.to_string(), v);
+        v
+    };
+    // Layout units (a cap height is 6): a space, one line and each next one.
+    let one = font::layout_spaced("Ag", style.font, Align::Left, 0, sp).1[1];
+    let two = font::layout_spaced("Ag\nAg", style.font, Align::Left, 0, sp).1[1];
+    let adv = (two - one).max(one * 0.5);
+    let space = (measure("i i") - 2.0 * measure("i")).max(0.5);
+    // Lines (and the widest) at most `limit` layout units wide.
+    let mut wrap = |limit: f64| -> (Vec<String>, f64) {
+        let mut lines = Vec::new();
+        let mut widest: f64 = 0.0;
+        for para in text.split('\n') {
+            let mut line = String::new();
+            let mut lw = 0.0;
+            for word in para.split(' ').filter(|w| !w.is_empty()) {
+                let ww = measure(word);
+                if !line.is_empty() && lw + space + ww <= limit {
+                    line.push(' ');
+                    line.push_str(word);
+                    lw += space + ww;
+                    continue;
+                }
+                if !line.is_empty() {
+                    widest = widest.max(lw);
+                    lines.push(std::mem::take(&mut line));
+                }
+                if ww <= limit {
+                    line = word.to_string();
+                    lw = ww;
+                    continue;
+                }
+                // Longer than a line: as many letters as fit, then on.
+                let mut part = String::new();
+                for c in word.chars() {
+                    let mut next = part.clone();
+                    next.push(c);
+                    if !part.is_empty() && measure(&next) > limit {
+                        widest = widest.max(measure(&part));
+                        lines.push(std::mem::replace(&mut part, c.to_string()));
+                    } else {
+                        part = next;
+                    }
+                }
+                lw = measure(&part);
+                line = part;
+            }
+            widest = widest.max(lw);
+            lines.push(line);
+        }
+        (lines, widest)
+    };
+    let fits = |n: usize, widest: f64, size: f64| {
+        let u = size / 6.0;
+        (one + (n.max(1) - 1) as f64 * adv) * u <= h * 0.995 && widest * u <= w * 1.001
+    };
+    let at = |size: f64, wrap: &mut dyn FnMut(f64) -> (Vec<String>, f64)| {
+        let (lines, widest) = wrap(w / (size / 6.0) * 0.98);
+        let ok = fits(lines.len(), widest, size);
+        (lines, ok)
+    };
+    let (lines, ok) = at(max, &mut wrap);
+    if ok {
+        return (lines.join("\n"), max);
+    }
+    let (mut lo, mut hi) = (max * 1e-3, max);
+    let mut best = None;
+    for _ in 0..18 {
+        let mid = (lo * hi).sqrt();
+        let (lines, ok) = at(mid, &mut wrap);
+        if ok {
+            best = Some((lines, mid));
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    let (lines, size) = best.unwrap_or_else(|| (at(lo, &mut wrap).0, lo));
+    (lines.join("\n"), size)
+}
+
+/// A text box's strokes: its border, an unseen fill over the box (so it
+/// can be picked anywhere inside it), and its words wrapped from the top.
+fn textbox_pieces(
+    text: &str,
+    style: &TextStyle,
+    g: &Geom,
+    size: f64,
+    border: Option<&(ShapeStyle, f64)>,
+    seed: u32,
+) -> Vec<Piece> {
+    let mut out = Vec::new();
+    if let Some((bs, bw)) = border {
+        let mut bs = *bs;
+        bs.kind = shapes::ShapeKind::Rect;
+        let mut bg = g.clone();
+        bg.pts.clear();
+        out.extend(shapes::pieces(&bs, &bg, *bw, seed));
+    }
+    let box_pts = {
+        let (s, c) = g.rot.sin_cos();
+        [[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]]
+            .map(|[x, y]| {
+                let (x, y) = (x * g.half[0], y * g.half[1]);
+                [g.center[0] + x * c - y * s, g.center[1] + x * s + y * c]
+            })
+            .to_vec()
+    };
+    out.push(Piece {
+        pts: box_pts,
+        width: 0.0,
+        brush: Brush::Fill,
+        dash: Dash::Solid,
+        color: 0,
+        bridges: vec![],
+    });
+    if text.trim().is_empty() {
+        return out;
+    }
+    let pad = textbox_pad(g, size, border.is_some());
+    let (w, h) = (g.half[0].abs() * 2.0 - 2.0 * pad, g.half[1].abs() * 2.0 - 2.0 * pad);
+    let (lines, fit) = textbox_fit(text, style, w, h, size);
+    let b = text_box(&lines, style, fit);
+    // The words' block, from the top, placed by the alignment.
+    let dx = match style.align {
+        Align::Left => -w * 0.5 + b[0] * 0.5,
+        Align::Center => 0.0,
+        Align::Right => w * 0.5 - b[0] * 0.5,
+    };
+    let dy = -h * 0.5 + b[1] * 0.5;
+    let (s, c) = g.rot.sin_cos();
+    let tg = Geom {
+        center: [g.center[0] + dx * c - dy * s, g.center[1] + dx * s + dy * c],
+        half: [b[0] * 0.5, b[1] * 0.5],
+        rot: g.rot,
+        pts: vec![],
+    };
+    out.extend(text_pieces(&lines, style, &tg, fit, seed));
     out
 }
 

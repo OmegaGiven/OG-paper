@@ -97,6 +97,10 @@ impl App {
                             "shape".to_string(),
                             ("Shape".to_string(), style.kind.name().to_string()),
                         ),
+                        ObjData::TextBox { text, .. } => (
+                            "textbox".to_string(),
+                            ("Characters".to_string(), text.chars().count().to_string()),
+                        ),
                         ObjData::Text { text, .. } => (
                             "text".to_string(),
                             ("Characters".to_string(), text.chars().count().to_string()),

@@ -404,6 +404,25 @@ impl Patch {
             }
         };
         match d {
+            // A text box keeps its box: the words fit it again.
+            ObjData::TextBox {
+                text,
+                mut style,
+                geom,
+                size,
+                border,
+                seed,
+            } => {
+                restyle_text(&mut style);
+                ObjData::TextBox {
+                    text: self.text.clone().unwrap_or(text),
+                    style,
+                    geom,
+                    size: self.size.unwrap_or(size),
+                    border,
+                    seed,
+                }
+            }
             ObjData::Text {
                 mut text,
                 mut style,
@@ -703,6 +722,63 @@ impl App {
                     style,
                     geom,
                     size,
+                    seed: crate::uid::new() as u32,
+                };
+                let (g, ids) = self.add_group(&data, None);
+                added.extend(ids);
+                Some(ObjRef::Group(g))
+            }
+            // A text box: words wrapped in the box x, y, w, h (top left
+            // and size), smaller to fit; "border" a color for its outline
+            // ("border_width", "fill" too), or none.
+            "textbox" => {
+                let text: String = c
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .chars()
+                    .take(10_000)
+                    .collect();
+                let (x, y) = (num(c, "x").unwrap_or(0.0), num(c, "y").unwrap_or(0.0));
+                let w = num(c, "w").unwrap_or(240.0).abs().clamp(1e-200, 1e200);
+                let h = num(c, "h").unwrap_or(120.0).abs().clamp(1e-200, 1e200);
+                let size = num(c, "size").unwrap_or(24.0).clamp(1e-200, 1e200) / ppc;
+                let mut style = text_style(color)?;
+                if let Some(v) = num(c, "line_height") {
+                    style.line = v.clamp(0.3, 5.0) as f32;
+                }
+                let a = to_cam(cam, x, y);
+                let b = to_cam(cam, x + w, y + h);
+                let geom = Geom {
+                    center: [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5],
+                    half: [(b[0] - a[0]).abs() * 0.5, (b[1] - a[1]).abs() * 0.5],
+                    rot: 0.0,
+                    pts: vec![],
+                };
+                let border = match color_at(c, "border")? {
+                    Some(stroke) => {
+                        let mut bs = ShapeStyle {
+                            kind: crate::shapes::ShapeKind::Rect,
+                            stroke,
+                            fill_style: FillStyle::None,
+                            sloppiness: crate::shapes::Sloppiness::Architect,
+                            ..ShapeStyle::default()
+                        };
+                        if let Some(f) = color_at(c, "fill")? {
+                            bs.fill = f;
+                            bs.fill_style = FillStyle::Solid;
+                        }
+                        let bw = num(c, "border_width").unwrap_or(2.0).clamp(1e-200, 1e200) / ppc;
+                        Some((bs, bw))
+                    }
+                    None => None,
+                };
+                let data = ObjData::TextBox {
+                    text,
+                    style,
+                    geom,
+                    size,
+                    border,
                     seed: crate::uid::new() as u32,
                 };
                 let (g, ids) = self.add_group(&data, None);
@@ -1105,6 +1181,25 @@ impl App {
                             let (a, b) = (to_home(cam, a), to_home(cam, b));
                             put("from", json!([tidy(a[0]), tidy(a[1])]));
                             put("to", json!([tidy(b[0]), tidy(b[1])]));
+                        }
+                    }
+                    ObjData::TextBox {
+                        text,
+                        style,
+                        size,
+                        border,
+                        ..
+                    } => {
+                        put("kind", "textbox".into());
+                        put("text", text.into());
+                        put("size", tidy(size * ppc).into());
+                        put("color", color_hex(style.color).into());
+                        put("font", font::name_of(style.font).into());
+                        if let Some((b, _)) = border {
+                            put("border", color_hex(b.stroke).into());
+                        }
+                        if style.align != Align::Left {
+                            put("align", align_name(style.align).into());
                         }
                     }
                     ObjData::Text {
