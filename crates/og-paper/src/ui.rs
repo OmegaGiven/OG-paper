@@ -43,11 +43,14 @@ pub enum Tool {
     Bucket,
     /// Draw a window (a shape or freehand) that shows another view.
     Portal,
+    /// Handwriting: write with it, and after a pause the words become a
+    /// text (see `handwriting`). Draws with the brush's color and width.
+    Write,
 }
 
 /// The tool fan, inner ring first.
 /// The tool fan. (The color picker lives in every color dial instead.)
-const TOOLS: [Tool; 11] = [
+const TOOLS: [Tool; 12] = [
     Tool::Pen,
     Tool::Texture,
     Tool::Highlighter,
@@ -57,6 +60,7 @@ const TOOLS: [Tool; 11] = [
     Tool::Lasso,
     Tool::Shapes,
     Tool::Text,
+    Tool::Write,
     Tool::Portal,
     Tool::Hand,
 ];
@@ -67,6 +71,7 @@ impl Tool {
             Tool::Pen => Some(Brush::Pen),
             Tool::Texture => Some(Brush::Dabs),
             Tool::Highlighter => Some(Brush::Highlighter),
+            Tool::Write => Some(Brush::Marker),
             _ => None,
         }
     }
@@ -85,6 +90,7 @@ impl Tool {
             Tool::Lasso => "Lasso",
             Tool::Bucket => "Bucket",
             Tool::Portal => "Portal",
+            Tool::Write => "Write",
         }
     }
 
@@ -1326,7 +1332,7 @@ impl UiState {
 
 fn ink_of(st: &mut UiState, t: Tool) -> Option<&mut InkSettings> {
     match t {
-        Tool::Pen => Some(&mut st.pen),
+        Tool::Pen | Tool::Write => Some(&mut st.pen),
         Tool::Texture => Some(&mut st.texture),
         Tool::Highlighter => Some(&mut st.highlighter),
         Tool::Bucket => Some(&mut st.fill),
@@ -3890,7 +3896,7 @@ fn panel_tabs(st: &UiState) -> (&'static str, &'static [PanelTab]) {
     const TEXT: &[PanelTab] = &[Font, Text, Color];
     match st.tool {
         Tool::Pen if st.pen.advanced => ("brush", BRUSH),
-        Tool::Pen => ("ink", INK),
+        Tool::Pen | Tool::Write => ("ink", INK),
         Tool::Texture => ("brush", BRUSH),
         Tool::Bucket => ("fill", &[Color, Gaps]),
         Tool::Shapes => ("shape", SHAPE),
@@ -4907,6 +4913,19 @@ fn panel_body(
         Tool::Pen => brush_section(ui, &mut st.pen, touch, dial_hue, false),
         Tool::Texture => brush_section(ui, &mut st.texture, touch, dial_hue, true),
         Tool::Highlighter => ink_section(ui, &mut st.highlighter, tool, touch, dial_hue, false),
+        Tool::Write => {
+            if part(PanelTab::Color) {
+                help(
+                    ui,
+                    if crate::handwriting::available() {
+                        "Write words; a moment after you stop they become a text (undo brings the ink back)."
+                    } else {
+                        "Write words to make them a text: this needs an iPhone, iPad or Mac, or a browser that reads handwriting."
+                    },
+                );
+            }
+            ink_section(ui, &mut st.pen, Tool::Write, touch, dial_hue, false)
+        }
         Tool::Bucket => fill_section(ui, &mut st.fill, &mut st.fill_gap, touch, dial_hue),
         Tool::Shapes => shape_section(ui, &mut st.shape, &mut st.color_target, touch, dial_hue),
         Tool::Portal => portal_section(ui, st, touch, actions),
@@ -7044,6 +7063,26 @@ fn plugin_icon(p: &egui::Painter, c: Pos2, r: f32, icon: &str, ink: Color32) {
 fn tool_icon(p: &egui::Painter, c: Pos2, r: f32, tool: Tool, ink: Color32) {
     let line = Stroke::new((r * 0.075).max(1.2), INKY);
     match tool {
+        Tool::Write => {
+            // Joined-up writing in the ink, turning into a letter.
+            let s = r * 0.5;
+            let pts: Vec<Pos2> = (0..=24)
+                .map(|i| {
+                    let t = i as f32 / 24.0;
+                    let x = c.x - s * 1.0 + t * s * 1.1;
+                    let y = c.y + s * 0.35 - (t * std::f32::consts::TAU * 2.0).sin().abs() * s * 0.55;
+                    pos2(x, y)
+                })
+                .collect();
+            p.add(Shape::line(pts, Stroke::new((r * 0.09).max(1.4), ink)));
+            p.text(
+                c + vec2(s * 0.65, -s * 0.05),
+                Align2::CENTER_CENTER,
+                "A",
+                egui::FontId::proportional(r * 0.75),
+                INKY,
+            );
+        }
         Tool::Pen => {
             // A paintbrush: handle, ferrule, and a tip dipped in the ink color.
             let b = Barrel { c, s: r * 0.62 };

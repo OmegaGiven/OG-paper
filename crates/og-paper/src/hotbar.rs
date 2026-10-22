@@ -310,6 +310,7 @@ fn tool_key(t: Tool) -> &'static str {
         Tool::Bucket => "bucket",
         Tool::Texture => "texture",
         Tool::Portal => "portal",
+        Tool::Write => "write",
     }
 }
 
@@ -328,6 +329,7 @@ fn tool_from(k: &str) -> Option<Tool> {
         "lasso" => Tool::Lasso,
         "bucket" => Tool::Bucket,
         "texture" => Tool::Texture,
+        "write" => Tool::Write,
         "portal" => Tool::Portal,
         _ => return None,
     })

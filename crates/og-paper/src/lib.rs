@@ -26,6 +26,7 @@ mod folder;
 mod font;
 mod frames;
 mod groups;
+mod handwriting;
 mod hotbar;
 mod hotkeys;
 #[cfg(desktop)]
@@ -241,6 +242,8 @@ pub struct App {
     /// that was checked, and a switch asked for (see `profile`).
     profile_sent: Option<String>,
     profile_checked: Instant,
+    /// Ink written with the Write tool, to read (see `handwriting`).
+    pub(crate) writing: handwriting::Writing,
     pending_profile: Option<String>,
     /// Groups remade by the edit under way: (old, new) group.
     bundle_remade: Vec<(u32, u32)>,
@@ -396,6 +399,7 @@ impl App {
             comp_remade: Vec::new(),
             profile_sent: None,
             profile_checked: Instant::now(),
+            writing: Default::default(),
             pending_profile: None,
             bundle_remade: Vec::new(),
             layer_undo: Vec::new(),
@@ -674,6 +678,9 @@ impl App {
         self.wet_clear();
         self.history.record(Change::Added(vec![id]));
         self.note(id, true);
+        if tool == ui::Tool::Write {
+            self.writing_add(id, &cam_pts);
+        }
         #[cfg(target_arch = "wasm32")]
         {
             let z = self.cam.log10_zoom();
@@ -3030,6 +3037,9 @@ impl App {
             Cmd::ViewPublic(i, on) => self.view_set_public(i, on),
             Cmd::SharedViewGo(i) => self.shared_view_go(i),
             Cmd::SharedViewCopy(i) => self.shared_view_copy(i),
+            Cmd::Handwritten(t) => {
+                self.writing_done(t.ok_or_else(|| "this browser couldn't".to_string()))
+            }
             Cmd::Text(Some(text)) => {
                 if let Some(t) = self.edit.text.as_mut() {
                     t.text = text;
@@ -3467,6 +3477,7 @@ impl App {
             self.ui.profile_in_use = profile::in_use();
         }
         self.profile_tick();
+        self.writing_tick();
         self.ui.sel_count = self.edit.selection.len();
         self.ui.sel_grouped = self.edit.selection.iter().any(|r| self.objs.is_bundle(r));
         self.ui.sel_on_path = self.sel_on_path();

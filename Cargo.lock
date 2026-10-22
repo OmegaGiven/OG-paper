@@ -2666,6 +2666,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "objc2-image-io"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32b0446e98cf4a784cc7a0177715ff317eeaa8463841c616cfc78aa4f953c4ea"
+dependencies = [
+ "objc2 0.6.4",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
+]
+
+[[package]]
 name = "objc2-io-surface"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2807,6 +2818,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "objc2-vision"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bfc194758a2d5d7540b1ad283bfb9ca318ec608991892326e95b428230b2689b"
+dependencies = [
+ "objc2 0.6.4",
+ "objc2-foundation 0.3.2",
+ "objc2-image-io",
+]
+
+[[package]]
 name = "og-paper"
 version = "0.1.0"
 dependencies = [
@@ -2829,6 +2851,9 @@ dependencies = [
  "log",
  "miniz_oxide 0.8.9",
  "num-bigint",
+ "objc2 0.6.4",
+ "objc2-foundation 0.3.2",
+ "objc2-vision",
  "ogpaper-core",
  "ogpaper-file",
  "pbkdf2",

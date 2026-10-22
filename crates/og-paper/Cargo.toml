@@ -89,3 +89,9 @@ icon = "@mipmap/ic_launcher"
 [package.metadata.android.application.activity]
 orientation = "unspecified"
 config_changes = "orientation|screenSize|screenLayout|keyboardHidden|density"
+
+# Handwriting to text (the Write tool): Apple's on-device Vision.
+[target.'cfg(any(target_os = "ios", target_os = "macos"))'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSData", "NSDictionary", "NSString", "NSError", "NSObject"] }
+objc2-vision = { version = "0.3", default-features = false, features = ["std", "VNRequest", "VNRequestHandler", "VNRecognizeTextRequest", "VNObservation", "VNTypes", "objc2-image-io"] }

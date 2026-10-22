@@ -85,6 +85,8 @@ pub enum Cmd {
     TimelineRestore,
     /// The page's text editor finished (Some: the text) or was cancelled.
     Text(Option<String>),
+    /// What the browser read from the Write tool's ink (None: it couldn't).
+    Handwritten(Option<String>),
     /// A font of the user's was added: use it.
     FontAdded(crate::font::FontId, String),
     /// Copy the selection (and delete it, for cut).
@@ -128,6 +130,10 @@ thread_local! {
     static STATS: Cell<Stats> = Cell::new(Stats { deep_draw: f64::NEG_INFINITY, ..Default::default() });
     static OUTBOX: RefCell<Vec<&'static str>> = RefCell::default();
     static TEXT_REQ: RefCell<String> = RefCell::default();
+    /// Strokes for the page to read (see `handwriting`), and whether the
+    /// browser can.
+    static HW_REQ: RefCell<String> = RefCell::default();
+    static HW_OK: Cell<bool> = const { Cell::new(false) };
     static SEARCH: RefCell<String> = RefCell::default();
     static STICKER: RefCell<Option<Vec<u8>>> = RefCell::default();
     static EXPORT: RefCell<Option<Result<Vec<u8>, String>>> = RefCell::default();
@@ -253,6 +259,17 @@ pub fn set_has_selection(on: bool) {
 pub fn text_request(json: String) {
     TEXT_REQ.with(|t| *t.borrow_mut() = json);
     emit("text");
+}
+
+/// Ask the page to read handwriting: strokes as [[x, y, ms], …] (px).
+pub fn handwriting_request(json: String) {
+    HW_REQ.with(|t| *t.borrow_mut() = json);
+    emit("handwrite");
+}
+
+/// Whether the browser reads handwriting (the page says, at start).
+pub fn handwriting_supported() -> bool {
+    HW_OK.with(|h| h.get())
 }
 
 pub fn set_window(w: Arc<Window>) {
@@ -881,6 +898,24 @@ pub fn og_text_request() -> String {
 #[wasm_bindgen]
 pub fn og_text_done(text: Option<String>) {
     push(Cmd::Text(text));
+}
+
+/// The strokes to read (see `handwriting_request`).
+#[wasm_bindgen]
+pub fn og_handwrite_request() -> String {
+    HW_REQ.with(|t| t.borrow().clone())
+}
+
+/// What the browser read (None: it couldn't).
+#[wasm_bindgen]
+pub fn og_handwrite_done(text: Option<String>) {
+    push(Cmd::Handwritten(text));
+}
+
+/// The page says whether the browser reads handwriting.
+#[wasm_bindgen]
+pub fn og_handwrite_support(ok: bool) {
+    HW_OK.with(|h| h.set(ok));
 }
 
 /// Register a font (bytes of a .ttf / .otf file). `name`: the name to list

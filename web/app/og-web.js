@@ -6,6 +6,7 @@
 
 import init, {
   og_load, og_demo, og_blank, og_status, og_requests, og_set_menu, og_text_request, og_text_done, og_font_add,
+  og_handwrite_request, og_handwrite_done, og_handwrite_support,
   og_copy, og_paste_own, og_selection_text, og_wants_text, og_text_field, og_copied_take, og_field_at, og_paste_image, og_paste_text, og_pdf_page,
   og_home, og_bookmark_add, og_bookmark_go, og_view_public, og_shared_view_go, og_shared_view_copy, og_bookmark_remove, og_bookmark_rename, og_bookmark_to_bar,
   og_search, og_search_results, og_search_go, og_export, og_export_take, og_has_selection,
@@ -1073,6 +1074,25 @@ export async function start({ mode = 'app' } = {}) {
     if (importPicker.dataset.mode === 'merge') og_merge(bytes); else og_import(bytes);
     show(null);
   };
+  // ---- handwriting: the Write tool's ink, read by the browser ----
+  async function handwrite() {
+    let strokes;
+    try { strokes = JSON.parse(og_handwrite_request()); } catch { og_handwrite_done(undefined); return; }
+    try {
+      const rec = await navigator.createHandwritingRecognizer({ languages: ['en'] });
+      const drawing = rec.startDrawing({ recognitionType: 'text' });
+      for (const s of strokes) {
+        const st = new HandwritingStroke();
+        for (const [x, y, t] of s) st.addPoint({ x, y, t });
+        drawing.addStroke(st);
+      }
+      const best = (await drawing.getPrediction())?.[0];
+      drawing.clear();
+      rec.finish();
+      og_handwrite_done(best ? best.text : '');
+    } catch { og_handwrite_done(undefined); }
+  }
+
   // ---- text: a real textarea, so phones show their keyboard ----
   let textBox = null;
   function closeText(commit) {
@@ -1525,6 +1545,15 @@ export async function start({ mode = 'app' } = {}) {
   // ---- boot ----
   try {
     await init();
+    // The Write tool reads handwriting with the browser's own recognizer,
+    // where it has one.
+    (async () => {
+      try {
+        const ok = 'queryHandwritingRecognizer' in navigator
+          && !!(await navigator.queryHandwritingRecognizer({ languages: ['en'] }));
+        og_handwrite_support(ok);
+      } catch { og_handwrite_support(false); }
+    })();
   } catch (e) {
     loading.textContent = 'This browser could not start the canvas (it needs WebGPU or WebGL2). ' + e;
     return;
@@ -1715,6 +1744,7 @@ export async function start({ mode = 'app' } = {}) {
       else if (r === 'fullscreen') fullScreen();
       else if (r === 'tour' && cards.tour) show('tour');
       else if (r === 'text') openTextEditor();
+      else if (r === 'handwrite') handwrite();
       else if (r === 'font') pickFont();
       else if (r === 'picture') picPicker.click();
     }
