@@ -618,6 +618,9 @@ pub struct UiState {
     pub perf_text: String,
     /// Helper text (how-to lines) shows.
     pub hints: bool,
+    /// Spell check while typing (UI > Spell check): underlines, never
+    /// changes a word by itself.
+    pub spell: bool,
     /// How big the UI is drawn (UI > Size), 1 = normal.
     pub ui_scale: f32,
     /// Dark mode: the whole screen drawn with its lightness flipped.
@@ -942,6 +945,7 @@ impl Default for UiState {
             radial_bar: false,
             dark: false,
             hints: true,
+            spell: true,
             perf: false,
             perf_text: String::new(),
             ui_scale: 1.0,
@@ -1507,6 +1511,7 @@ pub enum Action {
     Dark,
     /// Show or hide helper text.
     Hints,
+    Spell,
     Perf,
     /// UI > Size: one step bigger (+1) or smaller (-1), or normal (0).
     UiScale(i8),
@@ -5856,19 +5861,105 @@ fn text_editor(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>)
         .show(ctx, |ui| {
             ui.style_mut().visuals = egui::Visuals::light();
             egui::Frame::popup(ui.style()).show(ui, |ui| {
-                let resp = add_field(
-                    ui,
-                    egui::TextEdit::multiline(text)
-                        .desired_rows(2)
-                        .desired_width(240.0)
-                        // Tab types a tab: tables are edited as tab-separated cells.
-                        .lock_focus(true)
-                        .hint_text(if HINTS.load(std::sync::atomic::Ordering::Relaxed) {
-                            "Type, then Done (Ctrl+Enter)"
-                        } else {
-                            ""
-                        }),
-                );
+                // Spell check: misspelled words underlined in red.
+                let spell = st.spell;
+                let mut layouter = |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap: f32| {
+                    let text = buf.as_str();
+                    let font = egui::TextStyle::Body.resolve(ui.style());
+                    let color = ui.visuals().text_color();
+                    let plain = egui::TextFormat::simple(font.clone(), color);
+                    let wrong = egui::TextFormat {
+                        underline: Stroke::new(1.5, Color32::from_rgb(220, 40, 50)),
+                        ..plain.clone()
+                    };
+                    let mut job = egui::text::LayoutJob::default();
+                    let mut at = 0;
+                    if spell {
+                        for r in crate::spell::misspelled(text) {
+                            job.append(&text[at..r.start], 0.0, plain.clone());
+                            job.append(&text[r.clone()], 0.0, wrong.clone());
+                            at = r.end;
+                        }
+                    }
+                    job.append(&text[at..], 0.0, plain);
+                    job.wrap.max_width = wrap;
+                    ui.fonts_mut(|f| f.layout_job(job))
+                };
+                let edit_id = Id::new("text_editor_box");
+                let out = egui::TextEdit::multiline(text)
+                    .id(edit_id)
+                    .desired_rows(2)
+                    .desired_width(240.0)
+                    // Tab types a tab: tables are edited as tab-separated cells.
+                    .lock_focus(true)
+                    .layouter(&mut layouter)
+                    .hint_text(if HINTS.load(std::sync::atomic::Ordering::Relaxed) {
+                        "Type, then Done (Ctrl+Enter)"
+                    } else {
+                        ""
+                    })
+                    .show(ui);
+                let resp = out.response.response.clone();
+                {
+                    let k = ui.ctx().zoom_factor();
+                    let rect = resp.interact_rect.intersect(ui.clip_rect());
+                    TEXT_FIELDS.with(|f| {
+                        f.borrow_mut()
+                            .push(Rect::from_min_max(rect.min * k, rect.max * k))
+                    });
+                }
+                // The misspelled word at the cursor: its spellings to pick.
+                if spell {
+                    let cursor = out.cursor_range.map(|c| c.primary.index.0);
+                    let hit = cursor
+                        .and_then(|c| crate::spell::word_at(text, c))
+                        .filter(|r| !crate::spell::check(&text[r.clone()]));
+                    if let Some(r) = hit {
+                        let word = text[r.clone()].to_string();
+                        let picks = crate::spell::suggest(&word);
+                        let mut put: Option<String> = None;
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(
+                                egui::RichText::new(format!("“{word}”"))
+                                    .color(Color32::from_rgb(200, 40, 50)),
+                            );
+                            if picks.is_empty() {
+                                ui.weak("no spellings found");
+                            }
+                            for p in &picks {
+                                let b = ui.button(p).on_hover_text("Use this spelling");
+                                named(&b, format!("Spelling {p}"));
+                                if b.clicked() {
+                                    put = Some(p.clone());
+                                }
+                            }
+                            if ui
+                                .small_button("Add to dictionary")
+                                .on_hover_text("Never mark this word again")
+                                .clicked()
+                            {
+                                crate::spell::add(&word);
+                            }
+                            if ui
+                                .small_button("Ignore")
+                                .on_hover_text("Pass over this word until the app closes")
+                                .clicked()
+                            {
+                                crate::spell::ignore(&word);
+                            }
+                        });
+                        if let Some(p) = put {
+                            text.replace_range(r.clone(), &p);
+                            // The cursor goes to the end of the new word.
+                            let end = text[..r.start + p.len()].chars().count();
+                            let mut state = out.state.clone();
+                            state.cursor.set_char_range(Some(egui::text::CCursorRange::one(
+                                egui::text::CCursor::new(end),
+                            )));
+                            state.store(ui.ctx(), edit_id);
+                        }
+                    }
+                }
                 resp.request_focus();
                 let done_key = ui.input(|i| i.key_pressed(egui::Key::Enter) && i.modifiers.command);
                 let esc = ui.input(|i| i.key_pressed(egui::Key::Escape));
@@ -8882,6 +8973,13 @@ fn layout_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>
                     );
                     tick(
                         ui,
+                        st.spell,
+                        "Spell check",
+                        "Underline misspelled words while typing and offer spellings to pick (never changes a word by itself)",
+                        Action::Spell,
+                    );
+                    tick(
+                        ui,
                         st.perf,
                         "Show frame time",
                         "Frames per second and how long each takes (to report slowness)",
@@ -10625,6 +10723,41 @@ fn radial_bar(ctx: &egui::Context, st: &mut UiState, g: &Geo) {
 
 #[cfg(test)]
 mod tests {
+
+    /// Every piece of text `text_editor` draws, after a few frames.
+    fn editor_texts(st: &mut UiState) -> Vec<String> {
+        let ctx = egui::Context::default();
+        let mut texts = Vec::new();
+        for _ in 0..3 {
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                let mut a = Vec::new();
+                text_editor(ui.ctx(), st, &mut a);
+            });
+            out.textures_delta.clear();
+            texts.clear();
+            for s in out.shapes {
+                if let egui::Shape::Text(t) = s.shape {
+                    texts.push(t.galley.job.text.clone());
+                }
+            }
+        }
+        texts
+    }
+
+    #[test]
+    fn the_text_box_offers_spellings_for_the_word_at_the_cursor() {
+        crate::spell::wait();
+        let mut st = UiState::default();
+        st.text_edit = Some((pos2(10.0, 10.0), "the cat sat on teh".into()));
+        let texts = editor_texts(&mut st);
+        assert!(texts.iter().any(|t| t == "the"), "a spelling to pick: {texts:?}");
+        assert!(texts.iter().any(|t| t == "Add to dictionary"), "{texts:?}");
+        assert_eq!(st.text_edit.as_ref().unwrap().1, "the cat sat on teh", "nothing changes by itself");
+        // Spell check off: no spellings.
+        st.spell = false;
+        let texts = editor_texts(&mut st);
+        assert!(!texts.iter().any(|t| t == "Add to dictionary"), "{texts:?}");
+    }
     use super::*;
 
     #[test]

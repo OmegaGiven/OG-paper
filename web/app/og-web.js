@@ -1089,7 +1089,14 @@ export async function start({ mode = 'app' } = {}) {
     closeText(true);
     let req;
     try { req = JSON.parse(og_text_request()); } catch { return; }
-    const area = el('textarea', { class: 'og-text', rows: '1', spellcheck: 'false', 'aria-label': 'Text' });
+    // Spell check (UI > Spell check) is the browser's own: misspelled words
+    // underlined, spellings on a right click (or a tap on a phone). Never
+    // autocorrect.
+    const spell = status().spell !== false;
+    const area = el('textarea', {
+      class: 'og-text', rows: '1', 'aria-label': 'Text',
+      spellcheck: spell ? 'true' : 'false', autocorrect: 'off',
+    });
     area.value = req.text || '';
     // Cap height ~ 0.7 em.
     area.style.fontSize = `${Math.max(10, req.size / 0.7)}px`;

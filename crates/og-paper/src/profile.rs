@@ -22,7 +22,7 @@ use crate::App;
 pub const MAX_BYTES: usize = 1 << 20;
 
 /// The settings that travel (the rest stay with the device).
-const SYNCED: [&str; 10] = [
+const SYNCED: [&str; 12] = [
     "basictools",
     "dark",
     "diagram",
@@ -32,6 +32,8 @@ const SYNCED: [&str; 10] = [
     "keys",
     "radialbar",
     "rulers",
+    "spell",
+    "spellwords",
     "swatches",
 ];
 

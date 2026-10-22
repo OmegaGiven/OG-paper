@@ -62,6 +62,7 @@ mod script;
 mod seal;
 mod search;
 mod shapes;
+mod spell;
 mod share;
 mod snapshot;
 mod swatches;
@@ -1513,6 +1514,19 @@ impl App {
             }
             Action::Perf => {
                 self.ui.perf = !self.ui.perf;
+                self.redraw();
+            }
+            Action::Spell => {
+                self.ui.spell = !self.ui.spell;
+                if self.ui.spell {
+                    spell::warm();
+                }
+                let mut p = prefs::load();
+                p.insert(
+                    "spell".into(),
+                    if self.ui.spell { "on" } else { "off" }.into(),
+                );
+                prefs::save(&p);
                 self.redraw();
             }
             Action::Hints => {
@@ -3242,7 +3256,7 @@ impl App {
             -99.0
         };
         web::set_status(format!(
-            "{{\"ready\":true,\"zoom\":{:.3},\"strokes\":{},\"shown\":{},\"drawn\":{},\"erased\":{},\"undos\":{},\"deepDraw\":{:.2},\"flying\":{},\"dirty\":{},\"bookmarks\":[{}],\"timeline\":{},\"dark\":{},\"canvas\":\"{:032x}\",\"peer\":\"{:016x}\",\"net\":{},\"name\":{},\"passes\":{},\"hints\":{},\"tool\":{},\"hold\":{},\"inHand\":{},\"viewOnly\":{},\"shared\":[{}],\"delKnob\":{},\"selected\":{},\"clips\":{}}}",
+            "{{\"ready\":true,\"zoom\":{:.3},\"strokes\":{},\"shown\":{},\"drawn\":{},\"erased\":{},\"undos\":{},\"deepDraw\":{:.2},\"flying\":{},\"dirty\":{},\"bookmarks\":[{}],\"timeline\":{},\"dark\":{},\"canvas\":\"{:032x}\",\"peer\":\"{:016x}\",\"net\":{},\"name\":{},\"passes\":{},\"hints\":{},\"spell\":{},\"tool\":{},\"hold\":{},\"inHand\":{},\"viewOnly\":{},\"shared\":[{}],\"delKnob\":{},\"selected\":{},\"clips\":{}}}",
             self.cam.log10_zoom(),
             (0..self.scene.strokes.len() as u32)
                 .filter(|&i| !self.scene.strokes[i as usize].deleted && !self.objs.look_strokes.contains(&i))
@@ -3265,6 +3279,7 @@ impl App {
             web::json_str(&self.ui.file_name),
             self.portal_passes,
             self.ui.hints,
+            self.ui.spell,
             web::json_str(self.ui.tool.name()),
             web::json_str(self.ui.hold.map_or("", |h| h.tool.name())),
             self.ui.held.is_some(),
@@ -3901,6 +3916,11 @@ pub(crate) fn apply_prefs(ui: &mut UiState, prefs: &prefs::Prefs) {
     ui.radial_bar = prefs.get("radialbar").is_some_and(|v| v == "on");
     ui.dark = prefs.get("dark").is_some_and(|v| v == "on");
     ui.hints = prefs.get("hints").is_none_or(|v| v != "off");
+    ui.spell = prefs.get("spell").is_none_or(|v| v != "off");
+    spell::set_added(prefs.get("spellwords").map_or("", |s| s.as_str()));
+    if ui.spell {
+        spell::warm();
+    }
     ui.basics_open = prefs.get("basictools").is_none_or(|v| v != "closed");
     ui.views_open = prefs.get("invviews").is_none_or(|v| v != "closed");
     ui.ui_scale = prefs
