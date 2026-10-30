@@ -7,7 +7,7 @@
 //
 // A site turns this on with <meta name="og-paper-api" content="/paper/api">
 // (and optionally og-paper-signin: where to send people to sign in, with
-// {next} for the way back).
+// {next} for the way back; og-paper-upgrade: where to buy more storage).
 
 /**
  * Where pages are kept. Both kinds answer the same calls:
@@ -118,7 +118,12 @@ export function hostedConfig() {
   const meta = n => document.querySelector(`meta[name="${n}"]`)?.content || null;
   const api = meta('og-paper-api') || window.OG_PAPER_HOSTED?.api;
   if (!api) return null;
-  return { api, signIn: meta('og-paper-signin') || window.OG_PAPER_HOSTED?.signIn || '/account/?next={next}' };
+  return {
+    api,
+    signIn: meta('og-paper-signin') || window.OG_PAPER_HOSTED?.signIn || '/account/?next={next}',
+    // The site's page for buying more storage (the API's /me can name it too).
+    upgrade: meta('og-paper-upgrade') || window.OG_PAPER_HOSTED?.upgrade || null,
+  };
 }
 
 const fmtBytes = n => n >= 1048576 ? `${(n / 1048576).toFixed(n >= 10485760 ? 0 : 1)} MB` : n >= 1024 ? `${Math.round(n / 1024)} KB` : `${n} B`;
@@ -150,12 +155,85 @@ export function startHosted(ui, cfg) {
   ui.cards.account = c;
   const body = el('div');
   c.append(body);
-  const full = ui.card('Storage full');
-  ui.cards.full = full;
-  full.append(el('p', { class: 'msg' }), el('div', { class: 'og-row' },
-    '<button class="og-btn primary" data-act="export">Export a copy</button><button class="og-btn" data-act="pages">Delete pages</button>'));
-  full.querySelector('[data-act=export]').onclick = () => { ui.show(null); ui.exporter(); };
-  full.querySelector('[data-act=pages]').onclick = () => openPanel();
+  // Storage warnings: nearly full, and full (changes no longer saved). Both
+  // offer the site's paid storage when it has some (PAPER_UPGRADE_URL).
+  const upgradeUrl = () => state.me?.upgrade || cfg.upgrade || null;
+  const warnCard = (name, title) => {
+    const w = ui.card(title);
+    ui.cards[name] = w;
+    w.append(el('p', { class: 'msg' }), el('div', { class: 'og-row', style: 'flex-wrap:wrap' },
+      `<a class="og-btn primary" data-act="upgrade" target="_blank" rel="noopener" hidden>Get more storage</a>
+       <button class="og-btn" data-act="export">Export a copy</button><button class="og-btn" data-act="pages">Delete pages</button>`));
+    w.querySelector('[data-act=export]').onclick = () => { ui.show(null); ui.exporter(); };
+    w.querySelector('[data-act=pages]').onclick = () => openPanel();
+    return w;
+  };
+  const full = warnCard('full', 'Storage full');
+  const nearly = warnCard('nearly', 'Storage nearly full');
+  const fillCard = (w, html, offer) => {
+    w.querySelector('.msg').innerHTML = html;
+    const up = w.querySelector('[data-act=upgrade]');
+    up.hidden = !(offer && upgradeUrl());
+    if (!up.hidden) up.href = upgradeUrl();
+  };
+
+  // ---- is the open page safe in the account? ------------------------------
+  // The room answers each change it keeps ("kept"), or says it dropped it.
+  // Changes made while not connected count until the room has them.
+  const cloud = { open: false, live: false, sent: 0, kept: 0, dropped: false, syncedN: null };
+  const changesNow = () => ui.status().timeline?.n ?? 0;
+  function cloudState() {
+    const st = ui.status();
+    if (!st.ready) return 'empty';
+    const page = currentPage();
+    if (!page) return st.strokes > 0 ? 'local' : 'empty';
+    if (st.viewOnly) return 'saved';
+    if (cloud.dropped) return 'unsaved';
+    const n = changesNow();
+    if (cloud.open && cloud.live) {
+      if (cloud.sent <= cloud.kept) { cloud.syncedN = n; return 'saved'; }
+      return 'saving';
+    }
+    return cloud.syncedN === n ? 'saved' : 'unsaved';
+  }
+  const chip = el('button', { class: 'og-cloud', hidden: '', type: 'button' });
+  ui.root.append(chip);
+  chip.onclick = () => openPanel();
+  let chipKey = '';
+  setInterval(() => {
+    const c = cloudState();
+    const signedIn = !!state.me?.user;
+    const text = c === 'local' ? (signedIn ? 'Only in this browser: keep it in your account' : 'Only in this browser: sign in to save to the cloud')
+      : c === 'unsaved' ? (cloud.dropped ? '⚠ Not saved to your account' : '⚠ Not saved to your account yet (offline)')
+      : '';
+    if (text === chipKey) return;
+    chipKey = text;
+    chip.hidden = !text;
+    chip.textContent = text;
+    chip.classList.toggle('warn', c === 'unsaved');
+  }, 1000);
+
+  // Usage: from the page list, and live from the room while drawing.
+  const usage = { used: 0, quota: 0 };
+  const WARN = [[1, 'full'], [0.95, 'almost'], [0.8, 'nearly']];
+  function noteUsage(used, quota) {
+    if (!quota) return;
+    usage.used = used; usage.quota = quota;
+    const f = used / quota;
+    const key = 'og-quota-warned';
+    let warned = {};
+    try { warned = JSON.parse(localStorage.getItem(key)) || {}; } catch (e) {}
+    // Back under 80% (pages deleted, more storage bought): warn again next time.
+    if (f < 0.8) { if (Object.keys(warned).length) localStorage.removeItem(key); return; }
+    const level = WARN.find(([at]) => f >= at)[1];
+    if (level === 'full' || warned[level]) return;   // full: the room says so when it drops a change
+    warned[level] = Date.now();
+    try { localStorage.setItem(key, JSON.stringify(warned)); } catch (e) {}
+    fillCard(nearly, `You have used <b>${fmtBytes(used)}</b> of your <b>${fmtBytes(quota)}</b>.
+      When it is full, new edits stay on this device only and are <b>not saved to your account</b>.
+      ${upgradeUrl() ? 'Get more storage to keep everything in the cloud, or export' : 'Export'} or delete pages to make room.`, true);
+    ui.show('nearly');
+  }
 
   const currentPage = () => pageOfCanvas(ui.status().canvas);
 
@@ -163,6 +241,7 @@ export function startHosted(ui, cfg) {
     try {
       state.me = await hp.me();
       state.list = state.me.user ? await hp.list() : null;
+      if (state.list?.usage) noteUsage(state.list.usage.used, state.list.usage.quota);
     } catch (e) {
       state.me = state.me || { user: null };
       say(e.message);
@@ -174,7 +253,8 @@ export function startHosted(ui, cfg) {
     if (!u) return '';
     const pct = Math.min(100, (100 * u.used) / Math.max(1, u.quota));
     return `<div class="og-progress" title="${pct.toFixed(0)}%"><div style="width:${pct}%;background:${pct > 90 ? 'var(--accent)' : 'var(--ok)'}"></div></div>
-      <p>${fmtBytes(u.used)} of ${fmtBytes(u.quota)} used · ${u.pages} of ${u.maxPages} pages${pct >= 100 ? ' · <b>full</b>: export or delete pages to free space' : ''}</p>`;
+      <p>${fmtBytes(u.used)} of ${fmtBytes(u.quota)} used · ${u.pages} of ${u.maxPages} pages${pct >= 100 ? ' · <b>full</b>: new edits are not saved to your account. Export or delete pages to free space' : ''}</p>
+      ${upgradeUrl() ? `<p><a href="${esc(upgradeUrl())}" target="_blank" rel="noopener">${pct >= 80 ? '<b>Get more storage</b>' : 'Need more room? Get more storage'}</a></p>` : ''}`;
   }
 
   function item(p, mine) {
@@ -351,8 +431,12 @@ export function startHosted(ui, cfg) {
   }
 
   function showFull(msg, u) {
-    full.querySelector('.msg').innerHTML = esc(msg) + (u && u.quota ? `<br><small>${fmtBytes(u.used)} of ${fmtBytes(u.quota)} used</small>` : '');
-    ui.show('full');
+    // Mine: offer more storage. Someone else's page: making a copy into my
+    // own account is the way to keep working.
+    const mine = !u || u.owner !== false;
+    fillCard(full, esc(msg) + (u && u.quota ? `<br><small>${fmtBytes(u.used)} of ${fmtBytes(u.quota)} used</small>` : '')
+      + (mine && upgradeUrl() ? '<br>Get more storage and everything you draw is kept in the cloud again.' : ''), mine);
+    if (ui.isOpen() !== 'full') ui.show('full');
   }
 
   function openPanel() {
@@ -412,10 +496,16 @@ export function startHosted(ui, cfg) {
     control(text) {
       let m;
       try { m = JSON.parse(text); } catch (e) { return; }
-      if (m.t === 'welcome') { state.role = m.role; closedFor = null; }
+      if (m.t === 'welcome') {
+        // A fresh connection: the app now sends whatever the room lacks.
+        state.role = m.role; closedFor = null;
+        Object.assign(cloud, { live: true, sent: 0, kept: 0, dropped: false });
+      }
+      else if (m.t === 'kept') cloud.kept++;
+      else if (m.t === 'usage') noteUsage(m.used, m.quota);
       else if (m.t === 'peers') { state.peers = m.list; if (ui.isOpen() === 'account') render(); }
-      else if (m.t === 'full') showFull(m.msg, m);
-      else if (m.t === 'denied' || m.t === 'error') say(m.msg);
+      else if (m.t === 'full') { cloud.kept++; cloud.dropped = true; showFull(m.msg, m); }
+      else if (m.t === 'denied' || m.t === 'error') { if (m.drop) { cloud.kept++; if (m.t === 'error') cloud.dropped = true; } say(m.msg); }
       else if (m.t === 'kicked') { closedFor = m.msg; say(m.msg); refresh(); }
     },
     /** Whether to dial a room again (not after being shown the door). */
@@ -424,5 +514,20 @@ export function startHosted(ui, cfg) {
       return false;
     },
     get refusal() { return closedFor; },
+    /** The live socket opened or closed (url: where to). */
+    conn(open, url = '') {
+      cloud.open = open && url.includes(cfg.api);
+      if (!open) cloud.live = false;
+    },
+    /** A frame went out on the live socket. */
+    sent(frame) {
+      if (!cloud.open || frame.length < 4) return;
+      const tag = String.fromCharCode(frame[0], frame[1], frame[2], frame[3]);
+      if (tag === 'PUT ' || tag === 'CKPT') cloud.sent++;
+    },
+    /** saved | saving | unsaved | local (not an account page) | empty */
+    cloudState,
+    /** Whether closing the tab now would leave work out of the account. */
+    warnOnClose() { const c = cloudState(); return c === 'unsaved' || c === 'saving' || c === 'local'; },
   };
 }

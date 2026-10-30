@@ -128,6 +128,12 @@ const CSS = `
   background: #1c1c24; color: #fff; padding: 8px 14px; border-radius: 10px; font: 14px system-ui, sans-serif; opacity: 0;
   transition: opacity .25s; pointer-events: none; max-width: calc(100vw - 32px); }
 .og-toast.on { opacity: .92; }
+.og-card a.og-btn { text-decoration: none; display: inline-block; }
+.og-cloud { position: fixed; z-index: 19; left: 50%; transform: translateX(-50%); top: calc(12px + env(safe-area-inset-top));
+  border: 1px solid var(--edge); background: var(--face); color: var(--muted); border-radius: 999px; padding: 6px 12px;
+  font: 600 13px/1.2 system-ui, sans-serif; box-shadow: 0 1px 3px rgba(0,0,0,.15); max-width: calc(100vw - 140px); }
+.og-cloud.warn { background: #fff4e0; border-color: #e0a040; color: #7a4a00; }
+.og-cloud[hidden] { display: none; }
 @media (max-width: 520px) { .og-tl .dual { flex-basis: 60px; } .og-tl .restore, .og-tl .mark { padding: 6px 8px; } .og-tl { right: calc(84px + env(safe-area-inset-right)); bottom: calc(86px + env(safe-area-inset-bottom)); } }
 `;
 
@@ -803,13 +809,14 @@ export async function start({ mode = 'app' } = {}) {
     try { w = new WebSocket(url); } catch (e) { og_net_closed(0, String(e.message || e)); setTimeout(og_poke, 3200); return; }
     w.binaryType = 'arraybuffer';
     ws = w;
-    w.onopen = () => og_net_open(0);
+    w.onopen = () => { hosted?.conn(true, url); og_net_open(0); };
     // Text frames are a hosted room's own notes (who is here, storage
     // full, access changed); the app speaks binary.
     w.onmessage = e => typeof e.data === 'string' ? hosted?.control(e.data) : og_net_recv(0, new Uint8Array(e.data));
     w.onclose = e => {
       if (ws !== w) return;
       ws = null;
+      hosted?.conn(false);
       og_net_closed(0, e.reason || (location.protocol === 'https:' && url.startsWith('ws:') ? 'an https page needs a wss:// address' : 'connection closed'));
       setTimeout(og_poke, 3200);
     };
@@ -845,7 +852,7 @@ export async function start({ mode = 'app' } = {}) {
       const conn = b[0] | (b[1] << 8) | (b[2] << 16) | (b[3] << 24);
       const frame = b.subarray(4);
       if (conn >= 1000) { if (dirWs[conn]?.readyState === 1) dirWs[conn].send(frame); }
-      else if (conn === 0 && ws && ws.readyState === 1) ws.send(frame);
+      else if (conn === 0 && ws && ws.readyState === 1) { ws.send(frame); hosted?.sent(frame); }
       else if (rtc.chans[conn] && rtc.chans[conn].readyState === 'open') rtc.chans[conn].send(frame);
     }
   }
@@ -1591,7 +1598,7 @@ export async function start({ mode = 'app' } = {}) {
   loadPlugins();
   if (hostedCfg) {
     hosted = startHosted({
-      card, cards, show, say, status, el, esc, autosave, exporter: () => openExport(), isOpen: () => open,
+      root, card, cards, show, say, status, el, esc, autosave, exporter: () => openExport(), isOpen: () => open,
       app: { og_join, og_join_upload, og_view_token, og_set_name },
     }, hostedCfg);
     hosted.boot();
@@ -1613,8 +1620,14 @@ export async function start({ mode = 'app' } = {}) {
     run: cmds => og_run(JSON.stringify(cmds)),
     results: () => { const r = og_last_run(); return r ? JSON.parse(r) : null; },
   };
-  // On a hosted site: open the My account panel.
-  if (hosted) window.ogPaper.account = () => hosted.open();
+  // On a hosted site: open the My account panel; whether the open page is
+  // safe in the account.
+  if (hosted) {
+    window.ogPaper.account = () => hosted.open();
+    window.ogPaper.cloud = () => hosted.cloudState();
+    // Closing the tab with work not in the account: the browser asks first.
+    addEventListener('beforeunload', e => { if (hosted.warnOnClose()) { e.preventDefault(); e.returnValue = ''; } });
+  }
   if (isTry && !saved) {
     // First visit: open the tour once the canvas is up.
     setTimeout(() => { if (open === null) show('tour'); }, 600);

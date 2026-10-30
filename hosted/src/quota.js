@@ -15,12 +15,11 @@
 // back what it did not spend when it goes quiet, and frees what a
 // checkpoint or a deletion no longer keeps.
 
-/** Take `n` bytes from `owner`'s account: true if it had room. */
+/** Take `n` bytes from `owner`'s account: its { used, quota } after, or null if it had no room. */
 export async function take(db, owner, n) {
-  if (n <= 0) return true;
-  const r = await db.prepare('UPDATE paper_accounts SET used = used + ?1 WHERE user_id = ?2 AND used + ?1 <= quota AND blocked = 0')
-    .bind(n, owner).run();
-  return (r.meta?.changes ?? 0) > 0;
+  if (n <= 0) return { used: null, quota: null };
+  return db.prepare('UPDATE paper_accounts SET used = used + ?1 WHERE user_id = ?2 AND used + ?1 <= quota AND blocked = 0 RETURNING used, quota')
+    .bind(n, owner).first();
 }
 
 /** Give `n` bytes back to `owner`'s account. */
@@ -44,7 +43,8 @@ export async function account(db, user, freeQuota, now = Date.now()) {
  * admin recount.
  */
 export class Lease {
-  constructor(db, chunk, load, store) {
+  constructor(db, chunk, load, store, onTake) {
+    this.onTake = onTake; // ({ used, quota }) => void: the account after taking
     this.db = db;
     this.chunk = chunk;
     this.load = load;   // () => { owner, lease }   (as stored)
@@ -66,8 +66,10 @@ export class Lease {
     const short = n - lease;
     // A chunk ahead if there is room for it, else just what this needs.
     const ahead = Math.max(short, this.chunk);
-    if (ahead > short && await take(this.db, owner, ahead)) { this.left = lease + ahead - n; this.store(owner, this.left); return true; }
-    if (await take(this.db, owner, short)) { this.left = 0; this.store(owner, 0); return true; }
+    let got = ahead > short ? await take(this.db, owner, ahead) : null;
+    if (got) { this.left = lease + ahead - n; this.store(owner, this.left); this.onTake?.(got); return true; }
+    got = await take(this.db, owner, short);
+    if (got) { this.left = 0; this.store(owner, 0); this.onTake?.(got); return true; }
     return false;
   }
 

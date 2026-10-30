@@ -57,7 +57,8 @@ export class PaperRoom {
     this.sql.exec('CREATE TABLE IF NOT EXISTS subs (sock TEXT NOT NULL, tile TEXT NOT NULL, PRIMARY KEY (sock, tile))');
     this.lease = new Lease(env.DB, this.cfg.leaseChunk,
       () => ({ owner: this.meta('owner'), lease: Number(this.meta('lease') || 0) }),
-      (owner, lease) => { this.setMeta('owner', owner || ''); this.setMeta('lease', String(lease)); });
+      (owner, lease) => { this.setMeta('owner', owner || ''); this.setMeta('lease', String(lease)); },
+      acct => this.usageToOwner(acct));
     // Kept frames are handled one at a time, in arrival order.
     this.queue = Promise.resolve();
     this.buckets = new Map();
@@ -135,18 +136,19 @@ export class PaperRoom {
       return this.join(ws, a, 0);
     }
     if (!a.mode) return this.refuse(ws, 'Say which room first', true);
-    if (!this.rate(ws, b.length)) return this.send(ws, { t: 'error', msg: 'Slow down: too many changes at once' });
+    // drop: a change was not kept (the page then knows it is not saved).
+    if (!this.rate(ws, b.length)) return this.send(ws, { t: 'error', msg: 'Slow down: too many changes at once', drop: f.tag !== TAG.EPH });
     if (f.tag === TAG.EPH) {
       if (f.body.length > this.cfg.maxEphBytes) return;
       for (const o of this.sockets()) if (o !== ws && this.att(o).mode) this.sendRaw(o, f.body);
       return;
     }
-    if (!EDIT.has(a.role)) return this.send(ws, { t: 'denied', msg: 'You can only view this page' });
+    if (!EDIT.has(a.role)) return this.send(ws, { t: 'denied', msg: 'You can only view this page', drop: true });
     const ckpt = f.tag === TAG.CKPT || f.tag === TAG.TCKP;
     // A copy that sees only some tiles cannot stand for the whole page.
-    if (f.tag === TAG.CKPT && a.tiled) return this.send(ws, { t: 'denied', msg: 'A full copy needs the whole page: subscribe to everything first' });
+    if (f.tag === TAG.CKPT && a.tiled) return this.send(ws, { t: 'denied', msg: 'A full copy needs the whole page: subscribe to everything first', drop: true });
     const cap = ckpt ? this.cfg.maxCheckpointBytes : this.cfg.maxOpBytes;
-    if (f.body.length > cap) return this.send(ws, { t: 'error', msg: `That change is too big to keep (${f.body.length} bytes, the most is ${cap})` });
+    if (f.body.length > cap) return this.send(ws, { t: 'error', msg: `That change is too big to keep (${f.body.length} bytes, the most is ${cap})`, drop: true });
     const body = f.body.slice();
     const job = this.queue.then(() => this.keep(ws, a, f.tag, f.tiles || [], body));
     this.queue = job.catch(e => console.error('og-paper room', e));
@@ -198,6 +200,9 @@ export class PaperRoom {
     if (a.mode === 'seq') this.send(ws, { t: 'ready', head: a.ready, role: a.role });
     else this.sendRaw(ws, READY);
     this.send(ws, { t: 'welcome', role: a.role, name: a.name, head: a.ready, bytes: this.bytes() });
+    if (a.user === this.meta('owner') && this.env.DB) {
+      this.usageToOwner(await this.env.DB.prepare('SELECT used, quota FROM paper_accounts WHERE user_id = ?1').bind(a.user).first());
+    }
     this.peers();
   }
 
@@ -257,7 +262,7 @@ export class PaperRoom {
       const owner = this.meta('owner');
       const acct = await this.env.DB.prepare('SELECT quota, used FROM paper_accounts WHERE user_id = ?1').bind(owner).first();
       return this.send(ws, {
-        t: 'full', owner: owner === a.user,
+        t: 'full', drop: true, owner: owner === a.user,
         used: acct?.used ?? null, quota: acct?.quota ?? null,
         msg: owner === a.user
           ? 'Your storage is full: this change was not saved to your account. Export or delete pages to free space.'
@@ -289,7 +294,9 @@ export class PaperRoom {
       const oa = this.att(o);
       if (!oa.mode) continue;
       if (o === ws) {
+        // Kept: the sender's page can tell its changes are safe in the account.
         if (oa.mode === 'seq') { this.send(o, { t: 'ack', seq }); oa.seen = Math.max(oa.seen, seq); this.setAtt(o, oa); }
+        else this.send(o, { t: 'kept', seq });
         continue;
       }
       if (!wants(this.subsOf(oa), tiles)) continue;
@@ -299,6 +306,13 @@ export class PaperRoom {
     if (kind === KIND.PUT && this.frameCount() > this.cfg.maxFramesBeforeCheckpoint && a.mode === 'seq') {
       this.send(ws, { t: 'compact' });
     }
+  }
+
+  /** Tell the owner's open sockets how full their storage is. */
+  usageToOwner(acct) {
+    if (!acct || acct.used == null) return;
+    const owner = this.meta('owner');
+    for (const o of this.ctx.getWebSockets('u:' + owner)) if (this.att(o).mode) this.send(o, { t: 'usage', used: acct.used, quota: acct.quota });
   }
 
   // ---- connections ------------------------------------------------------

@@ -11,6 +11,8 @@ const MB = 1024 * 1024;
 export const DEFAULTS = {
   /** Where the API is mounted on the host site. */
   prefix: '/paper/api',
+  /** Where to send people for more storage (the site's billing page), or null. */
+  upgradeUrl: null,
   /** Bytes each free account may keep (pages, pictures, history). */
   freeQuota: 25 * MB,
   /** Pages one account may own. */
@@ -57,6 +59,7 @@ export function configFrom(env = {}, over = {}) {
   num('freeQuota', env.PAPER_FREE_QUOTA);
   num('maxPages', env.PAPER_MAX_PAGES);
   num('maxOpBytes', env.PAPER_MAX_OP);
+  if (env.PAPER_UPGRADE_URL) c.upgradeUrl = String(env.PAPER_UPGRADE_URL);
   if (env.PAPER_LINK_SHARING != null) c.linkSharing = !/^(0|off|false|no)$/i.test(String(env.PAPER_LINK_SHARING));
   if (env.PAPER_LINK_ANON != null) c.linkAnonymousView = /^(1|on|true|yes)$/i.test(String(env.PAPER_LINK_ANON));
   return c;

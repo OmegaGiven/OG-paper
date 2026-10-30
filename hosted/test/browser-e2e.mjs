@@ -9,6 +9,8 @@ import assert from 'node:assert/strict';
 const { chromium } = await import(`${process.env.PW || '.'}/node_modules/playwright/index.mjs`);
 const BASE = process.env.BASE || 'http://127.0.0.1:8799';
 const wait = ms => new Promise(r => setTimeout(r, ms));
+// SHOTS=dir: keep screenshots of the warnings there.
+const shot = (p, name) => process.env.SHOTS ? p.screenshot({ path: `${process.env.SHOTS}/${name}.png` }) : null;
 
 const browser = await chromium.launch({ args: ['--enable-unsafe-webgpu', '--use-angle=swiftshader', '--ignore-gpu-blocklist'] });
 
@@ -50,7 +52,8 @@ const id = list.mine[0].id;
 assert.equal(list.mine[0].name, 'E2E page');
 const shared = await alice.evaluate(id => fetch(`/paper/api/pages/${id}/members`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ who: 'bob', role: 'editor' }) }).then(r => r.status), id);
 assert.equal(shared, 200);
-console.log('alice: page made, written on, shared');
+await until(async () => (await alice.evaluate(() => window.ogPaper.cloud())) === 'saved');
+console.log('alice: page made, written on, shared; saved to the account');
 
 const bob = await person('bob');
 await bob.waitForSelector('section[data-name="My account"]:not([hidden])', { timeout: 15000 });
@@ -85,6 +88,66 @@ await alice.reload();
 await alice.waitForFunction(() => window.ogPaper && document.querySelector('.og-loading')?.hidden, null, { timeout: 120000 });
 await until(async () => { const t = await texts(alice); return t.includes('hi-from-bob') && t.includes('hello-from-alice'); });
 console.log('alice: reopened from the account after reload');
+// Storage nearly full, then full: warnings, the offer of more storage, and
+// the browser asking before the tab closes with edits not in the account.
+const admin = await person('admin');
+assert.equal(await admin.evaluate(() => fetch('/paper/api/admin/accounts/dave', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ quota: 60 * 1024 }) }).then(r => r.status)), 200);
+const dave = await person('dave');
+await dave.waitForSelector('section[data-name="My account"]:not([hidden])', { timeout: 15000 });
+assert.match(await dave.textContent('section[data-name="My account"]'), /Get more storage/);
+await dave.click('section[data-name="My account"] [data-act=new]');
+await until(async () => (await dave.evaluate(() => window.ogPaper.cloud())) === 'saved');
+let sawNearly = false;
+const levels = [];
+for (let i = 0; i < 200; i++) {
+  await dave.evaluate(i => {
+    const pts = Array.from({ length: 200 }, (_, k) => [k * 2 + i * 7, Math.sin(k / 9 + i) * 300]);
+    window.ogPaper.run([{ add: 'stroke', points: pts, width: 3, color: '#1e5ac8' }]);
+  }, i);
+  await wait(250);
+  if (!sawNearly && await dave.isVisible('section[data-name="Storage nearly full"]')) { sawNearly = true; await shot(dave, 'storage-nearly-full'); }
+  levels.push(await dave.evaluate(() => localStorage.getItem('og-quota-warned')));
+  if (await dave.isVisible('section[data-name="Storage full"]')) break;
+}
+sawNearly ||= levels.some(l => l && l.includes('nearly'));
+assert.ok(sawNearly, 'warned when nearly full: ' + levels.filter(Boolean).slice(-3).join(' | '));
+await dave.waitForSelector('section[data-name="Storage full"]:not([hidden])');
+assert.match(await dave.textContent('section[data-name="Storage full"]'), /not saved to your account/);
+assert.equal(await dave.getAttribute('section[data-name="Storage full"] [data-act=upgrade]', 'href'), '/dev/storage');
+assert.equal(await dave.evaluate(() => window.ogPaper.cloud()), 'unsaved');
+await dave.waitForSelector('.og-cloud.warn:not([hidden])');
+await shot(dave, 'storage-full');
+assert.match(await dave.textContent('.og-cloud'), /Not saved to your account/);
+// The browser only asks after the person has touched the page (a click
+// may draw a dot: wait for it to be saved when that is the point).
+const asked = async (p, settle = false) => {
+  await p.click('canvas', { position: { x: 3, y: 300 } });
+  if (settle) await until(async () => (await p.evaluate(() => window.ogPaper.cloud())) === 'saved');
+  let kind = null;
+  p.removeAllListeners('dialog');
+  p.on('dialog', d => { kind = d.type(); d.dismiss(); });
+  await p.close({ runBeforeUnload: true });
+  await wait(1000);
+  return kind;
+};
+assert.equal(await asked(dave), 'beforeunload', 'closing asks first');
+console.log('dave: nearly-full and full warnings, more-storage offer, close asks first');
+
+// Signed out on the site: work is only in this browser, and closing asks.
+const evePage = await (await browser.newContext()).newPage();
+await evePage.goto(`${BASE}/paper/`);
+await evePage.waitForFunction(() => window.ogPaper && document.querySelector('.og-loading')?.hidden, null, { timeout: 120000 });
+await evePage.evaluate(() => window.ogPaper.run([{ add: 'text', x: 0, y: 0, text: 'mine only' }]));
+await until(async () => (await evePage.evaluate(() => window.ogPaper.cloud())) === 'local');
+await evePage.waitForSelector('.og-cloud:not([hidden])');
+assert.match(await evePage.textContent('.og-cloud'), /sign in to save to the cloud/);
+await shot(evePage, 'signed-out-chip');
+assert.equal(await asked(evePage), 'beforeunload');
+// And an account page that is saved closes without asking.
+assert.equal(await alice.evaluate(() => window.ogPaper.cloud()), 'saved');
+assert.equal(await asked(alice, true), null, 'saved: no question');
+console.log('signed out: only in this browser, close asks; saved pages close quietly');
+
 await browser.close();
 console.log('BROWSER E2E OK');
 process.exit(0);

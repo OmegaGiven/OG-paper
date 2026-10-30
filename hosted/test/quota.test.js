@@ -153,3 +153,18 @@ test('admins can raise a quota', async () => {
   assert.equal((await used(s, 1)).quota, 100 * KB);
   assert.equal((await s.call(1, 'POST', '/admin/accounts/1', { quota: 1e9 })).status, 404);
 });
+
+test('the owner hears how full their storage is as they draw; others do not', async () => {
+  const s = site({ quota: 64 * KB, config: { leaseChunk: 8 * KB, upgradeUrl: '/account/storage' } });
+  const page = await newPage(s, 1);
+  await s.call(1, 'POST', `/pages/${page}/members`, { who: 'bob', role: 'editor' });
+  assert.equal((await used(s, 1)).upgrade, '/account/storage');
+  const a = await client(s, 1, page);
+  const b = await client(s, 2, page);
+  assert.equal(last(a, 'usage').used, 0, 'on joining');
+  for (let i = 0; i < 6; i++) { a.log.add('s' + i, 't', 'p'.repeat(4 * KB)); await a.push(); }
+  const u = last(a, 'usage');
+  assert.equal(u.quota, 64 * KB);
+  assert.ok(u.used >= 24 * KB, `grows as quota is taken: ${u.used}`);
+  assert.equal(last(b, 'usage'), undefined, 'an editor never sees the owner\'s usage');
+});

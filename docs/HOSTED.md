@@ -209,7 +209,26 @@ subscriptions per socket), `meta` (page, owner, pinned room, lease).
   passed-on frame ≤ 16 KB, a checkpoint ≤ 25 MB; anything bigger is
   refused with a message. Pictures larger than 1 MB therefore cannot be
   sent yet (see Decisions).
-- Usage shows in My account: "3.2 MB of 25 MB used · 4 of 100 pages".
+- Usage shows in My account: "3.2 MB of 25 MB used · 4 of 100 pages", and
+  live while drawing: the room tells the owner's open pages how full the
+  account is each time it takes quota (a `{t:'usage'}` note).
+- **Warnings, and where to sell storage:**
+  - At 80% and again at 95%, a "Storage nearly full" card: when it is full,
+    new edits stay on this device only and are not saved to the account.
+  - When full, a "Storage full" card each time a change is refused.
+  - Both cards, and the usage line in My account, offer **Get more
+    storage**, linking to the site's billing page: `PAPER_UPGRADE_URL`
+    (or `upgradeUrl` in the config, or `<meta name="og-paper-upgrade">`).
+    Without one set, no offer shows. On someone else's page the full card
+    suggests making a copy instead.
+- **Closing the tab with work not in the account** makes the browser ask
+  first (the standard "Leave site?" prompt; browsers don't allow custom
+  text). That covers edits the room refused (full), edits made offline or
+  still on their way (the room confirms every kept change with
+  `{t:'kept'}`), and, on the hosted site, a canvas that is only in this
+  browser (signed out, or not kept in the account). A chip at the top of
+  the screen says which: "⚠ Not saved to your account" or "Only in this
+  browser: sign in to save to the cloud". Tap it for My account.
 
 ## Abuse basics
 
@@ -289,7 +308,8 @@ device".
    // optional: frames over 1 MB
    "r2_buckets": [{ "binding": "PAPER_BUCKET", "bucket_name": "og-paper" }],
    // assets.run_worker_first: add "/paper/api/*"
-   // vars: "PAPER_FREE_QUOTA": "26214400", "PAPER_LINK_SHARING": "on"
+   // vars: "PAPER_FREE_QUOTA": "26214400", "PAPER_LINK_SHARING": "on",
+   //       "PAPER_UPGRADE_URL": "/account/storage"   (where "Get more storage" goes)
    ```
    and the admin list as a secret: `wrangler secret put PAPER_ADMINS`
    (comma-separated user ids).
@@ -396,6 +416,11 @@ checkpoint to R2.
   an account is a few days old.
 - **Pictures over 1 MB:** refused today. Either downscale pictures in the
   app before sending (recommended) or raise `maxOpBytes` (up to ~30 MB).
+- **Paid storage:** the warnings already link to `PAPER_UPGRADE_URL`. The
+  site needs that page (plans, checkout, e.g. the existing Stripe
+  supporters flow) and, on payment, to raise the account's quota
+  (`POST /paper/api/admin/accounts/:uid {quota}`, or an UPDATE of
+  `paper_accounts.quota` from the payment webhook).
 - **Admins:** who goes in `PAPER_ADMINS`, and where `onReport` should
   notify.
 - **R2:** bind a bucket (free tier is plenty) or leave big frames split in

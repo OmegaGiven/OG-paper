@@ -164,6 +164,8 @@ test('the Rust app\'s relay protocol works unchanged (ROOM, PUT, READY)', async 
   // Its changes reach hosted clients; a different key's room is refused.
   await ws.send(withTag(TAG.PUT, enc.encode(JSON.stringify({ kind: 'changes', events: [{ item: 'rust', alive: true, at: [9e12, 0, 'rust'] }], items: [['rust', { tile: '', data: 1 }]], replaces: [] }))));
   assert.ok(a.shown().has('rust'));
+  // The sender hears it was kept (its page can say "saved to your account").
+  assert.equal(JSON.parse(got.filter(d => typeof d === 'string').at(-1)).t, 'kept');
   const other = await s.dial(3, page)();
   const got2 = [];
   other.onmessage = d => got2.push(d);

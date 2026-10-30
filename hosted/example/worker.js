@@ -20,6 +20,8 @@ const paper = createPaperApi({
     isAdmin: u => u.id === 'admin',
   },
   onReport: r => console.log('og-paper report', JSON.stringify(r)),
+  // Where "Get more storage" goes (a real site: its billing page).
+  config: { upgradeUrl: '/dev/storage' },
 });
 
 export default {
@@ -32,6 +34,9 @@ export default {
         status: 302,
         headers: { Location: url.searchParams.get('next') || '/paper/', 'Set-Cookie': `dev_user=${ok ? as : ''}; Path=/; HttpOnly; SameSite=Lax${ok ? '' : '; Max-Age=0'}` },
       });
+    }
+    if (url.pathname === '/dev/storage') {
+      return new Response('<!doctype html><title>More storage</title><h1>More storage</h1><p>Paid cloud storage plans would be sold here.</p>', { headers: { 'content-type': 'text/html' } });
     }
     const api = await paper(req, env, ctx);
     if (api) return api;

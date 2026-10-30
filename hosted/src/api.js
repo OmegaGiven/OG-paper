@@ -131,7 +131,7 @@ export function createApi({ auth, config = {}, roomBinding = 'PAPER_ROOMS', onRe
       // ---- the signed-in account ------------------------------------------------
       if (path === '/me' && req.method === 'GET') {
         if (!user) return json({ user: null, linkSharing: cfg.linkSharing });
-        return json({ user: { id: user.id, name: user.name || null }, admin: isAdmin, ...(await usage()), maxOpBytes: cfg.maxOpBytes, linkSharing: cfg.linkSharing });
+        return json({ user: { id: user.id, name: user.name || null }, admin: isAdmin, ...(await usage()), maxOpBytes: cfg.maxOpBytes, linkSharing: cfg.linkSharing, upgrade: cfg.upgradeUrl || null });
       }
 
       // ---- page lists -------------------------------------------------------------
