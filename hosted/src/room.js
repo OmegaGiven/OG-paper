@@ -53,12 +53,31 @@ export class PaperRoom {
       author TEXT NOT NULL, at INTEGER NOT NULL, size INTEGER NOT NULL, body BLOB, store TEXT NOT NULL DEFAULT '')`);
     this.sql.exec('CREATE TABLE IF NOT EXISTS chunks (seq INTEGER NOT NULL, i INTEGER NOT NULL, body BLOB NOT NULL, PRIMARY KEY (seq, i))');
     this.sql.exec('CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT)');
+    // Tile subscriptions per socket (a socket's attachment holds at most 2 KB).
+    this.sql.exec('CREATE TABLE IF NOT EXISTS subs (sock TEXT NOT NULL, tile TEXT NOT NULL, PRIMARY KEY (sock, tile))');
     this.lease = new Lease(env.DB, this.cfg.leaseChunk,
       () => ({ owner: this.meta('owner'), lease: Number(this.meta('lease') || 0) }),
       (owner, lease) => { this.setMeta('owner', owner || ''); this.setMeta('lease', String(lease)); });
     // Kept frames are handled one at a time, in arrival order.
     this.queue = Promise.resolve();
     this.buckets = new Map();
+    this.subCache = new Map();
+  }
+
+  /** A socket's tiles, or null when it takes the whole page. */
+  subsOf(a) {
+    if (!a.tiled) return null;
+    let t = this.subCache.get(a.id);
+    if (!t) {
+      t = this.sql.exec('SELECT tile FROM subs WHERE sock = ?', a.id).toArray().map(r => r.tile);
+      this.subCache.set(a.id, t);
+    }
+    return t;
+  }
+  setSubs(a, tiles) {
+    this.sql.exec('DELETE FROM subs WHERE sock = ?', a.id);
+    for (const t of tiles) this.sql.exec('INSERT OR IGNORE INTO subs (sock, tile) VALUES (?, ?)', a.id, t);
+    this.subCache.set(a.id, tiles);
   }
 
   meta(k) { return this.sql.exec('SELECT v FROM meta WHERE k = ?', k).toArray()[0]?.v ?? null; }
@@ -96,7 +115,7 @@ export class PaperRoom {
     const [client, server] = rt.pair();
     const via = h.get('x-paper-via') || '';
     this.ctx.acceptWebSocket(server, ['u:' + user, ...(via ? ['v:' + via] : [])]);
-    this.setAtt(server, { user, name: h.get('x-paper-name') || '', role, via, mode: null, subs: null, ready: 0, seen: 0 });
+    this.setAtt(server, { user, name: h.get('x-paper-name') || '', role, via, mode: null, tiled: false, ready: 0, seen: 0, id: crypto.randomUUID() });
     return rt.upgraded(client);
   }
 
@@ -125,7 +144,7 @@ export class PaperRoom {
     if (!EDIT.has(a.role)) return this.send(ws, { t: 'denied', msg: 'You can only view this page' });
     const ckpt = f.tag === TAG.CKPT || f.tag === TAG.TCKP;
     // A copy that sees only some tiles cannot stand for the whole page.
-    if (f.tag === TAG.CKPT && a.subs) return this.send(ws, { t: 'denied', msg: 'A full copy needs the whole page: subscribe to everything first' });
+    if (f.tag === TAG.CKPT && a.tiled) return this.send(ws, { t: 'denied', msg: 'A full copy needs the whole page: subscribe to everything first' });
     const cap = ckpt ? this.cfg.maxCheckpointBytes : this.cfg.maxOpBytes;
     if (f.body.length > cap) return this.send(ws, { t: 'error', msg: `That change is too big to keep (${f.body.length} bytes, the most is ${cap})` });
     const body = f.body.slice();
@@ -142,15 +161,18 @@ export class PaperRoom {
     if (m.t === 'hello' && !a.mode) {
       if (m.room && !this.pinRoom(hexBytes(String(m.room)))) return this.refuse(ws, 'This link\'s key does not belong to this page', true);
       a.mode = m.seq ? 'seq' : 'relay';
-      a.subs = Array.isArray(m.tiles) ? m.tiles.slice(0, this.cfg.maxSubs).map(String) : null;
+      a.tiled = Array.isArray(m.tiles);
+      if (a.tiled) this.setSubs(a, m.tiles.slice(0, this.cfg.maxSubs).map(t => String(t).slice(0, 255)));
       this.setAtt(ws, a);
       return this.join(ws, a, Math.max(0, Number(m.since) || 0));
     }
     if (m.t === 'subs' && a.mode) {
       // More tiles came into view: send what they hold (only those).
-      const add = (Array.isArray(m.add) ? m.add : []).map(String).filter(t => !(a.subs || []).includes(t));
+      const had = this.subsOf(a) || [];
+      const add = (Array.isArray(m.add) ? m.add : []).map(t => String(t).slice(0, 255)).filter(t => !had.includes(t));
       const remove = new Set((Array.isArray(m.remove) ? m.remove : []).map(String));
-      a.subs = [...(a.subs || []).filter(t => !remove.has(t)), ...add].slice(0, this.cfg.maxSubs);
+      a.tiled = true;
+      this.setSubs(a, [...had.filter(t => !remove.has(t)), ...add].slice(0, this.cfg.maxSubs));
       this.setAtt(ws, a);
       if (add.length) return this.backlog(ws, a, 0, add, false);
       return;
@@ -168,7 +190,7 @@ export class PaperRoom {
   }
 
   async join(ws, a, since) {
-    await this.backlog(ws, a, since, a.subs, true);
+    await this.backlog(ws, a, since, this.subsOf(a), true);
     a = this.att(ws);
     a.ready = this.head();
     a.seen = Math.max(a.seen, a.ready);
@@ -271,7 +293,7 @@ export class PaperRoom {
         if (oa.mode === 'seq') { this.send(o, { t: 'ack', seq }); oa.seen = Math.max(oa.seen, seq); this.setAtt(o, oa); }
         continue;
       }
-      if (!wants(oa.subs, tiles)) continue;
+      if (!wants(this.subsOf(oa), tiles)) continue;
       if (oa.mode === 'seq') { this.sendRaw(o, seqFrame(seq, body)); oa.seen = Math.max(oa.seen, seq); this.setAtt(o, oa); }
       else this.sendRaw(o, body);
     }
@@ -306,12 +328,18 @@ export class PaperRoom {
     for (const o of this.sockets()) if (this.att(o).mode) this.send(o, { t: 'peers', list });
   }
 
-  async webSocketClose(ws, code, reason) {
+  forget(ws) {
     this.buckets.delete(ws);
+    const a = this.att(ws);
+    if (a.id) { this.sql.exec('DELETE FROM subs WHERE sock = ?', a.id); this.subCache.delete(a.id); }
+  }
+
+  async webSocketClose(ws, code, reason) {
+    this.forget(ws);
     try { ws.close(code, reason); } catch (e) {}
     this.afterLeave(ws);
   }
-  async webSocketError(ws) { this.buckets.delete(ws); this.afterLeave(ws); }
+  async webSocketError(ws) { this.forget(ws); this.afterLeave(ws); }
 
   afterLeave(ws) {
     const left = this.sockets().filter(o => o !== ws);
@@ -329,6 +357,7 @@ export class PaperRoom {
     const tag = user != null ? 'u:' + user : via ? 'v:' + via : undefined;
     const list = tag ? this.ctx.getWebSockets(tag) : this.sockets();
     for (const ws of list) {
+      this.forget(ws);
       this.send(ws, { t: 'kicked', msg: why || 'Your access to this page changed' });
       try { ws.close(4003, 'access changed'); } catch (e) {}
     }

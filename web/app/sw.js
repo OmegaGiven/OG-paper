@@ -4,7 +4,8 @@ const CACHE = 'og-paper-v1';
 self.addEventListener('install', e => self.skipWaiting());
 self.addEventListener('activate', e => e.waitUntil(self.clients.claim()));
 self.addEventListener('fetch', e => {
-  if (e.request.method !== 'GET') return;
+  // Account data (a hosted site's /paper/api/...) is never kept here.
+  if (e.request.method !== 'GET' || new URL(e.request.url).pathname.includes('/api/')) return;
   e.respondWith(
     fetch(e.request)
       .then(r => {

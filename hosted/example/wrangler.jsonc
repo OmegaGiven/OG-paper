@@ -1,0 +1,14 @@
+{
+  // Hosted OG Paper, locally: `npx wrangler d1 migrations apply DB --local`
+  // then `npx wrangler dev`, and open http://localhost:8787/dev/login?as=alice
+  // (build the web app first: ./scripts/build-web.sh at the repository root).
+  "name": "og-paper-hosted-example",
+  "main": "worker.js",
+  "compatibility_date": "2025-09-01",
+  "assets": { "directory": "../../web", "binding": "ASSETS", "run_worker_first": true },
+  "durable_objects": { "bindings": [{ "name": "PAPER_ROOMS", "class_name": "PaperRoom" }] },
+  "migrations": [{ "tag": "paper-v1", "new_sqlite_classes": ["PaperRoom"] }],
+  "d1_databases": [{ "binding": "DB", "database_name": "og-paper-dev", "database_id": "00000000-0000-0000-0000-000000000000", "migrations_dir": "../migrations" }],
+  // Optional: big frames (over 1 MB) go here instead of being split in the room.
+  "r2_buckets": [{ "binding": "PAPER_BUCKET", "bucket_name": "og-paper-dev" }]
+}

@@ -11,8 +11,9 @@ import init, {
   og_home, og_bookmark_add, og_bookmark_go, og_view_public, og_shared_view_go, og_shared_view_copy, og_bookmark_remove, og_bookmark_rename, og_bookmark_to_bar,
   og_search, og_search_results, og_search_go, og_export, og_export_take, og_has_selection,
   og_sticker_take, og_sticker_svg, og_sticker_place, og_import, og_merge, og_changes_take, og_merge_quiet, og_set_folder, og_net_url, og_net_take, og_net_open, og_net_recv, og_net_closed, og_join, og_poke, og_rtc_host, og_rtc_closing, og_view_token, og_relay_share, og_dir_requests, og_page_arg, og_set_pages, og_plugin_install, og_pack_install, og_pack_sticker_take, og_run, og_last_run, og_set_name, og_add_server, og_audio_max, og_audio_take, og_audio_take_id, og_audio_recorded, og_audio_cancelled, og_plugin_bytes_take,
-  og_timeline, og_timeline_range, og_timeline_restore, og_snapshot_request, og_snapshot_take,
+  og_timeline, og_timeline_range, og_timeline_restore, og_snapshot_request, og_snapshot_take, og_join_upload,
 } from './pkg/og_paper.js';
+import { hostedConfig, startHosted } from './og-hosted.js';
 
 const ICONS = {
   play: '<path d="M8 5v14l11-7z"/>',
@@ -613,8 +614,11 @@ export async function start({ mode = 'app' } = {}) {
   // ---- the settings fan's items (drawn by the app) ----
   const standalone = matchMedia('(display-mode: fullscreen), (display-mode: standalone)').matches;
   const canFs = document.documentElement.requestFullscreen && !standalone;
+  // A site that hosts OG Paper (accounts' pages, see og-hosted.js).
+  const hostedCfg = isTry ? null : hostedConfig();
+  let hosted = null;
   const syncMenu = () => {
-    const items = ['pages', 'new', 'open', 'import', 'merge', 'changes', 'folder', 'live', 'connect', 'export', 'paste', 'library', 'picture', 'search', 'bookmarks', 'timeline', 'home', 'layout', 'plugins', 'diagram', 'symbols', 'layers', 'frames', 'rulers', 'hotkeys'];
+    const items = [...(hostedCfg ? ['account'] : []), 'pages', 'new', 'open', 'import', 'merge', 'changes', 'folder', 'live', 'connect', 'export', 'paste', 'library', 'picture', 'search', 'bookmarks', 'timeline', 'home', 'layout', 'plugins', 'diagram', 'symbols', 'layers', 'frames', 'rulers', 'hotkeys'];
     if (canFs && !document.fullscreenElement) items.push('fullscreen');
     if (isTry) items.push('tour');
     og_set_menu(items.join(','));
@@ -794,12 +798,15 @@ export async function start({ mode = 'app' } = {}) {
   }
   function netConnect(url) {
     netClose();
+    if (hosted && !hosted.mayConnect(url)) { og_net_closed(0, hosted.refusal); return; }
     let w;
     try { w = new WebSocket(url); } catch (e) { og_net_closed(0, String(e.message || e)); setTimeout(og_poke, 3200); return; }
     w.binaryType = 'arraybuffer';
     ws = w;
     w.onopen = () => og_net_open(0);
-    w.onmessage = e => og_net_recv(0, new Uint8Array(e.data));
+    // Text frames are a hosted room's own notes (who is here, storage
+    // full, access changed); the app speaks binary.
+    w.onmessage = e => typeof e.data === 'string' ? hosted?.control(e.data) : og_net_recv(0, new Uint8Array(e.data));
     w.onclose = e => {
       if (ws !== w) return;
       ws = null;
@@ -1582,6 +1589,13 @@ export async function start({ mode = 'app' } = {}) {
   }
   pushPages();
   loadPlugins();
+  if (hostedCfg) {
+    hosted = startHosted({
+      card, cards, show, say, status, el, esc, autosave, exporter: () => openExport(), isOpen: () => open,
+      app: { og_join, og_join_upload, og_view_token, og_set_name },
+    }, hostedCfg);
+    hosted.boot();
+  }
   // Opened from a server's page: add that server to Pages.
   if (!isTry && location.hash.startsWith('#server=')) {
     // #server=<link>[&acct=<user:token>] (opened from the server's page
@@ -1736,6 +1750,7 @@ export async function start({ mode = 'app' } = {}) {
       else if (r === 'new') newCanvas();
       else if (r === 'bookmarks') show('bookmarks');
       else if (r === 'export') openExport();
+      else if (r === 'account') hosted?.open();
       else if (r === 'library') { if (open !== 'library') { libLoad(); show('library'); } else show(null); }
       else if (r === 'sticker') stickerSave();
       else if (r === 'paste') pasteRequest();
