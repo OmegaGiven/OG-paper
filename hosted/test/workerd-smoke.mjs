@@ -41,17 +41,20 @@ const until = async (f, ms = 3000) => { const t = Date.now(); while (!f()) { if 
 let n = 0;
 const keys = () => { n++; return { canvas: (Date.now().toString(16) + n).padStart(32, '0').slice(-32), edit: 'e' + 'A'.repeat(39) + String(n).padStart(4, '0'), view: 'v' + 'B'.repeat(82) + String(n).padStart(4, '0') }; };
 
-const alice = await login('alice'), bob = await login('bob'), carol = await login('carol');
+// Fresh accounts each run (the dev server keeps its data between runs).
+const run = Date.now().toString(36).slice(-6);
+const [ALICE, BOB, CAROL] = ['alice', 'bob', 'carol'].map(n => `${n}_${run}`);
+const alice = await login(ALICE), bob = await login(BOB), carol = await login(CAROL);
 const me = await call(alice, 'GET', '/me');
 assert.equal(me.status, 200);
-assert.equal(me.body.user.id, 'alice');
+assert.equal(me.body.user.id, ALICE);
 console.log('me', me.body.used, '/', me.body.quota);
 
 const made = await call(alice, 'POST', '/pages', { name: 'Smoke', ...keys() });
 assert.equal(made.status, 201, JSON.stringify(made.body));
 const page = made.body.page.id;
-assert.equal((await call(alice, 'POST', `/pages/${page}/members`, { who: 'bob', role: 'editor' })).status, 200);
-assert.equal((await call(alice, 'POST', `/pages/${page}/members`, { who: 'carol', role: 'viewer' })).status, 200);
+assert.equal((await call(alice, 'POST', `/pages/${page}/members`, { who: BOB, role: 'editor' })).status, 200);
+assert.equal((await call(alice, 'POST', `/pages/${page}/members`, { who: CAROL, role: 'viewer' })).status, 200);
 
 // Two editors and a viewer, live.
 const A = new HostedClient({ peer: 'pa', dial: dialer(alice, page) });
@@ -88,7 +91,7 @@ raw.close();
 console.log('relay protocol: ok');
 
 // Revoke: bob is shown the door.
-assert.equal((await call(alice, 'DELETE', `/pages/${page}/members/bob`)).status, 200);
+assert.equal((await call(alice, 'DELETE', `/pages/${page}/members/${BOB}`)).status, 200);
 await until(() => B.notes.some(m => m.t === 'kicked'));
 const again = await dialer(bob, page)();
 assert.equal(again.status, 'refused');

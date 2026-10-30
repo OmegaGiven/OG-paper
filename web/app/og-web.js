@@ -1613,6 +1613,8 @@ export async function start({ mode = 'app' } = {}) {
     run: cmds => og_run(JSON.stringify(cmds)),
     results: () => { const r = og_last_run(); return r ? JSON.parse(r) : null; },
   };
+  // On a hosted site: open the My account panel.
+  if (hosted) window.ogPaper.account = () => hosted.open();
   if (isTry && !saved) {
     // First visit: open the tour once the canvas is up.
     setTimeout(() => { if (open === null) show('tour'); }, 600);
