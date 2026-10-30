@@ -138,6 +138,11 @@ More detail, including the relay for people who are never online at the
 same time and how the end-to-end encryption works, is in
 [`docs/SHARING.md`](docs/SHARING.md).
 
+A website with accounts (a Cloudflare Worker) can also host OG Paper for
+its users: pages kept in each account with a small quota, live rooms,
+sharing by name or link, copies and transfers. See
+[`docs/HOSTED.md`](docs/HOSTED.md) and [`hosted/`](hosted).
+
 ## What works today
 
 - **Brush:** a simple line (width, pressure, solid / dashed / dotted, opacity), or **Advanced**: a GIMP-style brush engine with 15 looks (pencil, charcoal, bristle brush, watercolor, airbrush, spray, calligraphy, sketchy, jagged, neon, chain, stitches, felt tip, rainbow, ink) and every setting behind them: 13 tip shapes, hardness, spacing, angle, roundness, pressure and speed dynamics, taper, fade, scatter, jitter, sketchy wobble, flow, paper grain, color jitter, hue cycle and fade-to color. Strokes stay vector and sharp at any zoom.

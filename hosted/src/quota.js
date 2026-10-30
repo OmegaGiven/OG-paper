@@ -37,40 +37,51 @@ export async function account(db, user, freeQuota, now = Date.now()) {
 }
 
 /**
- * A room's lease on its owner's quota (the lease itself is kept in the
- * room's storage, so a room that is evicted gives it back when it wakes).
+ * A room's lease on its owner's quota. The lease is written to the room's
+ * storage only when quota is taken or handed back (not on every change, to
+ * keep row writes down); a room evicted mid-lease hands back what was last
+ * written, so the account can come out under by at most one chunk until an
+ * admin recount.
  */
 export class Lease {
   constructor(db, chunk, load, store) {
     this.db = db;
     this.chunk = chunk;
-    this.load = load;   // () => { owner, lease }
+    this.load = load;   // () => { owner, lease }   (as stored)
     this.store = store; // (owner, lease) => void
+    this.left = null;   // unspent, in memory
+  }
+
+  now() {
+    const s = this.load();
+    if (this.left == null) this.left = s.lease;
+    return { owner: s.owner, lease: this.left };
   }
 
   /** Spend `n` bytes: false when the owner's account is full. */
   async spend(n) {
-    const { owner, lease } = this.load();
+    const { owner, lease } = this.now();
     if (!owner) return false;
-    if (lease >= n) { this.store(owner, lease - n); return true; }
+    if (lease >= n) { this.left = lease - n; return true; }
     const short = n - lease;
     // A chunk ahead if there is room for it, else just what this needs.
     const ahead = Math.max(short, this.chunk);
-    if (ahead > short && await take(this.db, owner, ahead)) { this.store(owner, lease + ahead - n); return true; }
-    if (await take(this.db, owner, short)) { this.store(owner, 0); return true; }
+    if (ahead > short && await take(this.db, owner, ahead)) { this.left = lease + ahead - n; this.store(owner, this.left); return true; }
+    if (await take(this.db, owner, short)) { this.left = 0; this.store(owner, 0); return true; }
     return false;
   }
 
   /** Bytes no longer kept: back to the account. */
   async free(n) {
-    const { owner } = this.load();
+    const { owner } = this.now();
     if (owner) await give(this.db, owner, n);
   }
 
   /** Hand back what was taken ahead and not spent. */
   async release() {
-    const { owner, lease } = this.load();
+    const { owner, lease } = this.now();
     if (owner && lease > 0) await give(this.db, owner, lease);
+    this.left = 0;
     this.store(owner, 0);
   }
 }

@@ -283,8 +283,7 @@ export class PaperRoom {
     if (store === 'r2') await this.env.PAPER_BUCKET.put(this.r2Key(seq), body);
     for (const r of covered) if (r.store === 'r2' && this.env.PAPER_BUCKET) await this.env.PAPER_BUCKET.delete(this.r2Key(r.seq));
     if (net < 0) await this.lease.free(-net);
-    this.setMeta('dirty', '1');
-    await this.alarmIn(SYNC_MS, false);
+    if (!this.dirty) { this.dirty = true; this.setMeta('dirty', '1'); await this.alarmIn(SYNC_MS, false); }
     // Pass it on (full copies too: they may hold what others missed).
     for (const o of this.sockets()) {
       const oa = this.att(o);
@@ -384,15 +383,18 @@ export class PaperRoom {
     if (this.meta('dirty') !== '1') return;
     await this.env.DB.prepare('UPDATE paper_pages SET bytes = ?1, updated_at = ?2 WHERE id = ?3').bind(this.bytes(), Date.now(), page).run();
     this.setMeta('dirty', '0');
+    this.dirty = false;
   }
 
   /** Before the page changes billing owner: settle up with the old one. */
   async flush(body) {
     await this.queue;
     this.setMeta('dirty', '1');
+    this.dirty = true;
     await this.syncPage();
     await this.lease.release();
     if (body.owner) this.setMeta('owner', String(body.owner));
+    this.lease.left = null;
     return json({ bytes: this.bytes() });
   }
 

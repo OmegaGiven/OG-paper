@@ -28,6 +28,16 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --release -p ogpaper-core -p ogpaper-file -p og-paper
 
+  hosted:
+    name: Hosted backend (Node)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: cd hosted && node --test test/*.test.js
+
   linux:
     name: Linux x86_64
     runs-on: ubuntu-latest

@@ -36,8 +36,8 @@ export const DEFAULTS = {
   /** Tiles one socket may subscribe to. */
   maxSubs: 512,
   /** Per socket: frames per second (sustained) and burst. */
-  frameRate: 30,
-  frameBurst: 120,
+  frameRate: 60,
+  frameBurst: 240,
   /** Per socket: bytes per second (sustained) and burst. */
   byteRate: 512 * 1024,
   byteBurst: 4 * MB,
