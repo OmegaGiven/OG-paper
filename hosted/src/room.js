@@ -124,6 +124,8 @@ export class PaperRoom {
     }
     if (!EDIT.has(a.role)) return this.send(ws, { t: 'denied', msg: 'You can only view this page' });
     const ckpt = f.tag === TAG.CKPT || f.tag === TAG.TCKP;
+    // A copy that sees only some tiles cannot stand for the whole page.
+    if (f.tag === TAG.CKPT && a.subs) return this.send(ws, { t: 'denied', msg: 'A full copy needs the whole page: subscribe to everything first' });
     const cap = ckpt ? this.cfg.maxCheckpointBytes : this.cfg.maxOpBytes;
     if (f.body.length > cap) return this.send(ws, { t: 'error', msg: `That change is too big to keep (${f.body.length} bytes, the most is ${cap})` });
     const body = f.body.slice();

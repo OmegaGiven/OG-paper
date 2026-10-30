@@ -1299,6 +1299,9 @@ impl App {
         } else {
             "Back online: synced"
         });
+        // A page made to copy into (see `join_upload`): fill it now.
+        let canvas = self.share.canvas;
+        self.upload_arrived(canvas);
         if let Some(m) = self.my_presence() {
             self.send(0, &m);
         }

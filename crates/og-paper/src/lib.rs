@@ -1450,6 +1450,10 @@ impl App {
             Action::SaveSticker => self.save_sticker(),
             #[cfg(target_arch = "wasm32")]
             Action::Library => web::emit("library"),
+            #[cfg(target_arch = "wasm32")]
+            Action::AccountPanel => web::emit("account"),
+            #[cfg(not(target_arch = "wasm32"))]
+            Action::AccountPanel => {}
             #[cfg(not(target_arch = "wasm32"))]
             Action::Library => {
                 self.ui.lib_open = !self.ui.lib_open;
@@ -3138,6 +3142,7 @@ impl App {
             Cmd::Folder(on) => self.ui.folder_on = on,
             Cmd::Net(e) => self.net_event(e),
             Cmd::Join(link) => self.join(&link),
+            Cmd::JoinUpload(link) => self.join_upload(&link),
             Cmd::RtcHost(e) => self.host_start_rtc(e),
             Cmd::Pages(json) => self.web_pages(&json),
             Cmd::Plugin(bytes, quiet) => self.plugin_install(bytes, quiet),

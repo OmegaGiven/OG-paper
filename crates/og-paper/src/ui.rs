@@ -387,6 +387,9 @@ pub enum AppItem {
     Folder,
     Live,
     Pages,
+    /// Pages kept in the signed-in account (a hosted site, e.g.
+    /// omegagiven.com/paper): the page's own panel.
+    Account,
     /// Connect to a server (opens Pages on it).
     Connect,
     LayoutMenu,
@@ -412,6 +415,7 @@ const APP_SECTIONS: [(&str, &[AppItem]); 5] = [
             AppItem::Open,
             AppItem::Save,
             AppItem::Pages,
+            AppItem::Account,
             AppItem::Export,
         ],
     ),
@@ -513,6 +517,7 @@ impl AppItem {
             AppItem::Folder => "Sync folder",
             AppItem::Live => "Share live",
             AppItem::Pages => "Pages",
+            AppItem::Account => "My account",
             AppItem::Connect => "Connect to server",
             AppItem::LayoutMenu => "UI settings",
             AppItem::Plugins => "Plugins",
@@ -553,6 +558,7 @@ impl AppItem {
             AppItem::Folder => Action::SyncFolder,
             AppItem::Live => Action::LivePanel,
             AppItem::Pages => Action::PagesPanel,
+            AppItem::Account => Action::AccountPanel,
             AppItem::Connect => Action::ConnectPanel,
             AppItem::LayoutMenu => Action::LayoutMenu,
             AppItem::Plugins => Action::PluginsPanel,
@@ -1507,6 +1513,8 @@ pub enum Action {
     SaveSticker,
     /// Open the library.
     Library,
+    /// The signed-in account's pages (the web page's panel).
+    AccountPanel,
     /// Library (desktop): place sticker i, delete it.
     LibPlace(usize),
     LibDelete(usize),
@@ -6482,6 +6490,23 @@ fn app_icon(
             ]);
             line(&[vec2(-0.5, -0.25), vec2(0.2, -0.25)]);
             line(&[vec2(-0.5, 0.15), vec2(0.2, 0.15)]);
+        }
+        AppItem::Account => {
+            // A person beside a page.
+            p.circle_stroke(c + vec2(-0.45, -0.45) * s, 0.28 * s, st);
+            line(&[
+                vec2(-0.95, 0.6),
+                vec2(-0.85, 0.05),
+                vec2(-0.05, 0.05),
+                vec2(0.05, 0.6),
+            ]);
+            line(&[
+                vec2(0.3, -0.9),
+                vec2(0.95, -0.9),
+                vec2(0.95, 0.9),
+                vec2(0.3, 0.9),
+                vec2(0.3, -0.9),
+            ]);
         }
         AppItem::Connect => {
             // A plug going into a socket.

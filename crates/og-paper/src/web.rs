@@ -56,6 +56,8 @@ pub enum Cmd {
     Net(crate::net::Ev),
     /// Join a shared canvas by its link (from the page address).
     Join(String),
+    /// Join a page by its link and copy the open canvas into it.
+    JoinUpload(String),
     /// Host in the browser (WebRTC) with these edit and view keys.
     RtcHost(String),
     /// Share through the relay in Share live with this new edit key.
@@ -455,6 +457,7 @@ pub fn og_set_menu(items: &str) {
                 "folder" => AppItem::Folder,
                 "live" => AppItem::Live,
                 "pages" => AppItem::Pages,
+                "account" => AppItem::Account,
                 "connect" => AppItem::Connect,
                 "plugins" => AppItem::Plugins,
                 "dark" => AppItem::Dark,
@@ -785,6 +788,13 @@ pub fn og_net_closed(conn: u32, why: String) {
 #[wasm_bindgen]
 pub fn og_join(link: String) {
     push(Cmd::Join(link));
+}
+
+/// Join a page (a hosted site's link to a new page of the account) and
+/// copy the open canvas into it: "Make a copy", "Keep in my account".
+#[wasm_bindgen]
+pub fn og_join_upload(link: String) {
+    push(Cmd::JoinUpload(link));
 }
 
 /// Wake the app (lets a lost connection retry on time).

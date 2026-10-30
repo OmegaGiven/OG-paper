@@ -618,6 +618,32 @@ impl App {
         self.workspace_change(i, "new_page", None, &name, folder);
     }
 
+    /// Join a page by its link and bring the open canvas's ink and objects
+    /// into it once joined: a hosted site's "Make a copy" and "Keep in my
+    /// account" (the site made the page and its link; the room cannot read
+    /// pages, so the content goes up from here).
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    pub(crate) fn join_upload(&mut self, link: &str) {
+        let Some(canvas) = crate::net::parse_link(link).and_then(|l| l.canvas) else {
+            self.say("That page link names no canvas");
+            return;
+        };
+        let bytes = crate::snapshot::encode(
+            &self.scene,
+            &self.cam,
+            &self.timeline,
+            &self.bookmarks,
+            &self.objs,
+            &self.share.copy_log(),
+        );
+        self.upload = Some(Upload {
+            server: usize::MAX,
+            bytes,
+            canvas,
+        });
+        self.join(link);
+    }
+
     /// After joining a page: if it is the one an upload made, bring the
     /// uploaded page's content in.
     pub(crate) fn upload_arrived(&mut self, canvas: u128) {
@@ -634,7 +660,11 @@ impl App {
                 self.import_begin(s.scene, s.objs, "that page");
                 self.import_finish(true);
                 self.cam = s.cam;
-                self.say("Uploaded: it's in the workspace now");
+                self.say(if up.server == usize::MAX {
+                    "Copied: it's in your account now"
+                } else {
+                    "Uploaded: it's in the workspace now"
+                });
             }
             Err(e) => self.say(format!("Could not upload it: {e}")),
         }
