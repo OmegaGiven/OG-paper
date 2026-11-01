@@ -411,6 +411,25 @@ account, never a field of the message):
    deployment of it.
 7. Update the OmegaEnv tile and the site's links ("OG Paper" → `/paper/`).
 
+### Turning chat on at omegagiven.com (og-paper #179)
+
+Nothing new to set up: the room makes its `chat` table in its own storage
+the first time it wakes, so there is **no D1 migration, no Durable Object
+migration and no new binding**, and the CSP already allows the socket
+(`connect-src 'self'`).
+
+1. Bump both submodules: `vendor/og-paper` to og-paper `main` (ea04628 or
+   later; the rooms and API) and `public/paper` to `web-dist` (6e9fa66 or
+   later; the app). Either alone is safe: an old app ignores the chat
+   frames, and a new app shows no chat until the rooms offer it.
+2. Optional vars: `PAPER_CHAT=off` (no chat anywhere), `PAPER_CHAT_KEEP=on`
+   (pages keep chat history by default).
+3. `npm run deploy`, then try it with two accounts on one page.
+4. Privacy policy: mention chat messages (kept with the page only if its
+   owner turns on history, else gone once everyone leaves; deleted with the
+   page). The future "export all / delete account" (LAUNCH-AUDIT M1) should
+   include `GET /pages/:id/chat` for each page.
+
 ## Cloudflare limits and costs
 
 Numbers from Cloudflare's pricing pages (October 2026).
