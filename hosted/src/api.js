@@ -166,6 +166,8 @@ export function createApi({ auth, config = {}, roomBinding = 'PAPER_ROOMS', onRe
             out.members = members.map(x => ({ id: x.user_id, name: who[x.user_id] || null, role: x.role, viaLink: x.via_link || null, billing: x.user_id === p.owner_id }));
             out.links = (await db.prepare('SELECT id, role, created_at FROM paper_links WHERE page_id = ?1 ORDER BY created_at').bind(p.id).all()).results
               .map(l => ({ id: l.id, role: l.role, created: l.created_at }));
+            // The page's chat settings (owners change them: PATCH /pages/:id/chat).
+            if (cfg.chat) out.chat = await (await roomCall(p.id, 'chat-get', {}, { 'x-paper-owner': p.owner_id })).json();
           }
           return json(out);
         }

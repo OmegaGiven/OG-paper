@@ -9,6 +9,8 @@
 // (and optionally og-paper-signin: where to send people to sign in, with
 // {next} for the way back; og-paper-upgrade: where to buy more storage).
 
+import { startChat } from './og-chat.js';
+
 /**
  * Where pages are kept. Both kinds answer the same calls:
  *   kind                       'local' | 'hosted'
@@ -94,6 +96,7 @@ export class HostedProvider {
   unlink(page, id) { return this.call('DELETE', `/pages/${page.id}/links/${id}`); }
   transfer(page, who, leave) { return this.call('POST', `/pages/${page.id}/transfer`, { who, leave }); }
   report(page, reason) { return this.call('POST', `/pages/${page.id}/report`, { reason }); }
+  chatSettings(page, set) { return this.call('PATCH', `/pages/${page.id}/chat`, set); }
   accept(token) { return this.call('POST', `/links/${token}`); }
   peek(token) { return this.call('GET', `/links/${token}`); }
 }
@@ -237,6 +240,14 @@ export function startHosted(ui, cfg) {
 
   const currentPage = () => pageOfCanvas(ui.status().canvas);
 
+  // Chat with the people on the open page (when the room offers it).
+  const chat = startChat(ui, {
+    me: () => state.me?.user || null,
+    page: () => (state.role ? currentPage() : null),
+    call: (method, path, body) => hp.call(method, path, body),
+    removePerson: uid => hp.unshare({ id: currentPage() }, uid),
+  });
+
   async function refresh() {
     try {
       state.me = await hp.me();
@@ -333,6 +344,11 @@ export function startHosted(ui, cfg) {
         <ul class="og-list">${(info.links || []).map(k => `<li data-link="${k.id}"><span class="go">${k.role === 'editor' ? 'Can edit' : 'Can view'}<small>made ${ago(k.created)}</small></span><button class="mini" data-act="unlink">Turn off</button></li>`).join('') || '<li class="og-empty">No links.</li>'}</ul>
         <div class="og-row"><button class="og-btn" data-act="link-view">New view link</button><button class="og-btn" data-act="link-edit">New edit link</button></div>
         <div class="og-row" hidden data-newlink><input readonly><button class="og-btn primary" data-act="copylink">Copy</button></div>` : ''}` : ''}
+      ${owner && info.chat ? `
+        <div class="og-shared-head">Chat</div>
+        <label class="og-check"><input type="checkbox" data-chat="on"${info.chat.on ? ' checked' : ''}> Chat for the people on this page</label>
+        <label class="og-check"><input type="checkbox" data-chat="keep"${info.chat.keep ? ' checked' : ''}${info.chat.on ? '' : ' disabled'}> Keep chat history (the last ${info.chat.history} messages)</label>
+        <p><small>${info.chat.keep ? 'Messages stay with the page until deleted.' : 'Messages go once everyone has left the page.'}</small></p>` : ''}
       <div class="og-row" style="flex-wrap:wrap">
         <button class="og-btn" data-act="copy">Make a copy</button>
         ${info.role !== 'viewer' ? '<button class="og-btn" data-act="rename">Rename</button>' : ''}
@@ -342,6 +358,13 @@ export function startHosted(ui, cfg) {
     d.append(wrap);
     const q = s => wrap.querySelector(s);
     const on = (s, f) => { const b = q(s); if (b) b.onclick = () => guard(f); };
+    for (const box of wrap.querySelectorAll('[data-chat]')) {
+      box.onchange = () => guard(async () => {
+        const r = await hp.chatSettings(page, { [box.dataset.chat]: box.checked });
+        say(r.on ? (r.keep ? 'Chat is on; its history is kept' : 'Chat is on; it goes once everyone leaves') : 'Chat is off on this page');
+        details(page);
+      });
+    }
     on('[data-act=add]', async () => {
       const who = q('[data-who]').value.trim();
       if (!who) return;
@@ -408,7 +431,8 @@ export function startHosted(ui, cfg) {
       await hp.report(page, reason);
       say('Reported. Thank you.');
     });
-    ui.show('page');
+    // Shown again after a change: keep it open (show() toggles).
+    if (ui.isOpen() !== 'page') ui.show('page');
   }
 
   async function guard(f) {
@@ -496,6 +520,7 @@ export function startHosted(ui, cfg) {
     control(text) {
       let m;
       try { m = JSON.parse(text); } catch (e) { return; }
+      if (chat.control(m) && m.t !== 'welcome') return;
       if (m.t === 'welcome') {
         // A fresh connection: the app now sends whatever the room lacks.
         state.role = m.role; closedFor = null;
@@ -506,7 +531,7 @@ export function startHosted(ui, cfg) {
       else if (m.t === 'peers') { state.peers = m.list; if (ui.isOpen() === 'account') render(); }
       else if (m.t === 'full') { cloud.kept++; cloud.dropped = true; showFull(m.msg, m); }
       else if (m.t === 'denied' || m.t === 'error') { if (m.drop) { cloud.kept++; if (m.t === 'error') cloud.dropped = true; } say(m.msg); }
-      else if (m.t === 'kicked') { closedFor = m.msg; say(m.msg); refresh(); }
+      else if (m.t === 'kicked') { closedFor = m.msg; say(m.msg); chat.reset(); refresh(); }
     },
     /** Whether to dial a room again (not after being shown the door). */
     mayConnect(url) {
@@ -517,7 +542,8 @@ export function startHosted(ui, cfg) {
     /** The live socket opened or closed (url: where to). */
     conn(open, url = '') {
       cloud.open = open && url.includes(cfg.api);
-      if (!open) cloud.live = false;
+      if (!open) { cloud.live = false; chat.disconnected(); }
+      else if (!cloud.open) chat.reset();
     },
     /** A frame went out on the live socket. */
     sent(frame) {
@@ -525,6 +551,8 @@ export function startHosted(ui, cfg) {
       const tag = String.fromCharCode(frame[0], frame[1], frame[2], frame[3]);
       if (tag === 'PUT ' || tag === 'CKPT') cloud.sent++;
     },
+    /** The chat panel (tests: state, open). */
+    chat,
     /** saved | saving | unsaved | local (not an account page) | empty */
     cloudState,
     /** Whether closing the tab now would leave work out of the account. */

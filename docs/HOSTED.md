@@ -82,6 +82,7 @@ are.
 | room | `{t:'denied', msg}`: not allowed (a viewer writing) |
 | room | `{t:'kicked', msg}`: access changed; the socket closes (4003) |
 | room | `{t:'compact'}`: please send a checkpoint |
+| both | chat: `chat`, `chat-del`, `chat-react`, `typing` and the room's answers, see [Chat](#chat) |
 
 ### Infinite zoom and big pages: tiles and resume
 
@@ -266,6 +267,8 @@ status.
 | `GET/POST /links/:token` | what a link opens / open it (adds me) |
 | `POST /pages/:id/transfer {who, leave}` | give away (billing owner) |
 | `POST /pages/:id/report {reason}` | report |
+| `GET /pages/:id/chat` | the chat's settings and kept messages (data export; members, or owners only while chat is off) |
+| `PATCH /pages/:id/chat {on, keep}` / `DELETE /pages/:id/chat` | chat on/off, kept or ephemeral / clear it (owners) |
 | `/admin/reports`, `/admin/reports/:id`, `/admin/pages/:id` (GET, DELETE), `/admin/pages/:id/block`, `/admin/accounts/:uid`, `/admin/accounts/:uid/recount` | admin |
 
 ## The web app
@@ -289,6 +292,77 @@ offers Sign in and everything else is as before. Pages opened from the
 account keep a copy in the browser and reopen offline; changes go up on
 reconnect. The app's own Pages panel lists those copies under "On this
 device".
+
+## Chat
+
+People on the same page can talk while they draw. It rides the page's
+live socket (the room's text frames), so it has the room's permissions:
+only people who can open the page can read or write, and a person removed
+from the page is disconnected and loses the chat with it.
+
+**In the web app** (`web/app/og-chat.js`): a round chat button (bottom
+right, above the pen) appears once two or more people are on the page (or
+there is kept history, or unread messages), with an unread badge (red when
+someone @mentioned you). It opens a side panel (a bottom sheet on phones)
+with who is here (tap someone: go to where they are on the page, mention
+them, or for owners remove them from the page), who is typing, the
+messages with name and time, quick reactions (👍 ❤️ 😂 🎉 👀 ✅), deleting
+your own messages, `@` completion of the people on the page, and a "go to
+them" link on messages from people still here (`og_go_to_peer(name)` in
+the app flies to their view). Owners also get, in the panel's ⋯ menu and in
+the page's Share card: Chat on this page, Keep chat history, Clear chat.
+Everyone gets Download chat (a text file).
+
+**Settings (owners and co-owners only):**
+
+- **On by default.** Pages are only ever shared with chosen people (no
+  public pages, links need an account), so chat adds no new audience; it
+  only shows when someone else is actually there; and it is what people
+  drawing together reach for. An owner who doesn't want it turns it off
+  per page, and a site turns it off everywhere with `PAPER_CHAT=off`.
+- **Ephemeral by default** (messages go once everyone has left the page).
+  The point is talking while drawing together; nothing is kept that the
+  owner didn't ask for (less to export, back up or moderate, and no D1 or
+  quota cost). "Keep chat history" keeps the last 500 messages with the
+  page (`PAPER_CHAT_KEEP=on` makes that the site's default).
+- **Off:** no chat UI for anyone, and the room refuses chat messages
+  (`chat-error`). Kept messages stay and come back if it is turned on again.
+
+**Protocol** (text frames, JSON; who sent it is the socket's checked
+account, never a field of the message):
+
+| From | Message |
+| --- | --- |
+| room | `welcome.chat`: `{on, keep, max, history, reactions}`, or `null` when the site has no chat (an older room sends nothing; the page then shows no chat) |
+| room | `{t:'chat-history', list}`: on joining, when chat is on |
+| app | `{t:'chat', text, ref}` → everyone: `{t:'chat', msg:{id, user, name, text, at, reacts}}` (the sender's copy carries its `ref`) |
+| app | `{t:'chat-del', id}`: own messages; owners may delete anyone's → `{t:'chat-del', id}` |
+| app | `{t:'chat-react', id, emoji}`: toggles; only the six listed → `{t:'chat-react', id, reacts:{emoji:[{user,name}]}}` |
+| app | `{t:'typing', on}` → the others: `{t:'typing', user, name, on}` |
+| room | `{t:'chat-settings', on, keep, …}` / `{t:'chat-clear'}`: an owner changed or cleared it |
+| room | `{t:'chat-error', msg, ref}`: refused (off, too long, too fast, not yours, no account) |
+
+**Safety** (applies docs/LAUNCH-AUDIT.md):
+
+- Messages are plain text. The room strips C0/C1 control characters (but
+  tab and newline), zero-width spaces, BOMs and the bidi overrides/isolates
+  (U+202A-202E, U+2066-2069) that can make text read differently than it
+  is, collapses blank lines, and caps a message at 1000 characters
+  (counted as characters, so emoji count as one). `<`, `>` and `&` are kept
+  as text: the app builds every message with text nodes, never `innerHTML`,
+  and makes links only of `http(s)` addresses (`<a target=_blank
+  rel="noopener noreferrer nofollow ugc">`). A downloaded chat is a `.txt`.
+- Rate limits per account (across all its sockets in the room): messages
+  0.5/s with a burst of 8; reactions and deletes 2/s, burst 16; typing
+  notes 1/s. Chat frames also count against the socket's frame limit.
+- Visitors on an anonymous view link (off by default) can read along but
+  not chat. Viewers can chat.
+- Reactions are a fixed list; anything else is ignored.
+- History: at most `chatHistory` (500) messages per page, in the room's
+  own storage (a `chat` table: no D1 change, no Durable Object migration),
+  deleted with the page (the room's storage goes) and exported with
+  `GET /pages/:id/chat`. Chat does not count toward the storage quota
+  (500 × 1000 characters is under 2 MB at most, typically tens of KB).
 
 ## Integration steps for omegagiven.com
 
@@ -398,6 +472,15 @@ checkpoint to R2.
     bytes or are refused; frame size caps and floods; admin quotas.
 - `test/workerd-smoke.mjs`: the same flows against `wrangler dev` (real
   workerd, Durable Objects, D1, WebSockets).
+- `test/chat.test.js` / `chat-render.test.js`: chat (identity from the
+  session, no access no chat, owners' settings, ephemeral vs kept and the
+  500 cap, deleted with the page, moderation, reactions, typing, limits,
+  text cleaning, site switch, anonymous visitors) and how the app shows
+  messages (HTML stays text, only http(s) links, mentions).
+- `test/chat-e2e.mjs`: chat in two browsers (desktop + phone) against
+  `wrangler dev`. `test/run-browser-e2e.sh` builds the web app, starts
+  `wrangler dev` and runs both browser tests (`forge run
+  hosted/test/run-browser-e2e.sh`; `SHOTS=dir` keeps screenshots).
 - `test/browser-e2e.mjs`: the real web app (Rust in Chromium, Playwright)
   against `wrangler dev`: account panel on sign-in, new page, sharing,
   Shared with me, live edits both ways, Make a copy, reopening after a
@@ -405,6 +488,9 @@ checkpoint to R2.
 
 ## Decisions for the site owner
 
+- **Chat:** on by default per page, ephemeral (see [Chat](#chat)).
+  `PAPER_CHAT=off` removes it site-wide; `PAPER_CHAT_KEEP=on` keeps history
+  by default.
 - **Free quota:** 25 MB proposed (`PAPER_FREE_QUOTA`). 10 MB is enough for
   handwriting-only use; 50-100 MB if photos matter.
 - **Link sharing:** on by default, links need a signed-in account. Options:

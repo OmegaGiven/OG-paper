@@ -134,6 +134,7 @@ const CSS = `
   font: 600 13px/1.2 system-ui, sans-serif; box-shadow: 0 1px 3px rgba(0,0,0,.15); max-width: calc(100vw - 140px); }
 .og-cloud.warn { background: #fff4e0; border-color: #e0a040; color: #7a4a00; }
 .og-cloud[hidden] { display: none; }
+.og-check { display: flex; gap: 8px; align-items: center; font-size: 13px; margin: 6px 0; color: var(--ink); }
 @media (max-width: 520px) { .og-tl .dual { flex-basis: 60px; } .og-tl .restore, .og-tl .mark { padding: 6px 8px; } .og-tl { right: calc(84px + env(safe-area-inset-right)); bottom: calc(86px + env(safe-area-inset-bottom)); } }
 `;
 
@@ -1627,6 +1628,7 @@ export async function start({ mode = 'app' } = {}) {
   if (hosted) {
     window.ogPaper.account = () => hosted.open();
     window.ogPaper.cloud = () => hosted.cloudState();
+    window.ogPaper.chat = () => hosted.chat.state;
     // Closing the tab with work not in the account: the browser asks first.
     addEventListener('beforeunload', e => { if (hosted.warnOnClose()) { e.preventDefault(); e.returnValue = ''; } });
   }

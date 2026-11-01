@@ -104,6 +104,7 @@ export class PaperRoom {
       case '/chat-settings': return json(this.chat.set(await req.json().catch(() => ({}))));
       case '/chat-clear': return json(this.chat.clear());
       case '/chat-export': return json(this.chat.export());
+      case '/chat-get': return json(this.chat.welcome());
       case '/stats': return json({ chat: this.chat.count(),  bytes: this.bytes(), frames: this.frameCount(), sockets: this.sockets().length, lease: Number(this.meta('lease') || 0), head: this.head() });
       default: return json({ error: 'not found' }, 404);
     }

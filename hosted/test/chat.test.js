@@ -242,3 +242,10 @@ test('anonymous link visitors read along but cannot chat', async () => {
   assert.deepEqual(errs(anon), ['Sign in to chat']);
   assert.ok(!said(a).includes('hi from nowhere'));
 });
+
+test('owners see the chat settings with the page; others do not', async () => {
+  const s = site();
+  const page = await shared(s);
+  assert.deepEqual((({ on, keep, max, history }) => ({ on, keep, max, history }))((await s.call(1, 'GET', `/pages/${page}`)).body.chat), { on: true, keep: false, max: 1000, history: 500 });
+  assert.equal((await s.call(2, 'GET', `/pages/${page}`)).body.chat, undefined);
+});
