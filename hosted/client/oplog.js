@@ -195,6 +195,10 @@ export class HostedClient {
   /** A view or a stroke in progress (passed on, never kept). */
   ephemeral(obj) { return this.ws?.send(withTag(TAG.EPH, enc.encode(JSON.stringify({ kind: 'eph', ...obj })))); }
 
+  /** A note to the room itself (chat, typing: see HOSTED.md "Chat"). */
+  control(obj) { return this.ws?.send(JSON.stringify(obj)); }
+  say(text, ref) { return this.control({ t: 'chat', text, ref }); }
+
   shown() { return this.log.visible(); }
 }
 

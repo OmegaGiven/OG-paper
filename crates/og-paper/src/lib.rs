@@ -3164,6 +3164,7 @@ impl App {
                     self.ui.file_name = name;
                 }
             }
+            Cmd::GoToPeerNamed(name) => self.go_to_peer_named(&name),
             Cmd::Run(json) => {
                 if let Ok(v) = serde_json::from_str::<serde_json::Value>(&json) {
                     let r = self.run_commands(&v);

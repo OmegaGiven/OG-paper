@@ -220,6 +220,25 @@ impl App {
         });
     }
 
+    /// Fly to the view of the person with this name (names come from the
+    /// account on a hosted page, so the chat can point at someone).
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    pub(crate) fn go_to_peer_named(&mut self, name: &str) {
+        let want = name.trim().to_lowercase();
+        let found = self
+            .peers
+            .values()
+            .find(|p| p.name.trim().to_lowercase() == want)
+            .map(|p| p.peer);
+        match found {
+            Some(peer) => self.go_to_peer(peer, false),
+            None => self.say(format!(
+                "{} isn't showing where they are yet",
+                crate::net::display_name(name)
+            )),
+        }
+    }
+
     /// Others' strokes in progress, and a marker for each person: at their
     /// view's centre when it is on screen, else at the screen edge pointing
     /// toward it.

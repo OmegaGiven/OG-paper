@@ -72,6 +72,9 @@ pub enum Cmd {
     Run(String),
     /// The open page's name (from the page's list).
     Name(String),
+    /// Fly to the view of the person with this name (hosted chat: "jump to
+    /// them").
+    GoToPeerNamed(String),
     /// A recording the page made (sound file, length ms), or why it ended
     /// without one.
     AudioRecorded(Vec<u8>, u32),
@@ -704,6 +707,14 @@ pub fn og_add_server(link: String, account: String) {
 #[wasm_bindgen]
 pub fn og_set_name(name: String) {
     push(Cmd::Name(name));
+}
+
+/// Fly to the view of the person on the live page with this name (the
+/// hosted chat's "jump to them"). Says so when nobody by that name is
+/// showing a view.
+#[wasm_bindgen]
+pub fn og_go_to_peer(name: String) {
+    push(Cmd::GoToPeerNamed(name));
 }
 
 /// Install a pack (`.ogpack`).

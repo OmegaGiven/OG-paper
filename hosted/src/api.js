@@ -131,7 +131,7 @@ export function createApi({ auth, config = {}, roomBinding = 'PAPER_ROOMS', onRe
       // ---- the signed-in account ------------------------------------------------
       if (path === '/me' && req.method === 'GET') {
         if (!user) return json({ user: null, linkSharing: cfg.linkSharing });
-        return json({ user: { id: user.id, name: user.name || null }, admin: isAdmin, ...(await usage()), maxOpBytes: cfg.maxOpBytes, linkSharing: cfg.linkSharing, upgrade: cfg.upgradeUrl || null });
+        return json({ user: { id: user.id, name: user.name || null }, admin: isAdmin, ...(await usage()), maxOpBytes: cfg.maxOpBytes, linkSharing: cfg.linkSharing, chat: !!cfg.chat, upgrade: cfg.upgradeUrl || null });
       }
 
       // ---- page lists -------------------------------------------------------------
@@ -216,6 +216,34 @@ export function createApi({ auth, config = {}, roomBinding = 'PAPER_ROOMS', onRe
         const p = await page(l.page_id);
         if (p.blocked) fail(451, 'This page was taken down');
         return enter(p, 'viewer', { id: 'anon:' + ip, name: 'Visitor' }, l.id);
+      }
+
+      // ---- chat (the messages themselves travel on the live socket) -------------
+      if ((m = path.match(/^\/pages\/([0-9a-f]{32})\/chat$/))) {
+        need();
+        if (!cfg.chat) fail(404, 'Chat is off on this site');
+        if (req.method === 'GET') {
+          // Data export: everyone on the page may take what was said (while
+          // chat is on; owners always).
+          const { p, role } = await access(m[1]);
+          const r = await (await roomCall(p.id, 'chat-export', {}, { 'x-paper-owner': p.owner_id })).json();
+          if (!r.settings.on && role !== 'owner') fail(403, 'Chat is off on this page');
+          return json({ page: { id: p.id, name: p.name }, exported: Date.now(), ...r });
+        }
+        if (req.method === 'PATCH') {
+          // Owners (and co-owners) only: on/off, kept or ephemeral.
+          const { p } = await access(m[1], 'owner');
+          const b = await body();
+          const set = {};
+          if (typeof b.on === 'boolean') set.on = b.on;
+          if (typeof b.keep === 'boolean') set.keep = b.keep;
+          if (!Object.keys(set).length) fail(400, 'Say on and/or keep (true or false)');
+          return json(await (await roomCall(p.id, 'chat-settings', set, { 'x-paper-owner': p.owner_id })).json());
+        }
+        if (req.method === 'DELETE') {
+          const { p } = await access(m[1], 'owner');
+          return json(await (await roomCall(p.id, 'chat-clear', {}, { 'x-paper-owner': p.owner_id })).json());
+        }
       }
 
       // ---- sharing ------------------------------------------------------------------

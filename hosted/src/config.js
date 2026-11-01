@@ -51,6 +51,19 @@ export const DEFAULTS = {
   maxReason: 2000,
   /** Kept frames above this size go to R2 (when bound) or are split. */
   chunkBytes: 1 * MB,
+  /** Chat between the people on a page, at all (PAPER_CHAT=off: none). */
+  chat: true,
+  /** A page's chat until its owners choose: on, and ephemeral (gone once
+   * everyone has left). See HOSTED.md "Chat" for why. */
+  chatDefaultOn: true,
+  chatDefaultKeep: false,
+  /** Characters in one message. */
+  chatMaxChars: 1000,
+  /** Messages a page keeps (older ones go). */
+  chatHistory: 500,
+  /** Per account: messages per second (sustained) and burst. */
+  chatRate: 0.5,
+  chatBurst: 8,
 };
 
 export function configFrom(env = {}, over = {}) {
@@ -61,6 +74,8 @@ export function configFrom(env = {}, over = {}) {
   num('maxOpBytes', env.PAPER_MAX_OP);
   if (env.PAPER_UPGRADE_URL) c.upgradeUrl = String(env.PAPER_UPGRADE_URL);
   if (env.PAPER_LINK_SHARING != null) c.linkSharing = !/^(0|off|false|no)$/i.test(String(env.PAPER_LINK_SHARING));
+  if (env.PAPER_CHAT != null) c.chat = !/^(0|off|false|no)$/i.test(String(env.PAPER_CHAT));
+  if (env.PAPER_CHAT_KEEP != null) c.chatDefaultKeep = /^(1|on|true|yes)$/i.test(String(env.PAPER_CHAT_KEEP));
   if (env.PAPER_LINK_ANON != null) c.linkAnonymousView = /^(1|on|true|yes)$/i.test(String(env.PAPER_LINK_ANON));
   return c;
 }

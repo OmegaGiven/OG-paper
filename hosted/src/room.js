@@ -14,7 +14,8 @@
 // it tells the room who each connection is with x-paper-* headers after
 // checking the session and the page's permissions.
 
-import { DEFAULTS } from './config.js';
+import { configFrom } from './config.js';
+import { Chat } from './chat.js';
 import { Lease } from './quota.js';
 import { KIND, READY, TAG, parseFrame, seqFrame, wants } from './protocol.js';
 
@@ -46,7 +47,7 @@ export class PaperRoom {
   constructor(ctx, env, config = {}) {
     this.ctx = ctx;
     this.env = env;
-    this.cfg = { ...DEFAULTS, ...(env.PAPER_CONFIG || {}), ...config };
+    this.cfg = configFrom(env, { ...(env.PAPER_CONFIG || {}), ...config });
     this.sql = ctx.storage.sql;
     this.sql.exec(`CREATE TABLE IF NOT EXISTS frames (
       seq INTEGER PRIMARY KEY AUTOINCREMENT, kind INTEGER NOT NULL, tiles TEXT NOT NULL DEFAULT '',
@@ -63,6 +64,7 @@ export class PaperRoom {
     this.queue = Promise.resolve();
     this.buckets = new Map();
     this.subCache = new Map();
+    this.chat = new Chat(this);
   }
 
   /** A socket's tiles, or null when it takes the whole page. */
@@ -99,7 +101,10 @@ export class PaperRoom {
       case '/kick': return this.kick(await req.json());
       case '/flush': return this.flush(await req.json().catch(() => ({})));
       case '/destroy': return this.destroy();
-      case '/stats': return json({ bytes: this.bytes(), frames: this.frameCount(), sockets: this.sockets().length, lease: Number(this.meta('lease') || 0), head: this.head() });
+      case '/chat-settings': return json(this.chat.set(await req.json().catch(() => ({}))));
+      case '/chat-clear': return json(this.chat.clear());
+      case '/chat-export': return json(this.chat.export());
+      case '/stats': return json({ chat: this.chat.count(),  bytes: this.bytes(), frames: this.frameCount(), sockets: this.sockets().length, lease: Number(this.meta('lease') || 0), head: this.head() });
       default: return json({ error: 'not found' }, 404);
     }
   }
@@ -180,6 +185,10 @@ export class PaperRoom {
       return;
     }
     if (m.t === 'ping') return this.send(ws, { t: 'pong' });
+    if (a.mode && (m.t === 'chat' || m.t === 'chat-del' || m.t === 'chat-react' || m.t === 'typing')) {
+      if (!this.rate(ws, text.length)) return this.send(ws, { t: 'chat-error', msg: 'Slow down: too many messages at once' });
+      return this.chat.handle(ws, a, m);
+    }
   }
 
   /** The room is named by the key's room (`Keys::room`); the first one in pins it. */
@@ -199,7 +208,10 @@ export class PaperRoom {
     this.setAtt(ws, a);
     if (a.mode === 'seq') this.send(ws, { t: 'ready', head: a.ready, role: a.role });
     else this.sendRaw(ws, READY);
-    this.send(ws, { t: 'welcome', role: a.role, name: a.name, head: a.ready, bytes: this.bytes() });
+    // chat: { on, keep, max, … } when the site has chat (null: none; older
+    // rooms send nothing, and the page then shows no chat at all).
+    this.send(ws, { t: 'welcome', role: a.role, name: a.name, user: a.user, head: a.ready, bytes: this.bytes(), chat: this.chat.welcome() });
+    this.chat.joined(ws);
     if (a.user === this.meta('owner') && this.env.DB) {
       this.usageToOwner(await this.env.DB.prepare('SELECT used, quota FROM paper_accounts WHERE user_id = ?1').bind(a.user).first());
     }
@@ -356,7 +368,7 @@ export class PaperRoom {
 
   afterLeave(ws) {
     const left = this.sockets().filter(o => o !== ws);
-    if (left.length === 0) this.alarmIn(IDLE_MS, true);
+    if (left.length === 0) { this.chat.empty(); this.alarmIn(IDLE_MS, true); }
     else {
       const list = [];
       const seen = new Set();
@@ -386,7 +398,7 @@ export class PaperRoom {
 
   async alarm() {
     await this.syncPage();
-    if (this.sockets().length === 0) await this.lease.release();
+    if (this.sockets().length === 0) { this.chat.empty(); await this.lease.release(); }
     else if (this.meta('dirty') === '1') await this.alarmIn(SYNC_MS, true);
   }
 
