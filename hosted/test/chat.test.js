@@ -134,6 +134,8 @@ test('deleting the page deletes its chat', async () => {
   await a.say('secret plans');
   assert.equal(s.room(page).chat.count(), 1);
   assert.equal((await s.call(1, 'DELETE', `/pages/${page}`)).status, 200);
+  assert.equal(s.room(page).chat.count(), 1, 'in the trash: kept, restorable');
+  assert.equal((await s.call(1, 'DELETE', `/pages/${page}?forever=1`)).status, 200);
   const tables = s.room(page).ctx.storage.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'chat'").all();
   assert.deepEqual(tables, []);
   assert.equal((await s.call(1, 'GET', `/pages/${page}/chat`)).status, 404);

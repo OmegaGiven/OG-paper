@@ -51,6 +51,21 @@ export const DEFAULTS = {
   maxReason: 2000,
   /** Kept frames above this size go to R2 (when bound) or are split. */
   chunkBytes: 1 * MB,
+  /** Days a deleted page stays in its owner's trash (restorable) before it goes for good. */
+  trashDays: 30,
+  /** Days what a full copy (checkpoint) replaced is kept, so it can be brought back. */
+  keepReplacedDays: 30,
+  /** Per page, the most replaced bytes kept (oldest go first beyond it). */
+  keepReplacedBytes: 100 * MB,
+  /** A full copy from someone who isn't an owner, this much smaller than what it
+   * would replace, replaces nothing (it is kept as an ordinary change). */
+  tinyCheckpointRatio: 0.1,
+  /** ...when what it would replace is at least this big. */
+  tinyCheckpointMin: 256,
+  /** Days a give-away offer waits for the recipient. */
+  offerDays: 30,
+  /** Offers one account may have waiting for it at once. */
+  maxOffersTo: 20,
   /** Chat between the people on a page, at all (PAPER_CHAT=off: none). */
   chat: true,
   /** A page's chat until its owners choose: on, and ephemeral (gone once

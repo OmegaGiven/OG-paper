@@ -28,6 +28,12 @@ export async function give(db, owner, n) {
   await db.prepare('UPDATE paper_accounts SET used = MAX(0, used - ?1) WHERE user_id = ?2').bind(n, owner).run();
 }
 
+/** Add `n` bytes to `owner`'s account even past its quota (bringing back what a full copy replaced). */
+export async function charge(db, owner, n) {
+  if (n <= 0) return;
+  await db.prepare('UPDATE paper_accounts SET used = used + ?1 WHERE user_id = ?2').bind(n, owner).run();
+}
+
 /** The account row, made with the free quota on first use. */
 export async function account(db, user, freeQuota, now = Date.now()) {
   await db.prepare('INSERT OR IGNORE INTO paper_accounts (user_id, quota, used, created_at) VALUES (?1, ?2, 0, ?3)')

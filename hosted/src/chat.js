@@ -31,6 +31,16 @@ export function cleanText(s, max = Infinity) {
   return { text: chars.slice(0, max).join(''), over: chars.length > max };
 }
 
+/**
+ * A page's or a person's name: one line, none of the characters above, no
+ * `<` or `>` (a second net under every renderer's escaping), at most `max`
+ * characters.
+ */
+export function cleanName(s, max = 120) {
+  const t = String(s ?? '').replace(STRIP, '').replace(/[<>]/g, '').replace(/\s+/g, ' ').trim();
+  return [...t].slice(0, max).join('');
+}
+
 class Bucket {
   constructor(rate, burst) { this.rate = rate; this.burst = burst; this.level = burst; this.at = Date.now(); }
   take(n = 1) {

@@ -10,10 +10,14 @@
 
 import { configFrom } from './config.js';
 import { account, give, take } from './quota.js';
+import { cleanName } from './chat.js';
+import { ensureSchema } from './schema.js';
 
 const ROLES = ['viewer', 'editor', 'owner'];
 const rank = r => ROLES.indexOf(r);
 const HEX32 = /^[0-9a-f]{32}$/;
+const HEX64 = /^[0-9a-f]{64}$/;
+const DAY = 86_400_000;
 const EDIT_KEY = /^e[A-Za-z0-9_-]{40,50}$/;
 const VIEW_KEY = /^v[A-Za-z0-9_-]{80,90}$/;
 
@@ -52,8 +56,10 @@ export function createApi({ auth, config = {}, roomBinding = 'PAPER_ROOMS', onRe
       if ((req.method !== 'GET' || req.headers.get('Upgrade') === 'websocket') && origin && !allowed.includes(origin)) fail(403, 'Bad origin');
       if (req.method !== 'GET' && req.headers.get('Sec-Fetch-Site') && !['same-origin', 'none'].includes(req.headers.get('Sec-Fetch-Site'))) fail(403, 'Bad origin');
 
+      await ensureSchema(db);
       const user = await auth.user(req, env);
-      if (user) user.id = String(user.id);
+      // Names come from the host site: one line, no markup, whatever it allows.
+      if (user) { user.id = String(user.id); user.name = cleanName(user.name, 40) || null; }
       const ip = req.headers.get('CF-Connecting-IP') || 'local';
       if (await limited(req.method === 'GET' ? 'api' : 'write', user ? 'u' + user.id : 'ip' + ip)) fail(429, 'Too many requests. Please slow down and try again in a minute.');
       const isAdmin = !!(user && typeof auth.isAdmin === 'function' && await auth.isAdmin(user, env));
@@ -67,12 +73,17 @@ export function createApi({ auth, config = {}, roomBinding = 'PAPER_ROOMS', onRe
       const names = async ids => {
         ids = [...new Set(ids.filter(Boolean))];
         if (!ids.length || typeof auth.names !== 'function') return {};
-        return (await auth.names(env, ids)) || {};
+        const got = (await auth.names(env, ids)) || {};
+        return Object.fromEntries(Object.entries(got).map(([k, v]) => [k, v == null ? null : cleanName(v, 40) || null]));
       };
 
-      const page = async id => {
+      // A page in the trash is gone for everyone (only its owner's Trash and
+      // the admin reach it, with trashed: true).
+      const page = async (id, { trashed = false } = {}) => {
         if (!HEX32.test(id)) fail(404, 'No such page');
-        return (await db.prepare('SELECT * FROM paper_pages WHERE id = ?1').bind(id).first()) || fail(404, 'No such page');
+        const p = await db.prepare('SELECT * FROM paper_pages WHERE id = ?1').bind(id).first();
+        if (!p || (p.deleted_at != null && !trashed)) fail(404, 'No such page');
+        return p;
       };
       const roleOf = async (p, u) => {
         if (!u) return null;
@@ -117,12 +128,15 @@ export function createApi({ auth, config = {}, roomBinding = 'PAPER_ROOMS', onRe
         if (u.pages >= cfg.maxPages) fail(409, `You have ${u.pages} pages, the most an account can have. Delete some to make new ones.`, { full: 'pages' });
         if (u.used >= u.quota) fail(409, 'Your storage is full. Export or delete pages to free space.', { full: 'bytes', ...u });
         const id = randomHex(16), now = Date.now();
-        name = String(name || 'Untitled').trim().slice(0, cfg.maxName) || 'Untitled';
+        name = cleanName(name, cfg.maxName) || 'Untitled';
         await db.batch([
           db.prepare('INSERT INTO paper_pages (id, owner_id, name, canvas, edit_key, view_key, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)')
             .bind(id, user.id, name, canvas, b.edit, b.view, now),
           db.prepare('INSERT INTO paper_members (page_id, user_id, role, added_by, added_at) VALUES (?1, ?2, \'owner\', ?2, ?3)').bind(id, user.id, now),
         ]);
+        // The browser made the keys, so it can name the room now: pinned at
+        // creation, nobody joining first can pin another.
+        if (HEX64.test(String(b.room || ''))) await roomCall(id, 'pin', { room: String(b.room) }, { 'x-paper-owner': user.id });
         return page(id);
       };
       const kick = (id, what) => roomCall(id, 'kick', what).catch(() => {});
@@ -137,13 +151,27 @@ export function createApi({ auth, config = {}, roomBinding = 'PAPER_ROOMS', onRe
       // ---- page lists -------------------------------------------------------------
       if (path === '/pages' && req.method === 'GET') {
         need();
-        const mine = (await db.prepare('SELECT p.* FROM paper_pages p WHERE p.owner_id = ?1 ORDER BY p.updated_at DESC').bind(user.id).all()).results;
+        // Pages past their days in the trash go now (their room's alarm does
+        // it too; this catches a room that never woke).
+        const now = Date.now();
+        for (const old of (await db.prepare('SELECT * FROM paper_pages WHERE owner_id = ?1 AND deleted_at < ?2').bind(user.id, now - cfg.trashDays * DAY).all()).results) await deletePage(old);
+        await db.prepare('DELETE FROM paper_transfers WHERE created_at < ?1').bind(now - cfg.offerDays * DAY).run();
+        const all = (await db.prepare('SELECT p.* FROM paper_pages p WHERE p.owner_id = ?1 ORDER BY p.updated_at DESC').bind(user.id).all()).results;
+        const mine = all.filter(p => p.deleted_at == null);
+        const trash = all.filter(p => p.deleted_at != null).sort((a, b) => b.deleted_at - a.deleted_at);
         const shared = (await db.prepare(`SELECT p.*, m.role AS my_role FROM paper_members m JOIN paper_pages p ON p.id = m.page_id
-          WHERE m.user_id = ?1 AND p.owner_id != ?1 AND p.blocked = 0 ORDER BY p.updated_at DESC`).bind(user.id).all()).results;
-        const owners = await names(shared.map(p => p.owner_id));
+          WHERE m.user_id = ?1 AND p.owner_id != ?1 AND p.blocked = 0 AND p.deleted_at IS NULL ORDER BY p.updated_at DESC`).bind(user.id).all()).results;
+        // Give-away offers: to me (accept or decline) and from me (waiting).
+        const toMe = (await db.prepare(`SELECT t.*, p.name, p.bytes FROM paper_transfers t JOIN paper_pages p ON p.id = t.page_id
+          WHERE t.to_id = ?1 AND p.owner_id = t.from_id AND p.deleted_at IS NULL ORDER BY t.created_at DESC`).bind(user.id).all()).results;
+        const fromMe = (await db.prepare('SELECT page_id, to_id, created_at FROM paper_transfers WHERE from_id = ?1').bind(user.id).all()).results;
+        const who = await names([...shared.map(p => p.owner_id), ...toMe.map(t => t.from_id), ...fromMe.map(t => t.to_id)]);
+        const waiting = Object.fromEntries(fromMe.map(t => [t.page_id, { to: { id: t.to_id, name: who[t.to_id] || null }, created: t.created_at }]));
         return json({
-          mine: mine.map(p => ({ ...card(p, 'owner'), blocked: !!p.blocked })),
-          shared: shared.map(p => card(p, p.my_role, owners)),
+          mine: mine.map(p => ({ ...card(p, 'owner'), blocked: !!p.blocked, offer: waiting[p.id] || null })),
+          shared: shared.map(p => card(p, p.my_role, who)),
+          trash: trash.map(p => ({ ...card(p, 'owner'), deleted: p.deleted_at, purge: p.deleted_at + cfg.trashDays * DAY })),
+          offers: toMe.map(t => ({ page: { id: t.page_id, name: t.name, bytes: t.bytes }, from: { id: t.from_id, name: who[t.from_id] || null }, leave: !!t.leave, created: t.created_at })),
           usage: await usage(),
         });
       }
@@ -164,8 +192,10 @@ export function createApi({ auth, config = {}, roomBinding = 'PAPER_ROOMS', onRe
             const members = (await db.prepare('SELECT user_id, role, via_link, added_at FROM paper_members WHERE page_id = ?1 ORDER BY added_at').bind(p.id).all()).results;
             const who = await names(members.map(x => x.user_id));
             out.members = members.map(x => ({ id: x.user_id, name: who[x.user_id] || null, role: x.role, viaLink: x.via_link || null, billing: x.user_id === p.owner_id }));
-            out.links = (await db.prepare('SELECT id, role, created_at FROM paper_links WHERE page_id = ?1 ORDER BY created_at').bind(p.id).all()).results
-              .map(l => ({ id: l.id, role: l.role, created: l.created_at }));
+            out.links = (await db.prepare('SELECT id, role, created_by, created_at FROM paper_links WHERE page_id = ?1 ORDER BY created_at').bind(p.id).all()).results
+              .map(l => ({ id: l.id, role: l.role, created: l.created_at, by: { id: l.created_by, name: who[l.created_by] || null } }));
+            const t = await db.prepare('SELECT to_id, created_at FROM paper_transfers WHERE page_id = ?1').bind(p.id).first();
+            out.offer = t ? { to: { id: t.to_id, name: (await names([t.to_id]))[t.to_id] || null }, created: t.created_at } : null;
             // The page's chat settings (owners change them: PATCH /pages/:id/chat).
             if (cfg.chat) out.chat = await (await roomCall(p.id, 'chat-get', {}, { 'x-paper-owner': p.owner_id })).json();
           }
@@ -174,19 +204,56 @@ export function createApi({ auth, config = {}, roomBinding = 'PAPER_ROOMS', onRe
         if (req.method === 'PATCH') {
           const { p } = await access(m[1], 'editor');
           const b = await body();
-          const name = String(b.name || '').trim().slice(0, cfg.maxName);
+          const name = cleanName(b.name, cfg.maxName);
           if (!name) fail(400, 'A page needs a name');
           await db.prepare('UPDATE paper_pages SET name = ?1, updated_at = ?2 WHERE id = ?3').bind(name, Date.now(), p.id).run();
           return json({ ok: true, name });
         }
         if (req.method === 'DELETE') {
-          const p = await page(m[1]);
+          // Deleting moves the page to its owner's trash for trashDays;
+          // ?forever=1 on a page already in the trash deletes it for good.
+          const p = await page(m[1], { trashed: true });
           if (p.owner_id !== user.id && !isAdmin) {
+            if (p.deleted_at != null) fail(404, 'No such page');
             await access(m[1]);
             fail(403, 'Only the page\'s owner can delete it (you can leave it instead)');
           }
-          return json(await deletePage(p));
+          if (p.deleted_at != null) {
+            if (url.searchParams.get('forever') !== '1') fail(409, 'It is already in the trash');
+            return json(await deletePage(p));
+          }
+          const now = Date.now(), until = now + cfg.trashDays * DAY;
+          await db.batch([
+            db.prepare('UPDATE paper_pages SET deleted_at = ?1 WHERE id = ?2').bind(now, p.id),
+            db.prepare('DELETE FROM paper_transfers WHERE page_id = ?1').bind(p.id),
+          ]);
+          await roomCall(p.id, 'trash', { at: now, until }, { 'x-paper-owner': p.owner_id }).catch(() => {});
+          return json({ ok: true, trashed: now, purge: until });
         }
+      }
+      if ((m = path.match(/^\/pages\/([0-9a-f]{32})\/untrash$/)) && req.method === 'POST') {
+        need();
+        const p = await page(m[1], { trashed: true });
+        if (p.owner_id !== user.id && !isAdmin) fail(404, 'No such page');
+        if (p.deleted_at == null) return json({ ok: true, page: card(p, 'owner') });
+        await db.prepare('UPDATE paper_pages SET deleted_at = NULL WHERE id = ?1').bind(p.id).run();
+        await roomCall(p.id, 'untrash', {}, { 'x-paper-owner': p.owner_id }).catch(() => {});
+        return json({ ok: true, page: card({ ...p, deleted_at: null }, 'owner') });
+      }
+
+      // ---- what full copies replaced (kept keepReplacedDays) -------------------
+      if ((m = path.match(/^\/pages\/([0-9a-f]{32})\/history$/)) && req.method === 'GET') {
+        need();
+        const { p } = await access(m[1], 'owner');
+        return json(await (await roomCall(p.id, 'history', {}, { 'x-paper-owner': p.owner_id })).json());
+      }
+      if ((m = path.match(/^\/pages\/([0-9a-f]{32})\/restore$/)) && req.method === 'POST') {
+        // Bring back what full copies at seq >= since replaced (all of it by
+        // default). Nothing is taken away: the page gains it back.
+        need();
+        const { p } = await access(m[1], 'owner');
+        const b = await body();
+        return json(await (await roomCall(p.id, 'restore', { since: Math.max(0, Number(b.since) || 0) }, { 'x-paper-owner': p.owner_id })).json());
       }
       if ((m = path.match(/^\/pages\/([0-9a-f]{32})\/open$/)) && req.method === 'POST') {
         need();
@@ -216,6 +283,7 @@ export function createApi({ auth, config = {}, roomBinding = 'PAPER_ROOMS', onRe
         if (await limited('ws', 'ip' + ip)) fail(429, 'Too many connections. Try again in a minute.');
         const l = await linkOf(m[1]);
         const p = await page(l.page_id);
+        await linkAlive(l, p);
         if (p.blocked) fail(451, 'This page was taken down');
         return enter(p, 'viewer', { id: 'anon:' + ip, name: 'Visitor' }, l.id);
       }
@@ -283,17 +351,25 @@ export function createApi({ auth, config = {}, roomBinding = 'PAPER_ROOMS', onRe
         if (uid === p.owner_id) fail(409, 'Give the page to someone else first');
         const had = await db.prepare('SELECT role FROM paper_members WHERE page_id = ?1 AND user_id = ?2').bind(p.id, uid).first();
         if (!had) fail(404, 'Not on this page');
+        // A co-owner who stops being one takes the links they made with them.
+        const linksOf = async () => had.role === 'owner'
+          ? (await db.prepare('SELECT id FROM paper_links WHERE page_id = ?1 AND created_by = ?2').bind(p.id, uid).all()).results.map(l => l.id)
+          : [];
         if (req.method === 'DELETE') {
+          const theirs = await linksOf();
           await db.prepare('DELETE FROM paper_members WHERE page_id = ?1 AND user_id = ?2').bind(p.id, uid).run();
           await kick(p.id, { user: uid, why: 'You no longer have access to this page' });
-          return json({ ok: true });
+          await dropLinks(p, theirs, 'The person who made that link no longer owns this page');
+          return json({ ok: true, linksOff: theirs.length });
         }
         if (req.method === 'PATCH') {
           const b = await body();
           if (!ROLES.includes(b.role)) fail(400, 'Role is owner, editor or viewer');
+          const theirs = b.role === 'owner' ? [] : await linksOf();
           await db.prepare('UPDATE paper_members SET role = ?1, via_link = NULL WHERE page_id = ?2 AND user_id = ?3').bind(b.role, p.id, uid).run();
           if (rank(b.role) < rank(had.role)) await kick(p.id, { user: uid, why: 'Your access to this page changed' });
-          return json({ ok: true });
+          await dropLinks(p, theirs, 'The person who made that link no longer owns this page');
+          return json({ ok: true, linksOff: theirs.length });
         }
       }
       if ((m = path.match(/^\/pages\/([0-9a-f]{32})\/links$/)) && req.method === 'POST') {
@@ -313,20 +389,14 @@ export function createApi({ auth, config = {}, roomBinding = 'PAPER_ROOMS', onRe
       if ((m = path.match(/^\/pages\/([0-9a-f]{32})\/links\/([0-9a-f]{12})$/)) && req.method === 'DELETE') {
         need();
         const { p } = await access(m[1], 'owner');
-        const via = (await db.prepare('SELECT user_id FROM paper_members WHERE page_id = ?1 AND via_link = ?2').bind(p.id, m[2]).all()).results;
-        await db.batch([
-          db.prepare('DELETE FROM paper_links WHERE page_id = ?1 AND id = ?2').bind(p.id, m[2]),
-          db.prepare('DELETE FROM paper_members WHERE page_id = ?1 AND via_link = ?2').bind(p.id, m[2]),
-        ]);
-        // Out go the people the link brought in, and anyone on it without an account.
-        for (const v of via) await kick(p.id, { user: v.user_id, why: 'That link was turned off' });
-        await kick(p.id, { via: m[2], why: 'That link was turned off' });
+        await dropLinks(p, [m[2]], 'That link was turned off');
         return json({ ok: true });
       }
       if ((m = path.match(/^\/links\/([A-Za-z0-9_-]{20,64})$/))) {
         if (!cfg.linkSharing) fail(404, 'No such link');
         const l = await linkOf(m[1]);
         const p = await page(l.page_id);
+        await linkAlive(l, p);
         if (p.blocked) fail(451, 'This page was taken down');
         if (req.method === 'GET') return json({ name: p.name, role: l.role, signIn: !user, anonymousView: cfg.linkAnonymousView });
         if (req.method === 'POST') {
@@ -346,35 +416,73 @@ export function createApi({ auth, config = {}, roomBinding = 'PAPER_ROOMS', onRe
           return json({ page: card(p, role, await names([p.owner_id])), open: openInfo(p, role) });
         }
       }
-      if ((m = path.match(/^\/pages\/([0-9a-f]{32})\/transfer$/)) && req.method === 'POST') {
+      // ---- giving a page away: an offer the recipient accepts -----------------
+      // Nothing moves (no bytes, no access) until they accept, so nobody can
+      // push pages into someone else's account.
+      if ((m = path.match(/^\/pages\/([0-9a-f]{32})\/transfer$/))) {
         need();
         const { p } = await access(m[1], 'owner');
         if (p.owner_id !== user.id && !isAdmin) fail(403, 'Only the billing owner can give the page away');
+        if (req.method === 'DELETE') {
+          await db.prepare('DELETE FROM paper_transfers WHERE page_id = ?1').bind(p.id).run();
+          return json({ ok: true });
+        }
+        if (req.method !== 'POST') fail(405, 'Use POST or DELETE');
         const b = await body();
-        let to = b.to != null ? String(b.to) : null;
-        if (!to && b.who && typeof auth.find === 'function') to = (await auth.find(env, String(b.who)))?.id;
-        if (!to) fail(404, 'No such account');
-        to = String(to);
+        // Only an account the site knows by name or email (never a raw id).
+        const who = String(b.who || '').trim();
+        if (!who) fail(400, 'Who? Give a username or an email');
+        const target = typeof auth.find === 'function' ? await auth.find(env, who) : null;
+        if (!target || target.id == null) fail(404, `No account called “${cleanName(who, 60)}”`);
+        const to = String(target.id);
         if (to === p.owner_id) fail(409, 'They already own it');
-        const acct = await account(db, to, cfg.freeQuota);
-        const owned = await db.prepare('SELECT COUNT(*) AS n FROM paper_pages WHERE owner_id = ?1').bind(to).first();
-        if (owned.n >= cfg.maxPages) fail(409, 'They have as many pages as an account can have');
+        if (await limited('create', 'u' + user.id)) fail(429, 'Too many offers at once. Try again in a minute.');
+        const now = Date.now();
+        const waiting = await db.prepare('SELECT COUNT(*) AS n FROM paper_transfers WHERE to_id = ?1 AND page_id != ?2 AND created_at >= ?3')
+          .bind(to, p.id, now - cfg.offerDays * DAY).first();
+        if (waiting.n >= cfg.maxOffersTo) fail(409, 'They have too many offers waiting already');
+        await db.prepare(`INSERT INTO paper_transfers (page_id, from_id, to_id, leave, created_at) VALUES (?1, ?2, ?3, ?4, ?5)
+          ON CONFLICT (page_id) DO UPDATE SET from_id = excluded.from_id, to_id = excluded.to_id, leave = excluded.leave, created_at = excluded.created_at`)
+          .bind(p.id, p.owner_id, to, b.leave ? 1 : 0, now).run();
+        return json({ ok: true, offer: { to: { id: to, name: cleanName(target.name, 40) || null }, created: now, leave: !!b.leave } }, 201);
+      }
+      if ((m = path.match(/^\/offers\/([0-9a-f]{32})\/(accept|decline)$/)) && req.method === 'POST') {
+        need();
+        const t = await db.prepare('SELECT * FROM paper_transfers WHERE page_id = ?1 AND to_id = ?2').bind(m[1], user.id).first();
+        if (!t || t.created_at < Date.now() - cfg.offerDays * DAY) fail(404, 'That offer was withdrawn or has lapsed');
+        if (m[2] === 'decline') {
+          await db.prepare('DELETE FROM paper_transfers WHERE page_id = ?1').bind(t.page_id).run();
+          return json({ ok: true });
+        }
+        const p = await page(t.page_id);
+        if (p.owner_id !== t.from_id) {
+          await db.prepare('DELETE FROM paper_transfers WHERE page_id = ?1').bind(t.page_id).run();
+          fail(404, 'That offer was withdrawn or has lapsed');
+        }
+        if (p.blocked) fail(451, 'This page was taken down');
+        const acct = await account(db, user.id, cfg.freeQuota);
+        if (acct.blocked) fail(403, 'This account cannot keep pages');
+        const owned = await db.prepare('SELECT COUNT(*) AS n FROM paper_pages WHERE owner_id = ?1').bind(user.id).first();
+        if (owned.n >= cfg.maxPages) fail(409, `You have ${owned.n} pages, the most an account can have. Delete some (and empty them from the trash) to take this one.`, { full: 'pages' });
         // Settle the room with the old owner, then move its bytes over.
         const r = await (await roomCall(p.id, 'flush', {}, { 'x-paper-owner': p.owner_id })).json();
         const bytes = Number(r.bytes) || 0;
-        if (acct.blocked || !(await take(db, to, bytes))) fail(409, 'Their storage is too full to take this page', { full: 'bytes' });
+        if (!(await take(db, user.id, bytes))) fail(409, 'Your storage is too full to take this page. Free some space first.', { full: 'bytes' });
         await give(db, p.owner_id, bytes);
+        const now = Date.now();
         await db.batch([
-          db.prepare('UPDATE paper_pages SET owner_id = ?1, bytes = ?2, updated_at = ?3 WHERE id = ?4').bind(to, bytes, Date.now(), p.id),
+          db.prepare('UPDATE paper_pages SET owner_id = ?1, bytes = ?2, updated_at = ?3 WHERE id = ?4').bind(user.id, bytes, now, p.id),
           db.prepare(`INSERT INTO paper_members (page_id, user_id, role, added_by, added_at) VALUES (?1, ?2, 'owner', ?3, ?4)
-            ON CONFLICT (page_id, user_id) DO UPDATE SET role = 'owner', via_link = NULL`).bind(p.id, to, user.id, Date.now()),
-          b.leave
-            ? db.prepare('DELETE FROM paper_members WHERE page_id = ?1 AND user_id = ?2').bind(p.id, p.owner_id)
-            : db.prepare('UPDATE paper_members SET role = \'owner\' WHERE page_id = ?1 AND user_id = ?2').bind(p.id, p.owner_id),
+            ON CONFLICT (page_id, user_id) DO UPDATE SET role = 'owner', via_link = NULL`).bind(p.id, user.id, t.from_id, now),
+          t.leave
+            ? db.prepare('DELETE FROM paper_members WHERE page_id = ?1 AND user_id = ?2').bind(p.id, t.from_id)
+            : db.prepare('UPDATE paper_members SET role = \'owner\' WHERE page_id = ?1 AND user_id = ?2').bind(p.id, t.from_id),
+          db.prepare('DELETE FROM paper_transfers WHERE page_id = ?1').bind(p.id),
         ]);
-        await roomCall(p.id, 'flush', { owner: to });
-        if (b.leave) await kick(p.id, { user: p.owner_id, why: 'You gave this page away' });
-        return json({ ok: true, owner: to });
+        await roomCall(p.id, 'flush', { owner: user.id });
+        if (t.leave) await kick(p.id, { user: t.from_id, why: 'You gave this page away' });
+        const mine = await page(p.id);
+        return json({ ok: true, page: card(mine, 'owner'), open: openInfo(mine, 'owner') });
       }
 
       // ---- reports and the admin ---------------------------------------------------
@@ -405,14 +513,20 @@ export function createApi({ auth, config = {}, roomBinding = 'PAPER_ROOMS', onRe
           return json({ ok: true });
         }
         if ((m = path.match(/^\/admin\/pages\/([0-9a-f]{32})$/))) {
-          const p = await page(m[1]);
+          const p = await page(m[1], { trashed: true });
           if (req.method === 'GET') {
             // The admin may look (view only) to judge a report.
             const stats = await (await room(p.id).fetch(new Request('https://room/stats', { headers: { 'x-paper-page': p.id } }))).json();
             const members = (await db.prepare('SELECT user_id, role FROM paper_members WHERE page_id = ?1').bind(p.id).all()).results;
-            return json({ page: card(p, 'viewer'), blocked: !!p.blocked, members, stats, open: openInfo(p, 'viewer') });
+            return json({ page: card(p, 'viewer'), blocked: !!p.blocked, deleted: p.deleted_at, members, stats, open: openInfo(p, 'viewer') });
           }
           if (req.method === 'DELETE') return json(await deletePage(p));
+        }
+        if ((m = path.match(/^\/admin\/pages\/([0-9a-f]{32})\/(history|restore)$/))) {
+          // Roll a page back after someone replaced it with a bad full copy.
+          const p = await page(m[1], { trashed: true });
+          const b = m[2] === 'restore' ? await body() : {};
+          return json(await (await roomCall(p.id, m[2], { since: Math.max(0, Number(b.since) || 0) }, { 'x-paper-owner': p.owner_id })).json());
         }
         if ((m = path.match(/^\/admin\/pages\/([0-9a-f]{32})\/block$/)) && req.method === 'POST') {
           const p = await page(m[1]);
@@ -451,6 +565,27 @@ export function createApi({ auth, config = {}, roomBinding = 'PAPER_ROOMS', onRe
       return (await db.prepare('SELECT * FROM paper_links WHERE token_hash = ?1').bind(await sha256(token)).first()) || fail(404, 'That link was turned off or never existed');
     }
 
+    /** A link works only while the person who made it still owns the page. */
+    async function linkAlive(l, p) {
+      if (l.created_by === p.owner_id) return;
+      const r = await db.prepare('SELECT role FROM paper_members WHERE page_id = ?1 AND user_id = ?2').bind(p.id, l.created_by).first();
+      if (r?.role !== 'owner') fail(404, 'That link was turned off or never existed');
+    }
+
+    /** Turn links off: out go the people they brought in, and anyone on them without an account. */
+    async function dropLinks(p, ids, why) {
+      for (const id of ids) {
+        const via = (await db.prepare('SELECT user_id FROM paper_members WHERE page_id = ?1 AND via_link = ?2').bind(p.id, id).all()).results;
+        await db.batch([
+          db.prepare('DELETE FROM paper_links WHERE page_id = ?1 AND id = ?2').bind(p.id, id),
+          db.prepare('DELETE FROM paper_members WHERE page_id = ?1 AND via_link = ?2').bind(p.id, id),
+        ]);
+        const out = what => roomCall(p.id, 'kick', what).catch(() => {});
+        for (const v of via) await out({ user: v.user_id, why });
+        await out({ via: id, why });
+      }
+    }
+
     async function enter(p, role, u, via) {
       const h = new Headers(req.headers);
       h.set('x-paper-page', p.id);
@@ -467,6 +602,7 @@ export function createApi({ auth, config = {}, roomBinding = 'PAPER_ROOMS', onRe
       await db.batch([
         db.prepare('DELETE FROM paper_members WHERE page_id = ?1').bind(p.id),
         db.prepare('DELETE FROM paper_links WHERE page_id = ?1').bind(p.id),
+        db.prepare('DELETE FROM paper_transfers WHERE page_id = ?1').bind(p.id),
         db.prepare('DELETE FROM paper_pages WHERE id = ?1').bind(p.id),
       ]);
       return { ok: true, freed: r.bytes || 0 };

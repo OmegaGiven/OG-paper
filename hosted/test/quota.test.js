@@ -57,8 +57,10 @@ test('deleting a page gives its space back', async () => {
   for (let i = 0; i < 4; i++) { a.log.add('s' + i, 't', 'z'.repeat(4 * KB)); await a.push(); }
   assert.ok((await used(s, 1)).used >= 16 * KB);
   assert.equal((await s.call(1, 'DELETE', `/pages/${page}`)).status, 200);
-  assert.equal((await used(s, 1)).used, 0);
   assert.equal(a.ws, null, 'people on it are disconnected');
+  assert.ok((await used(s, 1)).used >= 16 * KB, 'the trash still counts');
+  assert.equal((await s.call(1, 'DELETE', `/pages/${page}?forever=1`)).status, 200);
+  assert.equal((await used(s, 1)).used, 0);
 });
 
 test('quiet rooms hand back quota taken ahead; used = what pages keep', async () => {
@@ -121,9 +123,14 @@ test('giving a page away moves its bytes; refused if they have no room', async (
   const cp = await newPage(s, 3);
   const c = await client(s, 3, cp);
   for (let i = 0; i < 7; i++) { c.log.add('c' + i, 't', 'q'.repeat(4 * KB)); await c.push(); }
-  assert.equal((await s.call(1, 'POST', `/pages/${page}/transfer`, { who: 'carol' })).status, 409);
+  assert.equal((await s.call(1, 'POST', `/pages/${page}/transfer`, { who: 'carol' })).status, 201, 'an offer');
+  assert.equal((await s.call(3, 'POST', `/offers/${page}/accept`)).status, 409, 'carol has no room for it');
   assert.equal((await used(s, 1)).used, bytes);
-  const t = await s.call(1, 'POST', `/pages/${page}/transfer`, { who: 'bob' });
+  assert.equal((await used(s, 3)).used >= 28 * KB, true);
+  assert.equal((await s.call(1, 'POST', `/pages/${page}/transfer`, { who: 'bob' })).status, 201, 'offered to bob instead');
+  assert.equal((await s.call(3, 'POST', `/offers/${page}/accept`)).status, 404, 'carol\'s offer is gone');
+  assert.equal((await used(s, 2)).used ?? 0, 0, 'nothing moves before bob accepts');
+  const t = await s.call(2, 'POST', `/offers/${page}/accept`);
   assert.equal(t.status, 200);
   assert.equal((await used(s, 1)).used, 0);
   assert.equal((await used(s, 2)).used, bytes);

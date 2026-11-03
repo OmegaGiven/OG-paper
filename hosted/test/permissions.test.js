@@ -146,7 +146,8 @@ test('co-owners can share; ownership can be given away', async () => {
   assert.equal((await s.call(2, 'DELETE', `/pages/${page}`)).status, 403);
   assert.equal((await s.call(2, 'POST', `/pages/${page}/transfer`, { who: 'carol' })).status, 403);
   const t = await s.call(1, 'POST', `/pages/${page}/transfer`, { who: 'bob', leave: true });
-  assert.equal(t.status, 200);
+  assert.equal(t.status, 201);
+  assert.equal((await s.call(2, 'POST', `/offers/${page}/accept`)).status, 200);
   assert.deepEqual((await s.call(2, 'GET', '/pages')).body.mine.map(p => p.name), ['Ours']);
   assert.deepEqual((await s.call(1, 'GET', '/pages')).body.mine, []);
   assert.equal((await s.call(1, 'POST', `/pages/${page}/open`)).status, 404);
