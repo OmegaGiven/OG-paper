@@ -149,6 +149,9 @@ await bob.waitForSelector(`[data-list=mine] li[data-id="${id}"] [data-act=share]
 await bob.click(`[data-list=mine] li[data-id="${id}"] [data-act=share]`);
 await bob.waitForSelector('section[data-name="Page"] [data-act=delete]');
 await bob.click('section[data-name="Page"] [data-act=delete]');
+await until(async () => (await api(bob, 'GET', '/pages')).body.trash.some(p => p.id === id), 15000, 'not in the trash');
+await bob.waitForSelector('section[data-name="Page"]', { state: 'hidden' });
+await wait(500);
 await bob.evaluate(() => window.ogPaper.account());
 await bob.waitForSelector(`[data-list=trash] li[data-trash="${id}"]`);
 await shots(bob, 'trash');
