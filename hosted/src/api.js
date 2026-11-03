@@ -55,6 +55,8 @@ export function createApi({ auth, config = {}, roomBinding = 'PAPER_ROOMS', onRe
       const allowed = [url.origin, ...(cfg.origins || [])];
       if ((req.method !== 'GET' || req.headers.get('Upgrade') === 'websocket') && origin && !allowed.includes(origin)) fail(403, 'Bad origin');
       if (req.method !== 'GET' && req.headers.get('Sec-Fetch-Site') && !['same-origin', 'none'].includes(req.headers.get('Sec-Fetch-Site'))) fail(403, 'Bad origin');
+      // Every browser sends one of the two on a write; a write with neither isn't from this site's page.
+      if (req.method !== 'GET' && !origin && !req.headers.get('Sec-Fetch-Site')) fail(403, 'Bad origin');
 
       await ensureSchema(db);
       const user = await auth.user(req, env);

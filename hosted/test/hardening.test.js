@@ -4,7 +4,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { site, pair } from './fakes.js';
+import { site } from './fakes.js';
 import { client, newPage } from './helpers.js';
 import { TAG, withTag } from '../src/protocol.js';
 import { cleanName } from '../src/chat.js';
@@ -343,6 +343,26 @@ test('the directory upgrades itself (no new D1 migration for the site)', async (
   const after = s.env.DB.db.prepare("SELECT name FROM pragma_table_info('paper_pages')").all().map(c => c.name);
   assert.ok(after.includes('deleted_at'));
   assert.ok(s.env.DB.row("SELECT name FROM sqlite_master WHERE name = 'paper_transfers'"));
-  // A room from before keeps working with its old frames.
-  void pair;
+});
+
+test('a room made before keeps its frames and gains the replaced-frame columns', async () => {
+  const s = site();
+  const page = await newPage(s, 1);
+  const room = s.room(page);
+  // As an older room's table was: no gone/by.
+  room.sql.exec('DROP TABLE frames');
+  room.sql.exec(`CREATE TABLE frames (seq INTEGER PRIMARY KEY AUTOINCREMENT, kind INTEGER NOT NULL, tiles TEXT NOT NULL DEFAULT '',
+    author TEXT NOT NULL, at INTEGER NOT NULL, size INTEGER NOT NULL, body BLOB, store TEXT NOT NULL DEFAULT '')`);
+  room.sql.exec("INSERT INTO frames (kind, author, at, size, body) VALUES (0, '1', 1, 3, x'616263')");
+  const again = new room.constructor(room.ctx, s.env, {});
+  assert.equal(again.frameCount(), 1);
+  assert.equal(again.bytes(), 3);
+});
+
+test('writes need an Origin or Sec-Fetch-Site header (audit L1)', async () => {
+  const s = site();
+  const { keys } = await import('./fakes.js');
+  assert.equal((await s.call(1, 'POST', '/pages', { name: 'x', ...keys() }, { Origin: '' })).status, 403);
+  assert.equal((await s.call(1, 'GET', '/pages', undefined, { Origin: '' })).status, 200, 'reads are fine');
+  assert.equal((await s.call(1, 'POST', '/pages', { name: 'x', ...keys() }, { Origin: '', 'Sec-Fetch-Site': 'same-origin' })).status, 201);
 });

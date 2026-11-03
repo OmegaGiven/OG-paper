@@ -56,7 +56,7 @@ export const DEFAULTS = {
   /** Days what a full copy (checkpoint) replaced is kept, so it can be brought back. */
   keepReplacedDays: 30,
   /** Per page, the most replaced bytes kept (oldest go first beyond it). */
-  keepReplacedBytes: 100 * MB,
+  keepReplacedBytes: 25 * MB,
   /** A full copy from someone who isn't an owner, this much smaller than what it
    * would replace, replaces nothing (it is kept as an ordinary change). */
   tinyCheckpointRatio: 0.1,

@@ -2,7 +2,7 @@
 # Build the web app, start the example hosted OG Paper under `wrangler dev`
 # (local, throwaway state) and run the browser end-to-end tests against it
 # (Chromium via Playwright). Usage: hosted/test/run-browser-e2e.sh [test.mjs ...]
-# (default: browser-e2e.mjs chat-e2e.mjs). SHOTS=dir keeps screenshots;
+# (default: browser-e2e.mjs chat-e2e.mjs hardening-e2e.mjs). SHOTS=dir keeps screenshots;
 # REBUILD=1 rebuilds the wasm even if web/app/pkg has one.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -31,7 +31,7 @@ DEV=$!
 trap 'kill -- -$DEV 2>/dev/null; sleep 1; rm -rf "$STATE"' EXIT
 for _ in $(seq 1 90); do curl -sf "http://localhost:$PORT/paper/api/me" >/dev/null && break; sleep 1; done
 TESTS=("$@")
-[ ${#TESTS[@]} -eq 0 ] && TESTS=(browser-e2e.mjs chat-e2e.mjs)
+[ ${#TESTS[@]} -eq 0 ] && TESTS=(browser-e2e.mjs chat-e2e.mjs hardening-e2e.mjs)
 for t in "${TESTS[@]}"; do
   echo "== $t"
   BASE="http://localhost:$PORT" PW="$PW" node "../test/$t" || { echo "--- wrangler log"; tail -40 "$STATE/dev.log"; exit 1; }

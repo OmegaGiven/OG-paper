@@ -81,7 +81,7 @@ report(ed.status === 403, 'editor cannot delete', String(ed.status));
 
 // ---- 3. Stored names are raw HTML (the client must escape every use) -----------
 const xs = await call(alice, 'PATCH', `/pages/${pg}`, { name: '<img src=x onerror=alert(1)>' });
-report(false, 'page names are stored as given, HTML included (client escapes; any new renderer must too)', `rename -> ${xs.status}`);
+report(xs.status === 200 && !/[<>]/.test(xs.body?.name || ''), 'page names lose markup characters server-side', `rename -> ${xs.status} ${JSON.stringify(xs.body?.name)}`);
 
 // ---- 4. Live room: an editor can wipe the page's history with a tiny checkpoint --
 const sa = await joined(alice, pg);
@@ -119,6 +119,8 @@ gs.w.send(withTag(TAG.PUT, new Uint8Array(50_000).fill(1)));
 await until(() => gs.text.some(m => m.t === 'kept'));
 gs.w.close();
 const tr = await call(mallory, 'POST', `/pages/${gift}/transfer`, { who: B, leave: true });
+const offered = (await call(bob, 'GET', '/pages')).body.offers?.some(o => o.page.id === gift);
+report(tr.status === 201 && offered, 'giving away makes an offer the recipient sees', `transfer -> ${tr.status}; offered: ${offered}`);
 const bl = await call(bob, 'GET', '/pages');
 const landed = bl.body.mine.some(p => p.id === gift);
 report(!landed, 'a page cannot be pushed into another account (and its quota) without consent', `transfer -> ${tr.status}; in bob's My pages: ${landed}; bob used ${bl.body.usage.used} B`);

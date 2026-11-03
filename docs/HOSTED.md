@@ -55,10 +55,10 @@ body):
 
 | From | Frame | Meaning |
 | --- | --- | --- |
-| app | `ROOM` + 32 bytes | join (the room id derived from the key; the first key seen pins the room, others are refused) |
+| app | `ROOM` + 32 bytes | join (the room id derived from the key; the first key an owner or editor brings pins the room, others are refused; a viewer can't pin; an owner may re-pin a room that never kept anything) |
 | app | `PUT ` + sealed | a change: kept, charged to the owner, passed on |
 | app | `EPH ` + sealed | a view or a stroke in progress: passed on, never kept |
-| app | `CKPT` + sealed | a full copy: kept in place of every frame the sender had when it made it |
+| app | `CKPT` + sealed | a full copy: kept in place of every frame the sender had when it made it (those are kept 30 more days, see [Safety nets](#safety-nets-trash-earlier-versions-offers)) |
 | app | `PUTT` + tiles + sealed | a change that touches these tiles |
 | app | `TCKP` + 1 tile + sealed | a full copy of one tile |
 | room | sealed | a kept or passed-on frame |
@@ -254,10 +254,12 @@ status.
 | | |
 | --- | --- |
 | `GET /me` | `{user, quota, used, pages, maxPages, linkSharing, admin}` (user null when signed out) |
-| `GET /pages` | `{mine, shared, usage}` |
-| `POST /pages {name, canvas, edit, view}` | a new page (keys made in the browser) and how to open it |
+| `GET /pages` | `{mine, shared, trash, offers, usage}` (`mine[].offer`: a give-away waiting) |
+| `POST /pages {name, canvas, edit, view, room?}` | a new page (keys made in the browser) and how to open it; `room` (64 hex) pins the room now |
 | `GET /pages/:id` | the page; members and links for owners |
-| `PATCH /pages/:id {name}` / `DELETE /pages/:id` | rename (editor+) / delete (billing owner) |
+| `PATCH /pages/:id {name}` / `DELETE /pages/:id` | rename (editor+) / to the trash (billing owner); `DELETE ?forever=1` on a page in the trash deletes it for good |
+| `POST /pages/:id/untrash` | back from the trash (billing owner) |
+| `GET /pages/:id/history` / `POST /pages/:id/restore {since}` | what full copies replaced (owners) / bring it back (all of it, or what copies at seq ≥ since replaced) |
 | `POST /pages/:id/open` | `{link, role, canvas, name}` (the relay link with the key for my role) |
 | `GET /pages/:id/relay` | the live room (WebSocket) |
 | `POST /pages/:id/copy {canvas, edit, view}` | a copy in my account: `{page, open, from}` |
@@ -265,11 +267,12 @@ status.
 | `PATCH/DELETE /pages/:id/members/:uid` | change role / remove (owners); remove myself = leave |
 | `POST /pages/:id/links {role}` / `DELETE /pages/:id/links/:lid` | make / turn off a link (owners) |
 | `GET/POST /links/:token` | what a link opens / open it (adds me) |
-| `POST /pages/:id/transfer {who, leave}` | give away (billing owner) |
+| `POST /pages/:id/transfer {who, leave}` / `DELETE` | offer the page to someone (billing owner; by username or email only) / withdraw it |
+| `POST /offers/:id/accept` / `decline` | the recipient takes the page (bytes and ownership move now) or says no |
 | `POST /pages/:id/report {reason}` | report |
 | `GET /pages/:id/chat` | the chat's settings and kept messages (data export; members, or owners only while chat is off) |
 | `PATCH /pages/:id/chat {on, keep}` / `DELETE /pages/:id/chat` | chat on/off, kept or ephemeral / clear it (owners) |
-| `/admin/reports`, `/admin/reports/:id`, `/admin/pages/:id` (GET, DELETE), `/admin/pages/:id/block`, `/admin/accounts/:uid`, `/admin/accounts/:uid/recount` | admin |
+| `/admin/reports`, `/admin/reports/:id`, `/admin/pages/:id` (GET, DELETE), `/admin/pages/:id/block`, `/admin/pages/:id/history`, `/admin/pages/:id/restore`, `/admin/accounts/:uid`, `/admin/accounts/:uid/recount` | admin |
 
 ## The web app
 
@@ -410,6 +413,52 @@ account, never a field of the message):
    `hosted/test/workerd-smoke.mjs` / `browser-e2e.mjs` run against any
    deployment of it.
 7. Update the OmegaEnv tile and the site's links ("OG Paper" → `/paper/`).
+
+## Safety nets: trash, earlier versions, offers
+
+From the launch audit (docs/LAUNCH-AUDIT.md H1, H2, H4, M2-M4, L1, L3, H5; og-paper #219):
+
+- **Trash.** Deleting a page hides it from everyone at once (live sockets
+  closed) and puts it in its owner's *Trash* in My account for
+  `trashDays` (30). Restore puts it back as it was (people, links, chat);
+  *Delete for good* skips the wait. When the 30 days run out, the page's
+  room deletes itself and its directory rows (its own alarm; the owner's
+  page list also purges anything overdue). Bytes in the trash still count.
+- **Earlier versions.** A full copy (`CKPT`, `TCKP`) no longer deletes
+  what it replaces: those frames are marked replaced and kept
+  `keepReplacedDays` (30), at most `keepReplacedBytes` (25 MB) per page,
+  and no longer count to the owner's storage. Owners see them in the page's
+  card (*Earlier versions*) and *Bring back* re-adds them (pages only add,
+  so nothing is lost; it counts again). The admin can do the same. A full
+  copy from someone who isn't an owner that is under 10% of what it would
+  replace (`tinyCheckpointRatio`, from 256 bytes) replaces nothing: it is
+  kept as an ordinary change, so an edit link can't empty a page.
+- **Give away is an offer.** The recipient sees *Offered to you* and
+  accepts (ownership and bytes move then) or declines; the giver can
+  withdraw. Only accounts the site finds by name or email; offers lapse
+  after 30 days; at most 20 wait for one person.
+- **Links die with their maker's ownership.** Removing or demoting a
+  co-owner turns off the links they made (and removes the people who came
+  in by them); a link also stops working once its maker is no longer an
+  owner. Owners see who made each link.
+- **Names** of pages and people are cleaned server-side (control and
+  bidi characters, zero-width spaces, `<` `>`).
+- **Writes** need an `Origin` or `Sec-Fetch-Site` header.
+- **Signing out** (or another account signing in) takes the account's
+  pages off the device: their links (with keys) and offline copies.
+- **Big pictures and PDFs**: on an account page, a picture over the
+  site's change limit (`maxOpBytes`, 1 MB) is re-encoded (JPEG, or WebP
+  when see-through) and scaled down until it fits; PDF pages stay PNG
+  when that fits, else JPEG.
+
+**For the site (omegagiven.com):** nothing to set up. The API adds
+`paper_pages.deleted_at` and `paper_transfers` to D1 itself the first
+time it runs (`hosted/src/schema.js`; don't write a wrangler migration for
+them), and rooms add their two new columns themselves. Bump
+`vendor/og-paper` and `public/paper` (web-dist) together: an older app
+still works with the new rooms and API, but shows no Trash, offers or
+earlier versions (its Give away then makes an offer the recipient can't
+see until the new app is out).
 
 ### Turning chat on at omegagiven.com (og-paper #179)
 

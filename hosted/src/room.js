@@ -23,6 +23,7 @@ const EDIT = new Set(['owner', 'editor']);
 const IDLE_MS = 30_000;
 const SYNC_MS = 60_000;
 const DAY = 86_400_000;
+const mb = n => (n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.ceil(n / 1024)} KB`);
 
 /** Seams for tests (Node has no WebSocketPair and no 101 responses). */
 export const rt = {
@@ -170,7 +171,7 @@ export class PaperRoom {
     // A copy that sees only some tiles cannot stand for the whole page.
     if (f.tag === TAG.CKPT && a.tiled) return this.send(ws, { t: 'denied', msg: 'A full copy needs the whole page: subscribe to everything first', drop: true });
     const cap = ckpt ? this.cfg.maxCheckpointBytes : this.cfg.maxOpBytes;
-    if (f.body.length > cap) return this.send(ws, { t: 'error', msg: `That change is too big to keep (${f.body.length} bytes, the most is ${cap})`, drop: true });
+    if (f.body.length > cap) return this.send(ws, { t: 'error', msg: `That change is too big to keep in the account (${mb(f.body.length)}; the most is ${mb(cap)}). Try a smaller picture, or split it up.`, drop: true });
     const body = f.body.slice();
     const job = this.queue.then(() => this.keep(ws, a, f.tag, f.tiles || [], body));
     this.queue = job.catch(e => console.error('og-paper room', e));

@@ -87,14 +87,22 @@ export class HostedProvider {
     return r.page;
   }
   rename(page, name) { return this.call('PATCH', `/pages/${page.id}`, { name }); }
-  remove(page) { forget(page.id); return this.call('DELETE', `/pages/${page.id}`); }
+  /** To the trash (restorable for 30 days); from the trash, `forever`. */
+  remove(page, forever = false) { forget(page.id); return this.call('DELETE', `/pages/${page.id}${forever ? '?forever=1' : ''}`); }
+  untrash(page) { return this.call('POST', `/pages/${page.id}/untrash`); }
+  history(page) { return this.call('GET', `/pages/${page.id}/history`); }
+  restore(page, since) { return this.call('POST', `/pages/${page.id}/restore`, { since }); }
   leave(page, me) { forget(page.id); return this.call('DELETE', `/pages/${page.id}/members/${encodeURIComponent(me)}`); }
   share(page, who, role) { return this.call('POST', `/pages/${page.id}/members`, { who, role }); }
   setRole(page, uid, role) { return this.call('PATCH', `/pages/${page.id}/members/${encodeURIComponent(uid)}`, { role }); }
   unshare(page, uid) { return this.call('DELETE', `/pages/${page.id}/members/${encodeURIComponent(uid)}`); }
   link(page, role) { return this.call('POST', `/pages/${page.id}/links`, { role }); }
   unlink(page, id) { return this.call('DELETE', `/pages/${page.id}/links/${id}`); }
+  /** Offer the page to someone: it moves only once they accept. */
   transfer(page, who, leave) { return this.call('POST', `/pages/${page.id}/transfer`, { who, leave }); }
+  withdraw(page) { return this.call('DELETE', `/pages/${page.id}/transfer`); }
+  async acceptOffer(id) { const r = await this.call('POST', `/offers/${id}/accept`); remember(r.page.id, r.open); return r; }
+  declineOffer(id) { return this.call('POST', `/offers/${id}/decline`); }
   report(page, reason) { return this.call('POST', `/pages/${page.id}/report`, { reason }); }
   chatSettings(page, set) { return this.call('PATCH', `/pages/${page.id}/chat`, set); }
   accept(token) { return this.call('POST', `/links/${token}`); }
@@ -114,6 +122,12 @@ function forget(id) {
   const m = known();
   delete m[id];
   try { localStorage.setItem(MAP, JSON.stringify(m)); } catch (e) {}
+}
+/** Every account page this device keeps (signing out drops them all). */
+function forgetAll() {
+  const canvases = Object.values(known()).map(v => v.canvas).filter(Boolean);
+  try { localStorage.removeItem(MAP); localStorage.removeItem('og-hosted-last'); } catch (e) {}
+  return canvases;
 }
 const pageOfCanvas = canvas => Object.entries(known()).find(([, v]) => v.canvas === canvas)?.[0] || null;
 
@@ -248,9 +262,26 @@ export function startHosted(ui, cfg) {
     removePerson: uid => hp.unshare({ id: currentPage() }, uid),
   });
 
+  // Whose pages this device holds. Signed out, or someone else signed in:
+  // their links (with edit keys) and offline copies go (a shared computer
+  // must not reopen them).
+  const OWNER = 'og-hosted-user';
+  async function checkOwner() {
+    const now = state.me?.user?.id || null;
+    let was = null;
+    try { was = localStorage.getItem(OWNER); } catch (e) {}
+    if (was !== now && (was || !now) && Object.keys(known()).length) {
+      await ui.dropLocal?.(forgetAll());
+      state.open = null;
+      if (was) say(now ? 'Signed in as someone else: the other account\'s pages were removed from this device' : 'Signed out: your pages were removed from this device');
+    }
+    try { if (now) localStorage.setItem(OWNER, now); else localStorage.removeItem(OWNER); } catch (e) {}
+  }
+
   async function refresh() {
     try {
       state.me = await hp.me();
+      await checkOwner();
       state.list = state.me.user ? await hp.list() : null;
       if (state.list?.usage) noteUsage(state.list.usage.used, state.list.usage.quota);
     } catch (e) {
@@ -271,7 +302,7 @@ export function startHosted(ui, cfg) {
   function item(p, mine) {
     const live = p.id === currentPage();
     const meta = mine
-      ? `${p.bytes ? fmtBytes(p.bytes) + ' · ' : ''}${ago(p.updated)}${p.blocked ? ' · taken down' : ''}`
+      ? `${p.bytes ? fmtBytes(p.bytes) + ' · ' : ''}${ago(p.updated)}${p.blocked ? ' · taken down' : ''}${p.offer ? ` · offered to ${esc(p.offer.to.name || 'someone')}` : ''}`
       : `${esc(p.owner?.name || 'someone')} · ${p.role === 'viewer' ? 'can view' : p.role === 'owner' ? 'co-owner' : 'can edit'} · ${ago(p.updated)}`;
     return `<li data-id="${p.id}" data-mine="${mine ? 1 : 0}"><button class="go">${live ? '● ' : ''}${esc(p.name)}<small>${meta}</small></button>
       <button class="mini" data-act="share" title="${mine || p.role === 'owner' ? 'Share' : 'Details'}">${mine || p.role === 'owner' ? 'Share' : '⋯'}</button></li>`;
@@ -296,8 +327,14 @@ export function startHosted(ui, cfg) {
         ${cur ? '' : '<button class="og-btn" data-act="keep" title="Put the canvas that is open now into your account">Keep this one</button>'}</div>
       <div class="og-shared-head">My pages</div>
       <ul class="og-list" data-list="mine">${l.mine.map(p => item(p, true)).join('') || '<li class="og-empty">No pages yet.</li>'}</ul>
+      ${(l.offers || []).length ? `<div class="og-shared-head">Offered to you</div>
+      <ul class="og-list" data-list="offers">${l.offers.map(o => `<li data-offer="${esc(o.page.id)}"><span class="go">${esc(o.page.name)}<small>from ${esc(o.from.name || 'someone')}${o.page.bytes ? ' · ' + fmtBytes(o.page.bytes) : ''} · ${ago(o.created)}</small></span>
+        <button class="mini" data-act="accept" title="Take it: it becomes yours and counts toward your storage">Accept</button><button class="mini" data-act="decline" title="No thanks">✕</button></li>`).join('')}</ul>` : ''}
       <div class="og-shared-head">Shared with me</div>
-      <ul class="og-list" data-list="shared">${l.shared.map(p => item(p, false)).join('') || '<li class="og-empty">Nothing shared with you yet.</li>'}</ul>`;
+      <ul class="og-list" data-list="shared">${l.shared.map(p => item(p, false)).join('') || '<li class="og-empty">Nothing shared with you yet.</li>'}</ul>
+      ${(l.trash || []).length ? `<div class="og-shared-head">Trash <small>(deleted pages, kept 30 days)</small></div>
+      <ul class="og-list" data-list="trash">${l.trash.map(p => `<li data-trash="${esc(p.id)}"><span class="go">${esc(p.name)}<small>${p.bytes ? fmtBytes(p.bytes) + ' · ' : ''}deleted ${ago(p.deleted)} · gone ${new Date(p.purge).toLocaleDateString()}</small></span>
+        <button class="mini" data-act="untrash" title="Put it back in My pages">Restore</button><button class="mini" data-act="forever" title="Delete it for good now">✕</button></li>`).join('')}</ul>` : ''}`;
     const act = (sel, f) => { const b = body.querySelector(sel); if (b) b.onclick = f; };
     act('[data-act=new]', async () => {
       const name = prompt('Name the new page', 'Untitled');
@@ -318,6 +355,26 @@ export function startHosted(ui, cfg) {
         ui.show(null);
       });
       li.querySelector('[data-act=share]').onclick = () => details(page);
+    }
+    for (const li of body.querySelectorAll('li[data-offer]')) {
+      const o = l.offers.find(x => x.page.id === li.dataset.offer);
+      li.querySelector('[data-act=accept]').onclick = () => guard(async () => {
+        if (!confirm(`Take “${o.page.name}” from ${o.from.name || 'them'}? It becomes yours and counts toward your storage${o.page.bytes ? ` (${fmtBytes(o.page.bytes)})` : ''}.`)) return;
+        await hp.acceptOffer(o.page.id);
+        say(`“${o.page.name}” is yours now`);
+        refresh();
+      });
+      li.querySelector('[data-act=decline]').onclick = () => guard(async () => { await hp.declineOffer(o.page.id); say('Declined'); refresh(); });
+    }
+    for (const li of body.querySelectorAll('li[data-trash]')) {
+      const p = l.trash.find(x => x.id === li.dataset.trash);
+      li.querySelector('[data-act=untrash]').onclick = () => guard(async () => { await hp.untrash(p); say(`“${p.name}” is back in My pages`); refresh(); });
+      li.querySelector('[data-act=forever]').onclick = () => guard(async () => {
+        if (!confirm(`Delete “${p.name}” for good? This cannot be undone.`)) return;
+        await hp.remove(p, true);
+        say('Deleted for good');
+        refresh();
+      });
     }
   }
 
@@ -341,7 +398,7 @@ export function startHosted(ui, cfg) {
           ${m.billing ? '' : roleSel(m.role, 'data-role') + '<button class="mini" data-act="unshare" title="Remove">✕</button>'}</li>`).join('')}</ul>
         <div class="og-row"><input placeholder="Username or email" data-who>${roleSel('editor', 'data-newrole')}<button class="og-btn primary" data-act="add">Share</button></div>
         ${state.me.linkSharing ? `<div class="og-shared-head">Anyone with the link</div>
-        <ul class="og-list">${(info.links || []).map(k => `<li data-link="${k.id}"><span class="go">${k.role === 'editor' ? 'Can edit' : 'Can view'}<small>made ${ago(k.created)}</small></span><button class="mini" data-act="unlink">Turn off</button></li>`).join('') || '<li class="og-empty">No links.</li>'}</ul>
+        <ul class="og-list">${(info.links || []).map(k => `<li data-link="${k.id}"><span class="go">${k.role === 'editor' ? 'Can edit' : 'Can view'}<small>made ${k.by?.name ? `by ${esc(k.by.name)} ` : ''}${ago(k.created)}</small></span><button class="mini" data-act="unlink">Turn off</button></li>`).join('') || '<li class="og-empty">No links.</li>'}</ul>
         <div class="og-row"><button class="og-btn" data-act="link-view">New view link</button><button class="og-btn" data-act="link-edit">New edit link</button></div>
         <div class="og-row" hidden data-newlink><input readonly><button class="og-btn primary" data-act="copylink">Copy</button></div>` : ''}` : ''}
       ${owner && info.chat ? `
@@ -349,6 +406,8 @@ export function startHosted(ui, cfg) {
         <label class="og-check"><input type="checkbox" data-chat="on"${info.chat.on ? ' checked' : ''}> Chat for the people on this page</label>
         <label class="og-check"><input type="checkbox" data-chat="keep"${info.chat.keep ? ' checked' : ''}${info.chat.on ? '' : ' disabled'}> Keep chat history (the last ${info.chat.history} messages)</label>
         <p><small>${info.chat.keep ? 'Messages stay with the page until deleted.' : 'Messages go once everyone has left the page.'}</small></p>` : ''}
+      ${billing && info.offer ? `<p>Offered to <b>${esc(info.offer.to.name || 'someone')}</b> ${ago(info.offer.created)}: it moves to them when they accept. <button class="mini" data-act="withdraw">Withdraw</button></p>` : ''}
+      ${owner ? '<div data-history></div>' : ''}
       <div class="og-row" style="flex-wrap:wrap">
         <button class="og-btn" data-act="copy">Make a copy</button>
         ${info.role !== 'viewer' ? '<button class="og-btn" data-act="rename">Rename</button>' : ''}
@@ -407,19 +466,35 @@ export function startHosted(ui, cfg) {
       details(page); refresh();
     });
     on('[data-act=transfer]', async () => {
-      const who = prompt('Give this page to (username or email). It then counts toward their storage, not yours.');
+      const who = prompt('Give this page to (username or email). They are asked first; once they accept, it is theirs and counts toward their storage, not yours.');
       if (!who) return;
-      const stay = confirm('Keep editing it as a co-owner?\n\nOK: stay on it as a co-owner. Cancel: leave it.');
-      await hp.transfer(page, who, !stay);
-      say(`Given to ${who}`);
-      ui.show(null); refresh();
+      const stay = confirm('Once they accept: keep editing it as a co-owner?\n\nOK: stay on it as a co-owner. Cancel: leave it.');
+      const r = await hp.transfer(page, who, !stay);
+      say(`Offered to ${r.offer?.to?.name || who}: it moves when they accept`);
+      details(page); refresh();
     });
+    on('[data-act=withdraw]', async () => { await hp.withdraw(page); say('Offer withdrawn'); details(page); refresh(); });
     on('[data-act=delete]', async () => {
-      if (!confirm(`Delete “${info.name}” for everyone it is shared with? This cannot be undone. Export a copy first to keep it.`)) return;
+      if (!confirm(`Delete “${info.name}”? It goes to your trash for 30 days (gone for everyone it is shared with); restore it from there.`)) return;
       await hp.remove(page);
-      say('Deleted');
+      say('Moved to the trash: restore it from My account for 30 days');
       ui.show(null); refresh();
     });
+    // Owners: what full copies replaced (kept 30 days), to bring back.
+    const hist = q('[data-history]');
+    if (hist) hp.history(page).then(h => {
+      if (!h.replaced?.length || !hist.isConnected) return;
+      hist.innerHTML = `<div class="og-shared-head">Earlier versions</div>
+        <p><small>Someone saved a full copy of this page that left out earlier work. What it replaced is kept ${h.keepDays} days; bringing it back adds it to the page again (nothing is removed).</small></p>
+        <ul class="og-list">${h.replaced.map(r => `<li data-since="${r.seq}"><span class="go">${r.frames} change${r.frames === 1 ? '' : 's'} · ${fmtBytes(r.bytes)}<small>replaced ${ago(r.at)}${r.size != null ? ` by a ${fmtBytes(r.size)} copy` : ''}</small></span><button class="mini" data-act="restore">Bring back</button></li>`).join('')}</ul>`;
+      for (const li of hist.querySelectorAll('[data-since]')) {
+        li.querySelector('[data-act=restore]').onclick = () => guard(async () => {
+          const r = await hp.restore(page, Number(li.dataset.since));
+          say(`Brought back ${r.restored} change${r.restored === 1 ? '' : 's'}`);
+          details(page);
+        });
+      }
+    }).catch(() => {});
     on('[data-act=leave]', async () => {
       if (!confirm(`Leave “${info.name}”? It goes from Shared with me. Make a copy first to keep one.`)) return;
       await hp.leave(page, me.id);
@@ -516,6 +591,12 @@ export function startHosted(ui, cfg) {
     provider: hp,
     boot,
     open: openPanel,
+    /** The most bytes one picture may take to be kept in the account (null: no limit here). */
+    pictureLimit() {
+      if (!state.me?.user || !state.me.maxOpBytes || !currentPage()) return null;
+      // Room for what the app wraps around it (stamps, signature, sealing).
+      return Math.max(64 * 1024, state.me.maxOpBytes - 32 * 1024);
+    },
     /** The room's control messages (text frames on the live socket). */
     control(text) {
       let m;

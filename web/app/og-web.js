@@ -1321,9 +1321,70 @@ export async function start({ mode = 'app' } = {}) {
       URL.revokeObjectURL(url);
     }
   }
+  // A page kept in an account sends each picture (and each PDF page) up as
+  // one change, which the site caps (1 MB at omegagiven.com). Bigger ones
+  // are made to fit here: re-encoded (JPEG, or WebP when the picture is
+  // see-through), then scaled down step by step. Signed out, nothing changes.
+  const pictureLimit = () => hosted?.pictureLimit() || null;
+  const MB = n => `${(n / 1048576).toFixed(1)} MB`;
+  const tooBig = (n, limit) => `That is too big to keep in your account (${MB(n)} after shrinking; the most is ${MB(limit)}). Try a smaller picture, or fewer pages.`;
+  const encode = (c, type, q) => new Promise(r => c.toBlob(r, type, q));
+  /** The smallest good-looking encoding of a canvas under `limit` bytes, scaling down if need be (null: none fits). */
+  async function fitCanvas(src, w, h, limit, alpha, firstPng) {
+    let side = Math.min(Math.max(w, h), 3072);
+    for (let step = 0; step < 10 && side >= 160; step++, side = Math.round(side * 0.75)) {
+      const k = side / Math.max(w, h);
+      const c = document.createElement('canvas');
+      c.width = Math.max(1, Math.round(w * k));
+      c.height = Math.max(1, Math.round(h * k));
+      const g = c.getContext('2d');
+      if (!alpha) { g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height); }
+      g.imageSmoothingQuality = 'high';
+      g.drawImage(src, 0, 0, c.width, c.height);
+      // Pages of text stay sharpest as PNG when that fits.
+      if (firstPng && step === 0) { const p = await encode(c, 'image/png'); if (p && p.size <= limit) return p; }
+      for (const q of [0.86, 0.74, 0.6]) {
+        let b = await encode(c, alpha ? 'image/webp' : 'image/jpeg', q);
+        // No WebP encoder (older Safari): PNG keeps the see-through parts.
+        if (alpha && b && b.type !== 'image/webp') { b = await encode(c, 'image/png'); if (b && b.size <= limit) return b; break; }
+        if (b && b.size <= limit) return b;
+      }
+    }
+    return null;
+  }
+  /** Picture bytes under `limit` (unchanged when they already fit); throws if nothing fits. */
+  async function fitPicture(bytes, type, limit) {
+    if (!limit || bytes.length <= limit) return bytes;
+    const blob = new Blob([bytes], { type });
+    let img;
+    try { img = await createImageBitmap(blob); } catch (e) {
+      img = new Image();
+      img.src = URL.createObjectURL(blob);
+      await img.decode();
+    }
+    const w = img.width || img.naturalWidth, h = img.height || img.naturalHeight;
+    // See-through? (looked at small: cheap)
+    const t = document.createElement('canvas');
+    t.width = t.height = 32;
+    const tg = t.getContext('2d', { willReadFrequently: true });
+    tg.drawImage(img, 0, 0, 32, 32);
+    const px = tg.getImageData(0, 0, 32, 32).data;
+    let alpha = false;
+    if (type !== 'image/jpeg') for (let i = 3; i < px.length; i += 4) if (px[i] < 250) { alpha = true; break; }
+    const out = await fitCanvas(img, w, h, limit, alpha, false);
+    img.close?.();
+    if (!out) throw new Error(tooBig(bytes.length, limit));
+    return new Uint8Array(await out.arrayBuffer());
+  }
   async function addPicture(blob, at) {
     try {
-      const bytes = NATIVE.includes(blob.type) ? new Uint8Array(await blob.arrayBuffer()) : await asPng(blob);
+      let bytes = NATIVE.includes(blob.type) ? new Uint8Array(await blob.arrayBuffer()) : await asPng(blob);
+      const limit = pictureLimit();
+      if (limit && bytes.length > limit) {
+        const was = bytes.length;
+        bytes = await fitPicture(bytes, NATIVE.includes(blob.type) ? blob.type : 'image/png', limit);
+        say(`Picture made smaller to keep it in your account (${MB(was)} → ${MB(bytes.length)})`);
+      }
       const err = og_paste_image(bytes, at?.[0], at?.[1]);
       if (err) say(`Could not add the picture: ${err}`);
     } catch (e) {
@@ -1357,7 +1418,11 @@ export async function start({ mode = 'app' } = {}) {
         g.fillStyle = '#fff';
         g.fillRect(0, 0, c.width, c.height);
         await page.render({ canvasContext: g, viewport: vp }).promise;
-        const png = await new Promise(r => c.toBlob(r, 'image/png'));
+        // In an account each page must fit one change: PNG when it does
+        // (sharp text), else JPEG, else smaller.
+        const limit = pictureLimit();
+        const png = limit ? await fitCanvas(c, c.width, c.height, limit, false, true) : await encode(c, 'image/png');
+        if (!png) { say(`Page ${i + 1} of ${name} is too big to keep in your account, even made smaller`); return; }
         const err = og_pdf_page(new Uint8Array(await png.arrayBuffer()), i, total, at?.[0], at?.[1], name);
         if (err) { say(`Could not import page ${i + 1}: ${err}`); return; }
         page.cleanup();
@@ -1603,6 +1668,21 @@ export async function start({ mode = 'app' } = {}) {
       app: { og_join, og_join_upload, og_view_token, og_set_name, og_go_to_peer },
       // The room's own messages (chat) go up the live socket as text frames.
       sendControl: text => { if (!ws || ws.readyState !== 1) return false; ws.send(text); return true; },
+      // Signed out (or another account): the account's pages leave this
+      // device: their copies here, and the open one if it is one of them.
+      dropLocal: async canvases => {
+        const gone = new Set(canvases);
+        if (!gone.size) return;
+        if (gone.has(status().canvas)) {
+          netClose();
+          og_blank();
+          try { localStorage.removeItem('og-page'); } catch (e) {}
+        }
+        pages = pages.filter(p => !gone.has(p.c));
+        lsSet('og-pages', pages);
+        pushPages();
+        for (const c of gone) { await idbDel('page:' + c, 'canvases'); await idbDel(`folder.${c}`, 'canvases'); }
+      },
     }, hostedCfg);
     hosted.boot();
   }
