@@ -55,7 +55,7 @@ const api = (p, method, path, body) => p.evaluate(([method, path, body]) => fetc
 const toasts = p => p.evaluate(() => [...document.querySelectorAll('.og-toast, .og-say, [role=status]')].map(e => e.textContent).join(' | '));
 
 // ---- alice: a page, and a 3+ MB photo dropped on it --------------------------------
-const alice = await person('alice');
+const alice = await person('hana');
 await alice.waitForSelector('section[data-name="My account"]:not([hidden])', { timeout: 15000 });
 await alice.click('section[data-name="My account"] [data-act=new]');
 await until(async () => (await api(alice, 'GET', '/pages')).body.mine.length === 1);
@@ -91,15 +91,15 @@ assert.ok(stats.bytes > 100 * 1024 && stats.bytes < 1.2 * 1024 * 1024, `the room
 console.log(`alice: a ${(photo / 1048576).toFixed(1)} MB photo went up as ${(stats.bytes / 1048576).toFixed(2)} MB, saved`);
 
 // ---- give-away: an offer bob accepts ---------------------------------------------------
-const bob = await person('bob');
-alice.answer = 'bob';
+const bob = await person('hiro');
+alice.answer = 'hiro';
 await alice.evaluate(() => window.ogPaper.account());
 await alice.waitForSelector(`[data-list=mine] li[data-id="${id}"] [data-act=share]`);
 await alice.click(`[data-list=mine] li[data-id="${id}"] [data-act=share]`);
 await alice.waitForSelector('section[data-name="Page"] [data-act=transfer]');
 await alice.click('section[data-name="Page"] [data-act=transfer]');
 await alice.waitForSelector('section[data-name="Page"] [data-act=withdraw]');
-assert.match(await alice.textContent('section[data-name="Page"]'), /Offered to bob/);
+assert.match(await alice.textContent('section[data-name="Page"]'), /Offered to hiro/);
 await shots(alice, 'offer-made');
 assert.deepEqual((await api(bob, 'GET', '/pages')).body.mine, [], 'nothing moved yet');
 await bob.evaluate(() => window.ogPaper.account());
@@ -135,9 +135,9 @@ await shots(bob, 'earlier-versions');
 await bob.click('section[data-name="Page"] [data-history] [data-act=restore]');
 await until(async () => (await api(bob, 'GET', `/pages/${id}/history`)).body.replaced.length === 0, 15000, 'not restored');
 // A new device gets the whole page again.
-const carolShare = await api(bob, 'POST', `/pages/${id}/members`, { who: 'carol', role: 'viewer' });
+const carolShare = await api(bob, 'POST', `/pages/${id}/members`, { who: 'hope', role: 'viewer' });
 assert.equal(carolShare.status, 200);
-const carol = await person('carol');
+const carol = await person('hope');
 await carol.waitForSelector(`[data-list=shared] li[data-id="${id}"] .go`);
 await carol.click(`[data-list=shared] li[data-id="${id}"] .go`);
 await until(async () => (await texts(carol)).includes('keep-me-alice'), 30000, 'carol did not get the restored page');
@@ -164,7 +164,7 @@ console.log('trash: deleted (gone for everyone), restored');
 // ---- signing out takes the account's pages off the device ---------------------------
 const before = await carol.evaluate(() => ({ map: Object.keys(JSON.parse(localStorage.getItem('og-hosted-pages') || '{}')).length, owner: localStorage.getItem('og-hosted-user') }));
 assert.equal(before.map, 1);
-assert.equal(before.owner, 'carol');
+assert.equal(before.owner, 'hope');
 const canvas = await carol.evaluate(() => JSON.parse(localStorage.getItem('og-hosted-pages'))[Object.keys(JSON.parse(localStorage.getItem('og-hosted-pages')))[0]].canvas);
 await until(async () => carol.evaluate(c => new Promise(ok => {
   const r = indexedDB.open('og-paper');
