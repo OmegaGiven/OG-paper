@@ -6,6 +6,8 @@
 # REBUILD=1 rebuilds the wasm even if web/app/pkg has one.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+# SHOTS relative to where it was started, made if missing.
+if [ -n "${SHOTS:-}" ]; then mkdir -p "$SHOTS"; SHOTS="$(cd "$SHOTS" && pwd)"; export SHOTS; fi
 cd "$ROOT"
 if [ ! -f web/app/pkg/og_paper_bg.wasm ] || [ -n "${REBUILD:-}" ]; then
   cargo build --release -p og-paper --lib --target wasm32-unknown-unknown

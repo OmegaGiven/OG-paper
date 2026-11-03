@@ -35,6 +35,27 @@ quota can't be exceeded (single conditional UPDATE); per-socket and per-account
 rate limits exist; the service worker never caches `/api/`; the privacy policy
 is honest that the site holds page keys.
 
+## Status (updated by #219, 2026-11-03)
+
+Fixed in og-paper (see HOSTED.md "Safety nets"; tests in
+`hosted/test/hardening.test.js` and `hardening-e2e.mjs`; the probes in
+`audit-probe.mjs` now expect the fixes):
+
+| # | Fix |
+| --- | --- |
+| H1 | Full copies keep what they replace for 30 days (owners/admin bring it back); a non-owner's copy under 10% of what it replaces replaces nothing |
+| H2 | Give away is an offer the recipient accepts; by username/email only (raw ids refused) |
+| H4 (part) | Delete goes to a 30-day trash (restore, delete for good). Off-site backups and the restore runbook are still to do |
+| H5 | Pictures and PDF pages over the change limit are re-encoded and scaled down in the app before upload |
+| M2 | Signing out (or another account) removes the account's links (keys) and offline copies from the device |
+| M3 | Only owners/editors pin a room; owners may re-pin an empty one; `POST /pages {room}` pins at creation |
+| M4 (part) | Removing/demoting a co-owner turns off the links they made; owners see who made each link. Co-owners can still remove each other; no event log yet |
+| L1 | Writes need `Origin` or `Sec-Fetch-Site` |
+| L3 | Page and people names cleaned server-side |
+
+Still open: C1 and C2 (human: Workers Paid, Terms/Privacy v2), H3, H4
+backups, H6, H7, M1, M5-M11, L2, L4-L9.
+
 ## Severity summary
 
 | # | Sev | Issue | Area |

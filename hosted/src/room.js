@@ -54,12 +54,12 @@ export class PaperRoom {
     this.sql.exec(`CREATE TABLE IF NOT EXISTS frames (
       seq INTEGER PRIMARY KEY AUTOINCREMENT, kind INTEGER NOT NULL, tiles TEXT NOT NULL DEFAULT '',
       author TEXT NOT NULL, at INTEGER NOT NULL, size INTEGER NOT NULL, body BLOB, store TEXT NOT NULL DEFAULT '')`);
-    // What a full copy replaced is kept keepReplacedDays (gone: when, by: the
+    // What a full copy replaced is kept keepReplacedDays (gone: when, gone_by: the
     // copy's seq) so an owner or the admin can bring it back; rooms made
     // before this get the two columns here.
-    try { this.sql.exec('SELECT gone, by FROM frames LIMIT 0'); } catch (e) {
+    try { this.sql.exec('SELECT gone, gone_by FROM frames LIMIT 0'); } catch (e) {
       this.sql.exec('ALTER TABLE frames ADD COLUMN gone INTEGER');
-      this.sql.exec('ALTER TABLE frames ADD COLUMN by INTEGER');
+      this.sql.exec('ALTER TABLE frames ADD COLUMN gone_by INTEGER');
     }
     this.sql.exec('CREATE TABLE IF NOT EXISTS chunks (seq INTEGER NOT NULL, i INTEGER NOT NULL, body BLOB NOT NULL, PRIMARY KEY (seq, i))');
     this.sql.exec('CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT)');
@@ -328,7 +328,7 @@ export class PaperRoom {
         kind, tiles.join('\n'), a.user, now, body.length, store === '' ? body : null, store);
       seq = Number(this.sql.exec('SELECT last_insert_rowid() AS s').toArray()[0].s);
       // Replaced, not deleted: kept keepReplacedDays (see restore()).
-      for (const r of covered) this.sql.exec('UPDATE frames SET gone = ?, by = ? WHERE seq = ?', now, seq, r.seq);
+      for (const r of covered) this.sql.exec('UPDATE frames SET gone = ?, gone_by = ? WHERE seq = ?', now, seq, r.seq);
       if (store === 'chunks') {
         for (let i = 0, at = 0; at < body.length; i++, at += this.cfg.chunkBytes) {
           this.sql.exec('INSERT INTO chunks (seq, i, body) VALUES (?, ?, ?)', seq, i, body.slice(at, at + this.cfg.chunkBytes));
@@ -475,8 +475,8 @@ export class PaperRoom {
 
   /** The full copies whose replaced frames are still kept, newest first. */
   history() {
-    const rows = this.sql.exec(`SELECT f.by AS seq, MIN(f.gone) AS at, COUNT(*) AS frames, SUM(f.size) AS bytes, c.author AS author, c.size AS size
-      FROM frames f LEFT JOIN frames c ON c.seq = f.by WHERE f.gone IS NOT NULL GROUP BY f.by ORDER BY f.by DESC`).toArray();
+    const rows = this.sql.exec(`SELECT f.gone_by AS seq, MIN(f.gone) AS at, COUNT(*) AS frames, SUM(f.size) AS bytes, c.author AS author, c.size AS size
+      FROM frames f LEFT JOIN frames c ON c.seq = f.gone_by WHERE f.gone IS NOT NULL GROUP BY f.gone_by ORDER BY f.gone_by DESC`).toArray();
     return {
       keepDays: this.cfg.keepReplacedDays,
       bytes: this.bytes(),
@@ -495,11 +495,11 @@ export class PaperRoom {
    */
   async restore({ since = 0 }) {
     await this.queue;
-    const rows = this.sql.exec('SELECT seq, size FROM frames WHERE gone IS NOT NULL AND by >= ? ORDER BY seq', since).toArray();
+    const rows = this.sql.exec('SELECT seq, size FROM frames WHERE gone IS NOT NULL AND gone_by >= ? ORDER BY seq', since).toArray();
     if (!rows.length) return json({ restored: 0, bytes: 0 });
     const bytes = rows.reduce((n, r) => n + Number(r.size), 0);
     this.ctx.storage.transactionSync(() => {
-      for (const r of rows) this.sql.exec('UPDATE frames SET gone = NULL, by = NULL WHERE seq = ?', r.seq);
+      for (const r of rows) this.sql.exec('UPDATE frames SET gone = NULL, gone_by = NULL WHERE seq = ?', r.seq);
     });
     const owner = this.meta('owner');
     if (owner && this.env.DB) await charge(this.env.DB, owner, bytes);
