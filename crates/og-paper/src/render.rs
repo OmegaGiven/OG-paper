@@ -358,6 +358,12 @@ pub(crate) fn surface_size(window: &Window) -> winit::dpi::PhysicalSize<u32> {
 }
 
 pub struct Renderer {
+    /// UI textures the GPU holds (the launch log's proof the UI can draw).
+    ui_textures: usize,
+    /// Frames still to lose on purpose (`OGP_TEST_DROP_FRAMES`: tests what
+    /// a window that isn't ready yet does, as on macOS at launch).
+    #[cfg(not(target_arch = "wasm32"))]
+    drop_frames: u32,
     /// Background grid to draw under the ink this frame, if any.
     pub grid: Option<GridGpu>,
     /// Dark mode: the frame is drawn off screen, then flipped onto it.
@@ -558,7 +564,9 @@ impl Renderer {
             width: size.width.max(1),
             height: size.height.max(1),
             present_mode: wgpu::PresentMode::AutoVsync,
-            desired_maximum_frame_latency: 1,
+            // macOS waits forever for a free drawable (wgpu turns the timeout
+            // off), so keep a spare there.
+            desired_maximum_frame_latency: if cfg!(target_os = "macos") { 2 } else { 1 },
             alpha_mode: caps.alpha_modes[0],
             view_formats: vec![],
             color_space: wgpu::SurfaceColorSpace::Auto,
@@ -1043,7 +1051,49 @@ impl Renderer {
             stencil_tex: None,
             tile_pipe,
             egui,
+            ui_textures: 0,
+            #[cfg(not(target_arch = "wasm32"))]
+            drop_frames: std::env::var("OGP_TEST_DROP_FRAMES")
+                .ok()
+                .and_then(|n| n.parse().ok())
+                .unwrap_or(0),
         })
+    }
+
+    pub fn ui_textures(&self) -> usize {
+        self.ui_textures
+    }
+
+    /// The frame to draw on, if the system has one for us now.
+    fn next_frame(&mut self) -> Option<wgpu::SurfaceTexture> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.drop_frames > 0 {
+            self.drop_frames -= 1;
+            crate::launch::dropped("test");
+            return None;
+        }
+        let Some(surface) = &self.surface else {
+            return None;
+        };
+        let why = match surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(f)
+            | wgpu::CurrentSurfaceTexture::Suboptimal(f) => return Some(f),
+            wgpu::CurrentSurfaceTexture::Outdated => {
+                surface.configure(&self.device, &self.config);
+                "outdated"
+            }
+            wgpu::CurrentSurfaceTexture::Lost => {
+                surface.configure(&self.device, &self.config);
+                "lost"
+            }
+            wgpu::CurrentSurfaceTexture::Occluded => "occluded",
+            wgpu::CurrentSurfaceTexture::Timeout => "timeout",
+            wgpu::CurrentSurfaceTexture::Validation => "validation",
+        };
+        log::info!("no frame: {why}");
+        #[cfg(not(target_arch = "wasm32"))]
+        crate::launch::dropped(why);
+        None
     }
 
     pub fn max_texture_side(&self) -> usize {
@@ -1156,21 +1206,21 @@ impl Renderer {
         wet: Option<Wet<'_>>,
         ui: UiPaint,
     ) -> bool {
-        let Some(surface) = &self.surface else {
+        // egui sends each texture once, so they go to the GPU whether or not
+        // this frame can be shown. macOS has no frame for a window it hasn't
+        // put on screen yet, and the first one carries the font atlas: lost,
+        // every part of the UI is skipped for good and the window stays empty.
+        for (id, delta) in &ui.textures.set {
+            for d in delta.iter() {
+                self.egui.update_texture(&self.device, &self.queue, *id, d);
+                self.ui_textures += usize::from(d.pos.is_none());
+            }
+        }
+        let Some(frame) = self.next_frame() else {
+            for id in &ui.textures.free {
+                self.egui.free_texture(id);
+            }
             return false;
-        };
-        let frame = match surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(f)
-            | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
-            wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
-                log::info!("surface outdated or lost; reconfiguring");
-                surface.configure(&self.device, &self.config);
-                return false;
-            }
-            other => {
-                log::info!("no frame: {:?}", std::mem::discriminant(&other));
-                return false;
-            }
         };
         let screen_view = frame
             .texture
@@ -1349,11 +1399,6 @@ impl Renderer {
             size_in_pixels: [self.config.width, self.config.height],
             pixels_per_point: ui.pixels_per_point,
         };
-        for (id, delta) in &ui.textures.set {
-            for d in delta.iter() {
-                self.egui.update_texture(&self.device, &self.queue, *id, d);
-            }
-        }
         let mut enc = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {

@@ -39,6 +39,8 @@ mod imagefx;
 mod images;
 mod import;
 mod joints;
+#[cfg(not(target_arch = "wasm32"))]
+mod launch;
 mod layers;
 mod layout;
 mod library;
@@ -3727,6 +3729,10 @@ impl App {
                 n_prims
             );
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        if shown {
+            launch::presented(n_prims, self.gpu.as_ref().map_or(0, |g| g.ui_textures()));
+        }
         if !shown {
             log::debug!("frame not presented; retrying");
             self.redraw();
@@ -3738,6 +3744,11 @@ impl ApplicationHandler for App {
     /// Wake up to hide a message when its time is up, and every second
     /// while syncing in the background.
     fn about_to_wait(&mut self, el: &ActiveEventLoop) {
+        // A window in front of the person that still shows nothing: say so.
+        #[cfg(desktop)]
+        if self.window.as_ref().is_some_and(|w| w.has_focus()) && launch::overdue() {
+            launch::warn_no_frame();
+        }
         if self.redraw_again.take() {
             if let Some(w) = &self.window {
                 w.request_redraw();
@@ -3779,6 +3790,14 @@ impl ApplicationHandler for App {
                     use winit::platform::web::WindowAttributesExtWebSys;
                     attrs.with_append(true)
                 };
+                #[cfg(not(target_arch = "wasm32"))]
+                launch::stage("window");
+                #[cfg(not(target_arch = "wasm32"))]
+                let w = match el.create_window(attrs) {
+                    Ok(w) => Arc::new(w),
+                    Err(e) => launch::fatal("The window could not be opened", &e.to_string()),
+                };
+                #[cfg(target_arch = "wasm32")]
                 let w = Arc::new(el.create_window(attrs).expect("create window"));
                 #[cfg(target_arch = "wasm32")]
                 web::set_window(w.clone());
@@ -3791,7 +3810,12 @@ impl ApplicationHandler for App {
         } else {
             #[cfg(not(target_arch = "wasm32"))]
             {
-                let g = pollster::block_on(Renderer::new(window.clone())).expect("GPU init");
+                launch::stage("graphics");
+                let g = match pollster::block_on(Renderer::new(window.clone())) {
+                    Ok(g) => g,
+                    Err(e) => launch::fatal("The graphics system could not be started", &e),
+                };
+                launch::stage("first frame");
                 self.egui_io = Some(egui_io::EguiIo::new(
                     &self.egui_ctx,
                     &window,
@@ -4133,11 +4157,19 @@ pub fn run_desktop(open: Option<PathBuf>) {
         env_logger::Env::default().default_filter_or("info,wgpu_core=warn,wgpu_hal=warn,naga=warn"),
     )
     .init();
-    let el = EventLoop::new().expect("event loop");
+    launch::begin();
+    let el = match EventLoop::new() {
+        Ok(el) => el,
+        Err(e) => launch::fatal("The app could not start", &e.to_string()),
+    };
     el.set_control_flow(ControlFlow::Wait);
+    launch::stage("loading settings");
     let mut app = App::new(open);
     app.plugins_load_saved();
-    el.run_app(&mut app).expect("event loop");
+    launch::stage("event loop");
+    if let Err(e) = el.run_app(&mut app) {
+        launch::fatal("The app stopped", &e.to_string());
+    }
 }
 
 /// `og-paper --serve canvas.ogp [--port N]`: host a canvas with no window
@@ -4244,6 +4276,7 @@ pub fn run_ios() {
         let _ = std::fs::create_dir_all(&docs);
         let _ = DATA_DIR.set(docs);
     }
+    launch::begin();
     let el = EventLoop::new().expect("event loop");
     el.set_control_flow(ControlFlow::Wait);
     let mut app = App::new(None);
