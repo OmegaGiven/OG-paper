@@ -1,0 +1,4 @@
+Write by hand and turn it into text with the new Write tool.
+Spell check while you type, never autocorrect.
+Text boxes whose words wrap inside the box and shrink to fit.
+A more reliable first launch.

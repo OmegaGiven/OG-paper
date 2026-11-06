@@ -23,6 +23,12 @@ on:
       description:
         description: Description file under packaging/apple/appstore (empty = leave)
         default: ""
+      copyright:
+        description: Copyright line, e.g. 2026 OG Studio (empty = leave)
+        default: ""
+      whats_new:
+        description: What's New file under packaging/apple/appstore (empty = leave; not on a first version)
+        default: ""
       previews:
         description: Preview folder under packaging/apple/appstore (empty = none)
         default: ""
@@ -54,6 +60,8 @@ jobs:
           if [ -n "${{ inputs.shots }}" ]; then args+=(--shots "packaging/apple/appstore/${{ inputs.shots }}" --display "${{ inputs.display }}"); fi
           if [ -n "${{ inputs.notes }}" ]; then args+=(--notes "packaging/apple/appstore/${{ inputs.notes }}"); fi
           if [ -n "${{ inputs.description }}" ]; then args+=(--description "packaging/apple/appstore/${{ inputs.description }}"); fi
+          if [ -n "${{ inputs.copyright }}" ]; then args+=(--copyright "${{ inputs.copyright }}"); fi
+          if [ -n "${{ inputs.whats_new }}" ]; then args+=(--whats-new "packaging/apple/appstore/${{ inputs.whats_new }}"); fi
           if [ -n "${{ inputs.previews }}" ]; then args+=(--previews "packaging/apple/appstore/${{ inputs.previews }}" --preview-type "${{ inputs.preview_type }}"); fi
           python3 packaging/apple/asc/listing.py "${args[@]}"
           python3 packaging/apple/asc/status.py

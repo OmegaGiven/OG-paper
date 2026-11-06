@@ -16,6 +16,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 /// Where people get help (the listing's Support URL).
+#[cfg(desktop)]
 const SUPPORT: &str = "https://omegagiven.github.io/OG-paper/support/";
 /// How long a window may stay undrawn before the app says so.
 const PATIENCE: Duration = Duration::from_secs(15);
@@ -26,6 +27,7 @@ static STARTED: OnceLock<Instant> = OnceLock::new();
 static STAGE: Mutex<&str> = Mutex::new("not started");
 static PRESENTED: AtomicBool = AtomicBool::new(false);
 static UI_SHOWN: AtomicBool = AtomicBool::new(false);
+#[cfg(desktop)]
 static WARNED: AtomicBool = AtomicBool::new(false);
 static DROPPED: AtomicU32 = AtomicU32::new(0);
 

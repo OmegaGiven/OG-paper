@@ -12,6 +12,7 @@
   <!-- Export compliance: standard algorithms (ChaCha20-Poly1305, Ed25519, TLS)
        in publicly available open-source code; no documentation needed. -->
   <key>ITSAppUsesNonExemptEncryption</key><false/>
+  <key>NSHumanReadableCopyright</key><string>© 2026 OG Studio and contributors. MPL-2.0.</string>
   <key>CFBundleShortVersionString</key><string>__VERSION__</string>
   <key>CFBundleVersion</key><string>__BUILD__</string>
   <key>CFBundleSupportedPlatforms</key><array><string>__PLATFORM__</string></array>

@@ -4296,6 +4296,7 @@ fn android_main(app: winit::platform::android::activity::AndroidApp) {
     if let Some(dir) = app.internal_data_path() {
         let _ = DATA_DIR.set(dir);
     }
+    launch::begin();
     let el = EventLoop::builder()
         .with_android_app(app)
         .build()

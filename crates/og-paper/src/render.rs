@@ -358,7 +358,7 @@ pub(crate) fn surface_size(window: &Window) -> winit::dpi::PhysicalSize<u32> {
 }
 
 pub struct Renderer {
-    /// UI textures the GPU holds (the launch log's proof the UI can draw).
+    /// UI textures the GPU has had (the launch log's proof the UI can draw).
     ui_textures: usize,
     /// Frames still to lose on purpose (`OGP_TEST_DROP_FRAMES`: tests what
     /// a window that isn't ready yet does, as on macOS at launch).
@@ -1060,6 +1060,7 @@ impl Renderer {
         })
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn ui_textures(&self) -> usize {
         self.ui_textures
     }

@@ -10,6 +10,10 @@
       replace that screenshot set (en-US) with the PNGs in DIR, in name order
   listing.py --platform MAC_OS --version 1.0 --notes FILE
       set the App Review notes from FILE
+  listing.py --platform MAC_OS --version 1.0 --copyright "2026 OG Studio"
+      set the copyright line
+  listing.py --platform IOS --version 1.1 --whats-new FILE
+      set What's New (not on a first version)
 
 It never submits for review. Needs ASC_KEY, ASC_KEY_ID, ASC_ISSUER."""
 
@@ -130,11 +134,30 @@ def set_description(v, path):
     text = open(path).read().strip()
     if len(text) > 4000:
         sys.exit(f"description is {len(text)} characters (most 4000)")
+    # Guideline 2.3.10: no other platforms in the listing.
+    for word in ("Android", "Windows", "Linux", "Google Play"):
+        if word.lower() in text.lower():
+            sys.exit(f"description mentions {word}")
     for l in call("GET", f"/v1/appStoreVersions/{v['id']}/appStoreVersionLocalizations")["data"]:
         if l["attributes"]["locale"] == "en-US":
             call("PATCH", f"/v1/appStoreVersionLocalizations/{l['id']}", {"data": {
                 "type": "appStoreVersionLocalizations", "id": l["id"], "attributes": {"description": text}}})
             print("description set from", path)
+
+
+def set_whats_new(v, path):
+    text = open(path).read().strip()
+    for l in call("GET", f"/v1/appStoreVersions/{v['id']}/appStoreVersionLocalizations")["data"]:
+        if l["attributes"]["locale"] == "en-US":
+            call("PATCH", f"/v1/appStoreVersionLocalizations/{l['id']}", {"data": {
+                "type": "appStoreVersionLocalizations", "id": l["id"], "attributes": {"whatsNew": text}}})
+            print("what's new set from", path)
+
+
+def set_copyright(v, text):
+    call("PATCH", f"/v1/appStoreVersions/{v['id']}", {"data": {
+        "type": "appStoreVersions", "id": v["id"], "attributes": {"copyright": text}}})
+    print("copyright set to", text)
 
 
 def set_notes(v, path):
@@ -158,6 +181,8 @@ def main():
     p.add_argument("--previews")
     p.add_argument("--description")
     p.add_argument("--preview-type")
+    p.add_argument("--copyright")
+    p.add_argument("--whats-new")
     a = p.parse_args()
     aid, v = version(a.platform, a.version)
     if a.build:
@@ -168,6 +193,10 @@ def main():
         set_notes(v, a.notes)
     if a.description:
         set_description(v, a.description)
+    if a.copyright:
+        set_copyright(v, a.copyright)
+    if a.whats_new:
+        set_whats_new(v, a.whats_new)
     if a.previews:
         replace_previews(v, a.previews, a.preview_type)
 

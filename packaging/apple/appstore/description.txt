@@ -5,6 +5,8 @@ DRAW YOUR WAY
 • Highlighter, eraser, bucket fill, textures and stamps
 • Shapes with hand-drawn or clean outlines, and a pen for smooth curves
 • Text in bundled fonts or your own, with letter spacing, line height and words that follow any curve
+• Text boxes whose words wrap and shrink to fit, and spell check as you type
+• Write by hand and turn it into text
 • Pictures and PDFs to write on, cropped in place, with brightness, contrast, saturation and background removal
 
 DESIGN
@@ -33,4 +35,4 @@ DRAW TOGETHER, WHEN YOU WANT
 Share a canvas live with end-to-end encryption, host it yourself, sync through a folder, or merge copies later. Offline work joins in when you reconnect.
 
 FREE AND OPEN SOURCE
-OG Paper is free and open source (MPL-2.0), and runs on Mac, iPhone, iPad, Windows, Linux, Android and the web.
+OG Paper is free and open source (MPL-2.0), and runs on Mac, iPhone and iPad.

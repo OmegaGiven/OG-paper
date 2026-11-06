@@ -10,7 +10,7 @@ on:
     inputs:
       version:
         description: Marketing version (must match the version in App Store Connect)
-        default: "1.0"
+        default: "1.1"
       upload:
         description: Upload to App Store Connect (off = simulator test, build, sign and validate only)
         type: boolean

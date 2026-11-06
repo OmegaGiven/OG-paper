@@ -23,33 +23,56 @@
   a { color: var(--accent); }
   .card { background: var(--card); border: 1px solid var(--edge); border-radius: 14px; padding: 4px 22px 14px; margin-top: 18px; }
   li { margin: 6px 0; }
+  dt { font-weight: 650; margin-top: 14px; }
+  dd { margin: 2px 0 0; }
+  a.button { display: inline-block; background: var(--accent); color: #fff; font-weight: 650; text-decoration: none; padding: 10px 18px; border-radius: 10px; }
+  footer { color: var(--muted); margin-top: 36px; font-size: .9rem; }
 </style>
 </head>
 <body>
 <main>
 <nav><a href="../"><img src="../app/icon-192.png" alt="">OG Paper</a></nav>
 <h1>Support</h1>
-<p class="meta">Help with OG Paper, the free, open-source endless canvas.</p>
+<p class="meta">Help with OG Paper, the free, open-source endless canvas from OG Studio.</p>
 
 <div class="card">
-<h2>Get help or report a problem</h2>
-<p>Open an issue at <a href="https://github.com/OmegaGiven/OG-paper/issues">github.com/OmegaGiven/OG-paper/issues</a>: describe what happened, your device and OS, and the app version (shown in the App Store, or the build in TestFlight). Feature ideas are welcome there too.</p>
+<h2>Contact us</h2>
+<p><a class="button" href="https://ogstudio.org/feedback/new/?product=og-paper">Send a question or report a problem</a></p>
+<p>No account is needed. Say what happened, your device and system version, and the app version. Add your email in the "How can we reach you?" box and we will write back; the box stays private, while the title and description show on the public feedback board.</p>
+<p>You can also open an issue at <a href="https://github.com/OmegaGiven/OG-paper/issues">github.com/OmegaGiven/OG-paper/issues</a>.</p>
 </div>
+
+<h2>Common questions</h2>
+<dl>
+<dt>Do I need an account?</dt>
+<dd>No. The apps work offline with no sign-in, and your canvases stay on your device.</dd>
+<dt>Where are my canvases?</dt>
+<dd>Open Settings (the gear) &gt; Pages. To keep a copy somewhere else, use Export.</dd>
+<dt>How do I draw with someone else?</dt>
+<dd>Settings &gt; Share live. Host the canvas and send the link, or paste a link to join. It is end-to-end encrypted.</dd>
+<dt>The window is blank or the tools are missing.</dt>
+<dd>Quit and open OG Paper again, and update to the latest version. If it still happens, contact us above and say which device and system version you use.</dd>
+<dt>How do I get my tools back after hiding them?</dt>
+<dd>Settings &gt; UI settings turns the tool button, tool panel and quick toolbar on and off.</dd>
+<dt>What does it cost?</dt>
+<dd>The app is free, with no ads and no in-app purchases.</dd>
+</dl>
 
 <h2>Getting started</h2>
 <ul>
 <li><b>Draw:</b> pick a tool from the round button at the bottom right; its settings are in the tool panel.</li>
 <li><b>Zoom:</b> pinch, scroll or use the trackpad; there is no limit in or out.</li>
 <li><b>Saved tools:</b> keep tools with their settings in toolbars and the inventory (the numbered button on the quick bar).</li>
-<li><b>Settings:</b> the gear (top right) holds pages, files, export, search, bookmarks, the timeline, sharing, the UI options, plugins and hotkeys.</li>
+<li><b>Settings:</b> the gear (top right) holds pages, files, export, search, layers, sharing, the UI settings, plugins and hotkeys.</li>
 <li><b>Try it first:</b> the <a href="../try/">try-mode demo</a> has a guided checklist, including the endless street.</li>
 </ul>
 
 <h2>Your files</h2>
-<p>Canvases are kept on your device. On macOS and iOS use Settings > Pages to see them, and Export or Save As to put a copy anywhere. The <code>.ogp</code> format is open and documented in the <a href="https://github.com/OmegaGiven/OG-paper">source repository</a>.</p>
+<p>Canvases are kept on your device. On macOS and iOS use Settings > Pages to see them, and Export to put a copy anywhere. The <code>.ogp</code> format is open and documented in the <a href="https://github.com/OmegaGiven/OG-paper">source repository</a>.</p>
 
 <h2>Privacy</h2>
 <p>OG Paper collects no data. See the <a href="../privacy/">privacy policy</a>.</p>
+<footer>OG Paper is made by OG Studio (omegagiven). <a href="https://ogstudio.org/">ogstudio.org</a></footer>
 </main>
 </body>
 </html>

@@ -1,0 +1,12 @@
+Hello, and thank you for the review. We have addressed all three issues in build __BUILD__ of version 1.0.
+
+Guideline 2.1(a), empty window at launch
+We found a startup bug that left the window blank: if the system withheld the first frame, the textures for the whole interface were lost with it, so only the empty paper was drawn. The interface now loads whether or not that frame is shown. If the app ever cannot draw, it now shows a message instead of an empty window. Each build is now launched in its sandbox on a clean Mac before upload, including with the first frames withheld, and the interface must reach the screen for the build to continue.
+
+Guideline 2.3.10, other platforms in the metadata
+We removed the references to other platforms from the description. The listing now mentions only Mac, iPhone and iPad.
+
+Guideline 1.5, Support URL
+https://omegagiven.github.io/OG-paper/support/ now has a contact form that needs no account, answers to common questions, and a getting started guide.
+
+The review notes explain what you should see on launch. Please let us know if you need anything else.

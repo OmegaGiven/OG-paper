@@ -5,6 +5,8 @@ name: Mac App Store
 # Apple Distribution certificate, wraps it in a .pkg signed with the Mac
 # Installer certificate, validates it with Apple and (unless "upload" is
 # off) uploads it to App Store Connect, where it shows up in TestFlight.
+# Before signing it launches a copy in the sandbox (artifact
+# "mac-launch-test"). It never submits for review.
 # No Mac needed: GitHub's macOS runner is one. Secrets: see
 # packaging/apple/README.md.
 on:
@@ -15,6 +17,10 @@ on:
         default: "1.0"
       upload:
         description: Upload to App Store Connect (off = build, sign and validate only)
+        type: boolean
+        default: true
+      require_launch_test:
+        description: Stop if the launch test fails (off = keep going, for a runner that can't show a window)
         type: boolean
         default: true
 
@@ -102,6 +108,18 @@ jobs:
             --output-partial-info-plist build/icon-info.plist
           ls "$APP/Contents/Resources"
           echo "$PROFILE" | base64 --decode > "$APP/Contents/embedded.provisionprofile"
+
+      - name: Launch test (sandboxed, clean container)
+        continue-on-error: ${{ !inputs.require_launch_test }}
+        timeout-minutes: 5
+        run: bash tests/launch/mac-launch.sh "$APP" launch-test
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mac-launch-test
+          path: launch-test/
+          retention-days: 14
 
       - name: Sign
         env:
