@@ -6,7 +6,7 @@ confirmed.
 
 ## 1. Summary
 
-One remote MCP server at `https://ogstudio.org/paper/mcp`, with OAuth against
+One remote MCP server at `https://mcp.ogstudio.org`, with OAuth against
 the OG Studio account, serves Claude, ChatGPT and other MCP clients. Four
 things found while designing change the plan:
 
@@ -70,7 +70,7 @@ Recheck all of these before relying on them.
 ```
 Claude / ChatGPT / any MCP client
         | HTTPS, Bearer token
-ogstudio.org Worker (hosted/src/mcp.js + oauth.js)
+mcp.ogstudio.org Worker (hosted/src/mcp.js + oauth.js)
    token check, scopes, page grants, rate limit, audit
         |                            \
 PaperEngine (Container, native)     D1: grants, tokens, audit
@@ -276,21 +276,24 @@ off, and native AI work waits for P5. Any app that sends pages to an AI needs
 explicit, unticked-by-default consent naming the provider, plus updated privacy
 labels.
 
-## 13. Decisions needed
+## 13. Decisions (made by the owner, 2026-11-06)
 
-1. **Production engine on Cloudflare Containers?** Recommended. It goes beyond
-   the usual og-host2 rule, because public decrypted pages should not sit on a
-   home node.
-2. **Accept server-side decryption for AI?** The site already holds the keys,
-   but this is a new use. It also rules out true end-to-end encryption for
-   pages with AI on. Recommended: yes, per page, disclosed in the policy.
-3. **Default for shared pages:** off, as proposed?
-4. **Reviewer login:** add a password login limited to one test account?
-   Recommended, with a seeded account and sample pages.
-5. **Address:** `ogstudio.org/paper/mcp` needs no DNS change;
-   `mcp.ogstudio.org` is cleaner but needs a record. Recommended: the path.
-6. **Publisher name** for ChatGPT verification: OG Studio as a business, or
-   individual?
+1. **Production engine: Cloudflare Containers.** An agreed exception to the
+   usual og-host2 rule, because public decrypted pages should not sit on a home
+   node. Development still runs on og-host2.
+2. **Server-side decryption for AI: yes, per page, disclosed in the policy.**
+   Left to this design's judgment by the owner. Pages with AI on cannot be
+   truly end-to-end encrypted; pages with AI off are never loaded by the engine.
+3. **Shared pages: AI off by default.**
+4. **Reviewer login: yes.** A password login limited to one seeded test account.
+5. **Address: `https://mcp.ogstudio.org`.** Not the
+   `ogstudio.org/paper/mcp` path first proposed. It needs one DNS
+   record, added by the owner, before P1 goes public. The authorization server
+   stays on `https://ogstudio.org`, where the login cookie lives, and PRM names
+   it as issuer.
+6. **ChatGPT publisher: OG Studio as a business, if possible.** Business
+   verification needs legal-entity paperwork that was not checked here; confirm
+   OG Studio qualifies before P3. Individual verification is the fallback.
 
 ## Sources
 
