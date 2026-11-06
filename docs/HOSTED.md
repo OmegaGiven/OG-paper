@@ -272,6 +272,11 @@ status.
 | `POST /pages/:id/report {reason}` | report |
 | `GET /pages/:id/chat` | the chat's settings and kept messages (data export; members, or owners only while chat is off) |
 | `PATCH /pages/:id/chat {on, keep}` / `DELETE /pages/:id/chat` | chat on/off, kept or ephemeral / clear it (owners) |
+| `GET/POST /oauth/authorize` | a native app's sign-in page (see [NATIVE-SIGN-IN.md](NATIVE-SIGN-IN.md)) |
+| `POST /oauth/token` | the app collects its tokens (`grant_type=poll`), or refreshes them |
+| `POST /oauth/revoke` | sign this device out |
+| `GET /devices` / `DELETE /devices/:id` | devices signed in / sign one out, at once, live sockets too |
+| `DELETE /account {confirm: 'delete'}` | delete everything OG Paper keeps for me, then the adapter's `deleteUser(env, id)`; a page with another owner goes to them |
 | `/admin/reports`, `/admin/reports/:id`, `/admin/pages/:id` (GET, DELETE), `/admin/pages/:id/block`, `/admin/pages/:id/history`, `/admin/pages/:id/restore`, `/admin/accounts/:uid`, `/admin/accounts/:uid/recount` | admin |
 
 ## The web app
@@ -293,7 +298,8 @@ this one** (the open browser canvas into the account), per page Share
 Report, storage use, and who is on the page now. Signed out, the panel
 offers Sign in and everything else is as before. Pages opened from the
 account keep a copy in the browser and reopen offline; changes go up on
-reconnect. The app's own Pages panel lists those copies under "On this
+reconnect. The first sign-in on a browser puts the open canvas into the
+account by itself, if anything is on it. The app's own Pages panel lists those copies under "On this
 device".
 
 ## Chat

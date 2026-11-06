@@ -110,6 +110,13 @@ reports features without tests and tests named here that don't exist.
 | LIVE-07 | Edit and view links (sealed, signed) | Share live links | W D M S | rust:seal::tests::edit_and_view_keys_seal_open_and_sign |
 | LIVE-08 | People strip: a badge for each person on a live page (right side in landscape, across the top in portrait); tap to go to their view, right click (press and hold) to follow or stop | the badges, top right | W D M | ui:people-strip |
 
+## OG Studio account
+
+| ID | Feature | Where | Platforms | Tests |
+| --- | --- | --- | --- | --- |
+| ACCT-01 | Optional sign-in through the website, with a code to compare | Prompt card, Pages | D M | rust:account::tests::pair_code_matches_the_server, rust:account::tests::challenge_is_base64url_sha256 |
+| ACCT-02 | A page kept in the account comes back on a new device | Pages > Keep this page | D M | todo |
+
 ## Page server (workspace host)
 
 | ID | Feature | Where | Platforms | Tests |

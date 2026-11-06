@@ -5,32 +5,33 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { site } from './fakes.js';
 import { newPage } from './helpers.js';
+import { pairCode } from '../src/oauth.js';
 
 const ORIGIN = 'https://omegagiven.com';
-const VERIFIER = 'v'.repeat(43);
-const challenge = v => createHash('sha256').update(v).digest('base64url');
-const REDIRECT = 'ogpaper://signed-in';
-const params = (over = {}) => ({
-  client_id: 'og-paper-app', redirect_uri: REDIRECT, code_challenge: challenge(VERIFIER),
-  code_challenge_method: 'S256', state: 'abc', device: 'iPad', ...over,
+const challengeOf = v => createHash('sha256').update(v).digest('base64url');
+let n = 0;
+const verifier = () => 'v'.repeat(39) + String(++n).padStart(4, '0');
+const params = (v, over = {}) => ({
+  client_id: 'og-paper-app', code_challenge: challengeOf(v), code_challenge_method: 'S256', device: 'iPad', ...over,
 });
 
 const raw = (s, path, init = {}) => s.api(new Request(ORIGIN + '/paper/api' + path, init), s.env, { waitUntil() {} });
-const authorizeUrl = over => '/oauth/authorize?' + new URLSearchParams(params(over));
-const agree = (s, as, over = {}, choice = 'allow') => raw(s, '/oauth/authorize', {
+const authorizeUrl = (v, over) => '/oauth/authorize?' + new URLSearchParams(params(v, over));
+const agree = (s, as, v, over = {}, choice = 'allow') => raw(s, '/oauth/authorize', {
   method: 'POST',
   headers: { Origin: ORIGIN, 'x-test-user': String(as), 'content-type': 'application/x-www-form-urlencoded' },
-  body: new URLSearchParams({ ...params(over), choice }).toString(),
+  body: new URLSearchParams({ ...params(v, over), choice }).toString(),
 });
 const post = (s, form) => raw(s, '/oauth/token', {
   method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' },
   body: new URLSearchParams({ client_id: 'og-paper-app', ...form }).toString(),
 });
-const codeOf = res => new URL(res.headers.get('location')).searchParams.get('code');
-const exchange = (s, code, over = {}) => post(s, { grant_type: 'authorization_code', code, code_verifier: VERIFIER, redirect_uri: REDIRECT, ...over });
+const poll = (s, v) => post(s, { grant_type: 'poll', code_verifier: v });
 
 async function signIn(s, as = 1, device = 'iPad') {
-  const res = await exchange(s, codeOf(await agree(s, as, { device })));
+  const v = verifier();
+  await agree(s, as, v, { device });
+  const res = await poll(s, v);
   assert.equal(res.status, 200);
   return res.json();
 }
@@ -41,66 +42,77 @@ const app = (s, t, method, path, body) => raw(s, path, {
 
 test('signed out, the browser goes to the site to sign in and comes back', async () => {
   const s = site();
-  const res = await raw(s, authorizeUrl());
+  const res = await raw(s, authorizeUrl(verifier(), { device: 'd'.repeat(24) }));
   assert.equal(res.status, 302);
   const to = new URL(res.headers.get('location'), ORIGIN);
   assert.equal(to.pathname, '/account/');
   const next = to.searchParams.get('next');
   assert.ok(next.startsWith('/paper/api/oauth/authorize?'));
-  // The site refuses a next= of 300 characters or more; loopback is the longest.
-  const long = await raw(s, authorizeUrl({ redirect_uri: 'http://127.0.0.1:54321/signed-in', state: 'a'.repeat(22), device: 'd'.repeat(24) }));
-  assert.ok(new URL(long.headers.get('location'), ORIGIN).searchParams.get('next').length < 300);
+  assert.ok(next.length < 300, 'the site refuses a next= of 300 characters or more');
 });
 
-test('signed in, the person is always asked, and the page is safe', async () => {
+test('signed in, the person is always asked, with the code the app shows', async () => {
   const s = site();
-  const res = await raw(s, authorizeUrl({ device: '<script>x</script>' }), { headers: { 'x-test-user': '1' } });
+  const v = verifier();
+  const res = await raw(s, authorizeUrl(v, { device: '<script>x</script>' }), { headers: { 'x-test-user': '1' } });
   assert.equal(res.status, 200);
   const html = await res.text();
   assert.ok(html.includes('Sign in to OG Paper?'));
+  assert.ok(html.includes(pairCode(challengeOf(v))));
   assert.ok(!html.includes('<script>'));
   assert.match(res.headers.get('content-security-policy'), /frame-ancestors 'none'/);
-  assert.match(res.headers.get('content-security-policy'), /form-action 'self' ogpaper:/);
-  const no = await agree(s, 1, {}, 'deny');
-  const back = new URL(no.headers.get('location'));
-  assert.equal(back.searchParams.get('error'), 'access_denied');
-  assert.equal(back.searchParams.get('code'), null);
+  assert.equal((await (await poll(s, v)).json()).error, 'authorization_pending');
 });
 
-test('only the app\'s own addresses get a code', async () => {
+test('the pair code matches the app (same vector as account.rs)', () => {
+  assert.equal(pairCode('a-b_c1d2e3f4'), 'ABC1D2');
+});
+
+test('saying no ends it', async () => {
   const s = site();
-  for (const redirect_uri of ['https://evil.example/signed-in', 'ogpaper://evil', 'http://127.0.0.1.evil.example:1/signed-in', 'http://localhost:1/signed-in']) {
-    assert.equal((await raw(s, authorizeUrl({ redirect_uri }), { headers: { 'x-test-user': '1' } })).status, 400, redirect_uri);
-    assert.equal((await agree(s, 1, { redirect_uri })).status, 400, redirect_uri);
+  const v = verifier();
+  assert.ok((await (await agree(s, 1, v, {}, 'deny')).text()).includes('Nothing was signed in'));
+  assert.equal((await (await poll(s, v)).json()).error, 'access_denied');
+});
+
+test('a bad link is refused', async () => {
+  const s = site();
+  const v = verifier();
+  for (const over of [{ client_id: 'other' }, { code_challenge_method: 'plain' }, { code_challenge: 'short' }]) {
+    assert.equal((await raw(s, authorizeUrl(v, over), { headers: { 'x-test-user': '1' } })).status, 400, JSON.stringify(over));
   }
-  assert.equal((await raw(s, authorizeUrl({ client_id: 'other' }), { headers: { 'x-test-user': '1' } })).status, 400);
-  assert.equal((await raw(s, authorizeUrl({ code_challenge_method: 'plain' }), { headers: { 'x-test-user': '1' } })).status, 400);
 });
 
 test('another site can\'t agree on someone\'s behalf', async () => {
   const s = site();
   const res = await raw(s, '/oauth/authorize', {
     method: 'POST', headers: { Origin: 'https://evil.example', 'x-test-user': '1', 'content-type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({ ...params(), choice: 'allow' }).toString(),
+    body: new URLSearchParams({ ...params(verifier()), choice: 'allow' }).toString(),
   });
   assert.equal(res.status, 403);
 });
 
-test('a code needs the verifier, the same address, and works once', async () => {
+test('only the verifier collects the sign-in, once, and the first answer stands', async () => {
   const s = site();
-  const res = await agree(s, 1);
-  const back = new URL(res.headers.get('location'));
-  assert.equal(back.searchParams.get('state'), 'abc');
-  assert.equal(back.searchParams.get('iss'), ORIGIN);
-  const code = codeOf(res);
-  assert.equal((await exchange(s, code, { code_verifier: 'w'.repeat(43) })).status, 400);
-  // That wrong try spent it.
-  assert.equal((await exchange(s, code)).status, 400);
-  const good = codeOf(await agree(s, 1));
-  assert.equal((await exchange(s, good, { redirect_uri: 'http://127.0.0.1:9/signed-in' })).status, 400);
-  const again = codeOf(await agree(s, 1));
-  assert.equal((await exchange(s, again)).status, 200);
-  assert.equal((await exchange(s, again)).status, 400);
+  const v = verifier();
+  await agree(s, 1, v);
+  // Someone else agreeing to the same challenge doesn't replace it.
+  await agree(s, 2, v);
+  assert.equal((await (await poll(s, verifier())).json()).error, 'authorization_pending');
+  assert.equal((await post(s, { grant_type: 'poll', code_verifier: 'short' })).status, 400);
+  const got = await poll(s, v);
+  assert.equal(got.status, 200);
+  const me = await (await app(s, (await got.json()).access_token, 'GET', '/me')).json();
+  assert.equal(me.user.name, 'alice');
+  assert.equal((await (await poll(s, v)).json()).error, 'authorization_pending');
+});
+
+test('an answer not collected in time is gone', async () => {
+  const s = site();
+  const v = verifier();
+  await agree(s, 1, v);
+  s.env.DB.db.prepare('UPDATE paper_app_codes SET expires_at = 1').run();
+  assert.equal((await (await poll(s, v)).json()).error, 'expired_token');
 });
 
 test('a token gets the person\'s pages, without Origin, and the room', async () => {

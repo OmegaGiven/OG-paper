@@ -1,0 +1,15 @@
+OG Paper is an infinite-canvas drawing app. It works fully offline, and no account or sign-in is needed to use it.
+
+New in this version: an optional OG Studio account keeps pages on our servers so they can be recovered on another device, with a copy kept on the device. A card offers this on first launch; tap Not now to dismiss it, and drawing is unaffected.
+
+To test sign-in:
+1. Tap Sign in on the card, or open Pages (gear, top right) and tap Sign in. The app opens ogstudio.org in the browser and shows a short code.
+2. Sign in with the test account below. The page shows the same code. Tap Sign in, then return to the app, which finishes by itself.
+3. In Pages, tap Keep this page. The page is listed in the account.
+4. Delete my account, in the same panel, opens ogstudio.org to confirm.
+
+Test account: __REVIEWER_LOGIN__
+
+Sign in with Apple is offered alongside Google and GitHub.
+
+Support: https://omegagiven.github.io/OG-paper/support/

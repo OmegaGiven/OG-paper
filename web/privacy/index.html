@@ -48,15 +48,16 @@
 <li><b>Servers</b> you or others host (<code>og-paper --serve-dir</code>) keep the pages shared with them.</li>
 </ul>
 
-<h2>Pages kept in an omegagiven.com account</h2>
-<p>OG Paper at <a href="https://omegagiven.com/paper/">omegagiven.com/paper/</a> can keep your pages in your omegagiven.com account. This is optional: signed out, it works like the web app above and keeps pages in your browser only. Signed in, and only for the pages you keep in the account:</p>
+<h2>Pages kept in an OG Studio account</h2>
+<p>OG Paper at <a href="https://ogstudio.org/paper/">ogstudio.org/paper/</a> and the OG Paper apps can keep your pages in your OG Studio account. You sign in on ogstudio.org with Google, GitHub or Apple; the app never sees your password. This is optional: signed out, it works like the web app above and keeps pages in your browser only. Signed in, and only for the pages you keep in the account:</p>
 <ul>
 <li><b>What is stored:</b> each page's content and history (strokes, text, pictures), its name and size, who it is shared with and how, and links you make for it. Pages are held on Cloudflare (Durable Objects, D1 and optionally R2), which runs the site.</li>
 <li><b>Who can see a page:</b> you, the people you share it with, and anyone you give a link to. Pages are never listed publicly. Live changes are encrypted in transit; the site keeps each page's keys so it can hand them to the people you share with, which means the site's administrators can open a page when they need to, for example to act on a report of abuse. They do not look at pages otherwise.</li>
-<li><b>Your account:</b> sign-in, your username and the email your sign-in provider gives are handled by omegagiven.com's own accounts. OG Paper uses them to show who is on a page and to let people share with you by username or email. Your IP address is used briefly for rate limits.</li>
+<li><b>Your account:</b> sign-in, your username and the email your sign-in provider gives are handled by ogstudio.org's own accounts. OG Paper uses them to show who is on a page and to let people share with you by username or email. Your IP address is used briefly for rate limits.</li>
 <li><b>Storage limits:</b> each account has a storage quota; we keep a count of how much your pages use.</li>
 <li><b>Reports:</b> if you report a page, we keep the report and your account id to review it.</li>
-<li><b>Deleting:</b> deleting a page deletes its content from our servers for everyone it was shared with. To delete everything, delete your pages (or ask us to, via the contact below).</li>
+<li><b>Deleting:</b> deleting a page deletes its content from our servers for everyone it was shared with. To delete everything, use Delete my account in the app's Pages panel or on your account page. Your pages go, except a page that has another owner, which stays with them.</li>
+<li><b>Devices:</b> a signed-in app keeps a sign-in token on your device. We keep which devices are signed in and when each was last used, and you can sign any of them out.</li>
 </ul>
 
 <h2>Plugins</h2>

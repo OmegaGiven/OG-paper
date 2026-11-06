@@ -5,6 +5,7 @@
 
 //! OG Paper: an open-source infinite canvas.
 
+mod account;
 mod arrange;
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 mod artwork;
@@ -263,6 +264,8 @@ pub struct App {
     servers: Vec<pages::ServerConn>,
     /// The open page on its way into a workspace.
     upload: Option<pages::Upload>,
+    #[cfg_attr(any(target_arch = "wasm32", target_os = "android"), allow(dead_code))]
+    account: account::Account,
     /// Connecting to a server known by its address alone.
     probe: Option<pages::Probe>,
     /// A page from this device to upload once it opens (web): the
@@ -411,6 +414,7 @@ impl App {
             plugins: Vec::new(),
             servers: Vec::new(),
             upload: None,
+            account: Default::default(),
             probe: None,
             upload_local: None,
             #[cfg(not(target_arch = "wasm32"))]
@@ -480,7 +484,7 @@ impl App {
 
     /// Something runs in the background that needs regular wake-ups.
     fn background(&self) -> bool {
-        if self.net_active() {
+        if self.net_active() || self.account_waiting() {
             return true;
         }
         #[cfg(not(target_arch = "wasm32"))]
@@ -1735,7 +1739,13 @@ impl App {
             #[cfg(target_arch = "wasm32")]
             Action::RelayShare => web::emit("relay-new"),
             Action::NewLinks => self.new_links(),
-            Action::PagesPanel => self.pages_toggle(),
+            Action::PagesPanel => {
+                self.pages_toggle();
+                if self.ui.pages_open {
+                    self.account_op(account::Op::Refresh);
+                }
+            }
+            Action::Account(op) => self.account_op(op),
             Action::PortalHere => self.portal_pick(None),
             Action::PortalBookmark(i) => self.portal_pick(Some(i)),
             Action::PortalGo => self.portal_go(),
@@ -3486,6 +3496,7 @@ impl App {
         }
         self.profile_tick();
         self.writing_tick();
+        self.account_tick();
         self.ui.sel_count = self.edit.selection.len();
         self.ui.sel_grouped = self.edit.selection.iter().any(|r| self.objs.is_bundle(r));
         self.ui.sel_on_path = self.sel_on_path();

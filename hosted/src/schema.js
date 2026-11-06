@@ -46,12 +46,11 @@ export const UPGRADE = [
   'CREATE INDEX IF NOT EXISTS paper_app_grants_user ON paper_app_grants(user_id)',
   'CREATE INDEX IF NOT EXISTS paper_app_grants_prev ON paper_app_grants(prev_refresh_hash)',
   `CREATE TABLE IF NOT EXISTS paper_app_codes (
-    code_hash     TEXT PRIMARY KEY,
-    user_id       TEXT NOT NULL,
-    redirect_uri  TEXT NOT NULL,
-    challenge     TEXT NOT NULL,
-    device        TEXT NOT NULL,
-    expires_at    INTEGER NOT NULL
+    challenge   TEXT PRIMARY KEY,
+    user_id     TEXT NOT NULL,
+    device      TEXT NOT NULL,
+    denied      INTEGER NOT NULL DEFAULT 0,
+    expires_at  INTEGER NOT NULL
   )`,
 ];
 

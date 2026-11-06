@@ -1,10 +1,27 @@
-# Sign-in on the phone and desktop apps: plan
+# Sign-in on the phone and desktop apps
 
-2026-11-06. Plan only; nothing here is built. Goal: an optional prompt in the
-native apps to sign in through the website, so pages are kept on the Cloudflare
-server and can be recovered, with a copy kept on the device as well.
+2026-11-06. An optional prompt in the native apps to sign in through
+ogstudio.org, so pages are kept on the Cloudflare server and can be recovered,
+with a copy kept on the device as well. Ships in the next version.
 
-## Where things stand
+## Status
+
+Built on branch `worktree-task-native-signin`, not released:
+
+| Part | State |
+| --- | --- |
+| Server: sign-in, device tokens, delete account (`hosted/src/oauth.js`) | Done, tested on real workerd |
+| App: prompt, sign-in, account pages, keep, recover (`account.rs`) | Done on Linux; a page came back on an empty second device |
+| Web: first sign-in keeps the open canvas | Done, browser test passes |
+| Privacy page | Updated on the branch, published with the release |
+| Sign in with Apple, delete-account page | omegagiven-com task #355 |
+| Mac and iPhone | Compile and Keychain **not yet tested**: need Apple's toolchain, so GitHub's Mac runners |
+| Android | No account: its build has no TLS |
+
+Tests: `forge run --on og-host1 bash tests/account/run-e2e.sh`;
+screenshots: `tests/account/shots.sh`.
+
+## Before this work
 
 | | Web app | Native apps |
 | --- | --- | --- |
@@ -35,33 +52,41 @@ Two behaviours on the web to decide on:
 
 ## Design
 
-Use the same OAuth server the AI connector needs (`docs/AI-CONNECTOR.md`,
-section 9), so it is built once. The native app is a public client with PKCE.
+Used a polling flow, not the redirect first planned. An iPhone suspends the app
+while Safari is in front, so nothing could listen for a redirect, and the usual
+fix (`ASWebAuthenticationSession`) is native code that can't be run without a
+Mac. Polling works the same everywhere and could be tested here.
 
-1. App shows the prompt, and opens the system browser at
+1. The app makes a PKCE pair and opens the system browser at
    `ogstudio.org/paper/api/oauth/authorize`.
-2. The website signs the person in as it does today, with Google, GitHub or
-   Apple. Passwords and Google tokens never reach the app.
-3. The browser returns to the app: `ogpaper://` on iOS and Mac (ASWebAuthentication
-   Session on iOS), loopback on Windows and Linux. Android needs its own check.
-4. App swaps the code for a device token: Keychain on Apple, the OS store where
-   there is one. Each device shows in My account and can be revoked.
-5. API and relay accept `Authorization: Bearer`. The current check refuses
-   non-GET requests with no Origin; bearer requests are exempt since they carry
-   no cookie.
-6. The Pages panel gains My account: list, open, keep this page. Opening keeps a
-   copy on the device, as server pages already do (`link.<canvas>`).
+2. The website signs the person in as it does today. Passwords and Google,
+   GitHub or Apple tokens never reach the app.
+3. The page asks them to agree, and shows a six-character code the app shows
+   too, so nobody can get them to approve a sign-in that isn't theirs.
+4. Meanwhile the app asks `/oauth/token` every 3 seconds with the verifier only
+   it holds, and collects its tokens once they agree. `ogpaper://open` on the
+   last page brings the app back; it needs no handling, only the URL type.
+5. Tokens stay in the Keychain on Apple systems, and otherwise in a file only
+   the user can read. API and relay take `Authorization: Bearer`. Admin rights
+   never travel with a token.
+6. Pages lists the account's pages. Opening one joins its relay link, so the
+   device keeps a copy as usual. First sign-in keeps the open page by itself.
 
-Needs an HTTP client in the native build; today it has only WebSockets.
+Not done: other pages on the device go up one at a time with **Keep this page**.
 
-## Work
+## To release
 
-| Step | Where | Size |
-| --- | --- | --- |
-| OAuth server, device tokens, bearer on API and relay, tests | `hosted/` | M, 3-5 days |
-| Sign in with Apple; delete account | omegagiven-com, as its own task | M, 3-5 days |
-| Sign-in flow, token storage, URL scheme, account panel, prompt | Rust app | L, 2 weeks |
-| Apple privacy labels, notes, version 1.1 | App Store Connect | S, plus review |
+1. Finish #355, and create the Apple Services ID and key (owner).
+2. Merge this branch; omegagiven-com bumps `vendor/og-paper` and deploys.
+3. Try the real sign-in on ogstudio.org.
+4. `forge publish`, then build version 1.1 for Mac and iOS on GitHub's runners.
+5. Try it on a real iPhone and Mac through TestFlight.
+6. Update App Privacy in App Store Connect (below), set the 1.1 review notes
+   (`packaging/apple/appstore/review-notes-1.1.txt`), and submit.
+
+App Privacy changes: Contact Info (name, email) and User Content (pages), linked
+to the user, used for app functionality, not for tracking. Only for people who
+sign in.
 
 No Mac is on the tailnet: Mac and iOS sign-in can be tested only in CI and
 TestFlight, so a person has to try the real flow on a device.

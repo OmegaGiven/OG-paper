@@ -33,7 +33,7 @@ DEV=$!
 trap 'kill -- -$DEV 2>/dev/null; sleep 1; rm -rf "$STATE"' EXIT
 for _ in $(seq 1 90); do curl -sf "http://localhost:$PORT/paper/api/me" >/dev/null && break; sleep 1; done
 TESTS=("$@")
-[ ${#TESTS[@]} -eq 0 ] && TESTS=(browser-e2e.mjs chat-e2e.mjs hardening-e2e.mjs)
+[ ${#TESTS[@]} -eq 0 ] && TESTS=(browser-e2e.mjs chat-e2e.mjs hardening-e2e.mjs autokeep-e2e.mjs)
 for t in "${TESTS[@]}"; do
   echo "== $t"
   BASE="http://localhost:$PORT" PW="$PW" node "../test/$t" || { echo "--- wrangler log"; tail -40 "$STATE/dev.log"; exit 1; }
