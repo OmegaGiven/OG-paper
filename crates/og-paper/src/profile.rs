@@ -41,6 +41,8 @@ const SYNCED: [&str; 12] = [
 const USE_KEY: &str = "profile.use";
 /// This device's own set while a server's is in use.
 const LOCAL_KEY: &str = "profile.local";
+/// Servers whose set the person turned down (space-separated link URLs).
+const DECLINED_KEY: &str = "profile.declined";
 
 const HEAD: &str = "og-paper-profile 1";
 
@@ -109,17 +111,63 @@ fn unescape(s: &str) -> String {
     out
 }
 
-/// The set in use: "" this device's, else a server's link URL.
+/// The set in use: "" this device's, else a server's link URL. (Kept in
+/// memory once read: the settings menu asks every frame.)
 pub fn in_use() -> String {
-    crate::prefs::load()
-        .get(USE_KEY)
-        .cloned()
-        .unwrap_or_default()
+    IN_USE.with(|c| {
+        c.borrow_mut()
+            .get_or_insert_with(|| {
+                crate::prefs::load()
+                    .get(USE_KEY)
+                    .cloned()
+                    .unwrap_or_default()
+            })
+            .clone()
+    })
+}
+
+thread_local! {
+    // (Per thread: the app is on one; tests each have their own prefs.)
+    static IN_USE: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
 }
 
 fn set_in_use(url: &str) {
     let mut p = crate::prefs::load();
     p.insert(USE_KEY.into(), url.into());
+    crate::prefs::save(&p);
+    IN_USE.with(|c| *c.borrow_mut() = Some(url.into()));
+}
+
+/// Servers whose set the person turned down for this device's, so a later
+/// sign-in with a saved token doesn't switch back by itself.
+fn declined(url: &str) -> bool {
+    crate::prefs::load()
+        .get(DECLINED_KEY)
+        .is_some_and(|d| d.split(' ').any(|u| u == url))
+}
+
+fn set_declined(url: &str, on: bool) {
+    let mut p = crate::prefs::load();
+    let mut d: Vec<String> = p
+        .get(DECLINED_KEY)
+        .map(|d| {
+            d.split(' ')
+                .filter(|u| !u.is_empty() && *u != url)
+                .map(String::from)
+                .collect()
+        })
+        .unwrap_or_default();
+    if on {
+        d.push(url.into());
+    }
+    p.insert(DECLINED_KEY.into(), d.join(" "));
+    crate::prefs::save(&p);
+}
+
+/// Keep this device's own set aside (it is the one in use now).
+fn keep_local() {
+    let mut p = crate::prefs::load();
+    p.insert(LOCAL_KEY.into(), escape(&current()));
     crate::prefs::save(&p);
 }
 
@@ -131,38 +179,50 @@ impl App {
         self.redraw();
     }
 
+    /// Changes made here that haven't gone to the server yet.
+    fn profile_unsent(&self) -> bool {
+        self.profile_sent.as_deref().is_some_and(|s| s != current())
+    }
+
     /// Server `url`'s account set arrived (empty: it keeps none yet).
     pub(crate) fn profile_arrived(&mut self, i: usize, text: String) {
         let Some(s) = self.servers.get(i) else { return };
         let url = s.link.url.clone();
         let here = in_use();
-        if text.trim().is_empty() {
-            // A new account: it takes this device's set, and uses it.
-            // (Sent by `profile_tick` once this connection is done: a
-            // second one now would trip over it.)
-            if here.is_empty() {
-                set_in_use(&url);
+        let empty = text.trim().is_empty();
+        if here == url {
+            if empty || self.profile_unsent() {
+                // It has none, or changes made here haven't reached it
+                // yet: send ours (by `profile_tick` once this connection
+                // is done: a second one now would trip over it).
                 self.profile_sent = None;
                 self.profile_checked = web_time::Instant::now() - std::time::Duration::from_secs(2);
-            }
-            return;
-        }
-        if here == url {
-            // Changed on another device: take it.
-            if text != current() && write(&text) {
+            } else if text != current() && write(&text) {
+                // Changed on another device: take it.
                 self.profile_sent = Some(current());
                 self.profile_reload();
             }
             return;
         }
-        if !here.is_empty() {
-            // Another server's set is in use: leave it (the menu switches).
+        // Switch when asked to (the menu, or signing in with a password
+        // just now), or on a sign-in with a saved token to an account that
+        // has a set, unless the person chose this device's over it.
+        let asked = self.profile_want.as_deref() == Some(url.as_str());
+        if !asked && (!here.is_empty() || empty || declined(&url)) {
             return;
         }
-        // First sign-in here: keep this device's set aside, take theirs.
-        let mut p = crate::prefs::load();
-        p.insert(LOCAL_KEY.into(), escape(&current()));
-        crate::prefs::save(&p);
+        self.profile_want = None;
+        set_declined(&url, false);
+        if here.is_empty() {
+            keep_local();
+        }
+        if empty {
+            // A new account: it takes the set in use, and uses it.
+            set_in_use(&url);
+            self.profile_sent = None;
+            self.profile_checked = web_time::Instant::now() - std::time::Duration::from_secs(2);
+            return;
+        }
         if write(&text) {
             set_in_use(&url);
             self.profile_sent = Some(current());
@@ -240,12 +300,17 @@ impl App {
             return;
         }
         if url.is_empty() {
-            let local = crate::prefs::load().get(LOCAL_KEY).map(|s| unescape(s));
-            if let Some(t) = local.filter(|t| write(t)) {
-                let _ = t;
+            // Back to this device's own set (kept aside when it was left).
+            let mut p = crate::prefs::load();
+            if let Some(t) = p.remove(LOCAL_KEY).map(|s| unescape(&s)) {
+                crate::prefs::save(&p);
+                write(&t);
             }
             set_in_use("");
+            // Not switched back by itself at the next sign-in.
+            set_declined(&here, true);
             self.profile_sent = None;
+            self.profile_want = None;
             self.profile_reload();
             self.say("Using this device's tools and settings");
             return;
@@ -257,17 +322,29 @@ impl App {
         else {
             return;
         };
-        if here.is_empty() {
-            let mut p = crate::prefs::load();
-            p.insert(LOCAL_KEY.into(), escape(&current()));
-            crate::prefs::save(&p);
+        if self.servers[i].busy() {
+            self.say("Busy with that server: try again in a moment");
+            return;
         }
-        // Clear the choice so the server's answer is taken as a first sign-in.
-        set_in_use("");
+        // Switched when its set arrives (`profile_arrived`).
+        self.profile_want = Some(url.to_string());
         self.server_send(
             i,
             vec![crate::wire::Msg::GetSettings, crate::wire::Msg::ListPages],
         );
+    }
+
+    /// Signed out of (or forgot) server `url`: if its set is in use, back
+    /// to this device's.
+    pub(crate) fn profile_signed_out(&mut self, url: &str) {
+        if self.profile_want.as_deref() == Some(url) {
+            self.profile_want = None;
+        }
+        if in_use() == url {
+            self.profile_use("");
+            // Signing out isn't turning the account's set down.
+            set_declined(url, false);
+        }
     }
 }
 
@@ -295,5 +372,119 @@ mod tests {
         assert_eq!(p.get("uiscale").map(String::as_str), Some("1.4"));
         assert!(!write("not a set"));
         assert_eq!(unescape(&escape("a\\b\nc")), "a\\b\nc");
+    }
+
+    fn dark() -> String {
+        crate::prefs::load().get("dark").cloned().unwrap_or_default()
+    }
+
+    fn set_dark(v: &str) {
+        let mut p = crate::prefs::load();
+        p.insert("dark".into(), v.into());
+        crate::prefs::save(&p);
+    }
+
+    /// A set like this device's, with dark mode `v`.
+    fn set_with_dark(v: &str) -> String {
+        let now = current();
+        let mut out = String::new();
+        for l in now.lines() {
+            if !l.starts_with("pref dark=") {
+                out += l;
+                out.push('\n');
+            }
+            if l == HEAD {
+                out += &format!("pref dark={v}\n");
+            }
+        }
+        out
+    }
+
+    const A: &str = "ws://127.0.0.1:1/a";
+    const B: &str = "ws://127.0.0.1:1/b";
+
+    fn app() -> App {
+        let mut app = App::new(None);
+        app.servers = vec![
+            crate::pages::ServerConn::for_test(A, Some("ann")),
+            crate::pages::ServerConn::for_test(B, Some("ann")),
+        ];
+        app
+    }
+
+    #[test]
+    fn choosing_this_device_lasts_and_gets_its_own_set_back() {
+        set_dark("on");
+        let mut app = app();
+        // Signed in with a saved token to an account that has a set.
+        app.profile_arrived(0, set_with_dark("off"));
+        assert_eq!((in_use().as_str(), dark().as_str()), (A, "off"));
+        // This device's, please: its own set comes back, kept no more.
+        app.profile_use("");
+        assert_eq!((in_use().as_str(), dark().as_str()), ("", "on"));
+        assert!(!crate::prefs::load().contains_key(LOCAL_KEY));
+        // The next sign-in (launch, Pages) doesn't switch by itself.
+        app.profile_arrived(0, set_with_dark("off"));
+        assert_eq!((in_use().as_str(), dark().as_str()), ("", "on"));
+        // Chosen again in the menu: it switches.
+        app.profile_use(A);
+        app.profile_arrived(0, set_with_dark("off"));
+        assert_eq!((in_use().as_str(), dark().as_str()), (A, "off"));
+    }
+
+    #[test]
+    fn going_from_one_account_to_another_keeps_this_devices_set() {
+        set_dark("on");
+        let mut app = app();
+        app.profile_arrived(0, set_with_dark("off"));
+        assert_eq!(in_use(), A);
+        app.servers[0].state.clear();
+        app.profile_use(B);
+        // Until B answers, A's set stays.
+        assert_eq!(in_use(), A);
+        app.profile_arrived(1, set_with_dark("auto"));
+        assert_eq!((in_use().as_str(), dark().as_str()), (B, "auto"));
+        app.profile_use("");
+        assert_eq!(dark(), "on", "this device's own set, not A's");
+    }
+
+    #[test]
+    fn a_new_account_takes_the_set_in_use_and_an_old_aside_is_not_restored() {
+        set_dark("on");
+        let mut app = app();
+        // An old set kept aside from long ago.
+        let mut p = crate::prefs::load();
+        p.insert(LOCAL_KEY.into(), escape(&set_with_dark("off")));
+        crate::prefs::save(&p);
+        // A token sign-in to an empty account: nothing changes.
+        app.profile_arrived(0, String::new());
+        assert_eq!(in_use(), "");
+        // Signing in on purpose: it takes this device's set.
+        app.profile_want = Some(A.into());
+        app.profile_arrived(0, String::new());
+        assert_eq!(in_use(), A);
+        app.profile_use("");
+        assert_eq!(dark(), "on", "the set from just now, not the old one");
+    }
+
+    #[test]
+    fn a_change_not_sent_yet_is_not_undone_by_the_server() {
+        set_dark("on");
+        let mut app = app();
+        app.profile_arrived(0, set_with_dark("off"));
+        set_dark("on"); // changed here; not sent yet
+        app.profile_arrived(0, set_with_dark("off"));
+        assert_eq!(dark(), "on");
+        assert!(app.profile_sent.is_none(), "it goes to the server next");
+    }
+
+    #[test]
+    fn signing_out_goes_back_to_this_device() {
+        set_dark("on");
+        let mut app = app();
+        app.profile_arrived(0, set_with_dark("off"));
+        app.server_account_out(0);
+        assert_eq!((in_use().as_str(), dark().as_str()), ("", "on"));
+        assert!(!declined(A), "signing out isn't turning it down");
     }
 }

@@ -32,7 +32,14 @@ static WARNED: AtomicBool = AtomicBool::new(false);
 static DROPPED: AtomicU32 = AtomicU32::new(0);
 
 fn log_path() -> Option<PathBuf> {
-    Some(crate::canvas_dir()?.join("launch.log"))
+    // On phones and tablets the canvases folder shows in the Files app:
+    // hidden there.
+    let name = if cfg!(desktop) {
+        "launch.log"
+    } else {
+        ".launch.log"
+    };
+    Some(crate::canvas_dir()?.join(name))
 }
 
 fn elapsed() -> f32 {

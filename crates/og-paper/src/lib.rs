@@ -65,9 +65,9 @@ mod script;
 mod seal;
 mod search;
 mod shapes;
-mod spell;
 mod share;
 mod snapshot;
+mod spell;
 mod swatches;
 mod symbols;
 mod textbox;
@@ -246,7 +246,10 @@ pub struct App {
     profile_checked: Instant,
     /// Ink written with the Write tool, to read (see `handwriting`).
     pub(crate) writing: handwriting::Writing,
+    /// A server that signed this device out (its set may be in use).
     pending_profile: Option<String>,
+    /// The server whose set to switch to when it arrives.
+    profile_want: Option<String>,
     /// Groups remade by the edit under way: (old, new) group.
     bundle_remade: Vec<(u32, u32)>,
     /// Layer moves in the undo and redo histories: (undo steps with it
@@ -403,6 +406,7 @@ impl App {
             profile_checked: Instant::now(),
             writing: Default::default(),
             pending_profile: None,
+            profile_want: None,
             bundle_remade: Vec::new(),
             layer_undo: Vec::new(),
             layer_redo: Vec::new(),
@@ -1228,6 +1232,8 @@ impl App {
         self.cam = cam;
         self.history = History::default();
         self.tl_view = None;
+        // Writing being read belongs to the canvas that was open.
+        self.writing = Default::default();
         self.fly = None;
         self.wet_clear();
         self.objs = objects::Objects::default();
@@ -3478,7 +3484,7 @@ impl App {
         }
         self.layers_refresh();
         if let Some(u) = self.pending_profile.take() {
-            self.profile_use(&u);
+            self.profile_signed_out(&u);
         }
         if self.ui.layout_open {
             self.ui.profile_choices = self.profile_choices();

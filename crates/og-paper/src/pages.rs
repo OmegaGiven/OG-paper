@@ -93,6 +93,31 @@ pub struct ServerConn {
     client: Option<crate::net::native::Client>,
 }
 
+#[cfg(test)]
+impl ServerConn {
+    /// A server in the list, signed in as `user` (or not), not connected.
+    pub(crate) fn for_test(url: &str, user: Option<&str>) -> Self {
+        let key = Keys::edit_token(&crate::seal::random_secret());
+        ServerConn {
+            keys: Keys::parse(&key).expect("key"),
+            link: Link {
+                url: url.into(),
+                key,
+                canvas: None,
+                relay: false,
+            },
+            pages: Vec::new(),
+            state: String::new(),
+            pending: Vec::new(),
+            account: user.map(|u| (u.into(), "editor".into(), "token".into())),
+            folders: Vec::new(),
+            in_folder: Default::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            client: None,
+        }
+    }
+}
+
 /// The servers kept in the prefs.
 pub fn load_servers() -> Vec<ServerConn> {
     crate::prefs::load()
@@ -412,8 +437,9 @@ impl App {
 
     pub(crate) fn remove_server(&mut self, i: usize) {
         if i < self.servers.len() {
-            self.servers.remove(i);
+            let s = self.servers.remove(i);
             save_servers(&self.servers);
+            self.profile_signed_out(&s.link.url);
         }
     }
 
@@ -452,6 +478,11 @@ impl App {
             Msg::ListPages,
         ];
         s.state = "Signing in…".into();
+        // Signing in on purpose: the account's tools and settings (or, for
+        // a new one, this device's) are used, unless another server's are.
+        if crate::profile::in_use().is_empty() {
+            self.profile_want = Some(s.link.url.clone());
+        }
         self.dir_connect(i);
     }
 
@@ -676,7 +707,9 @@ impl App {
         if let Some(s) = self.servers.get_mut(i) {
             s.account = None;
             save_account(&s.link.url, None);
+            let url = s.link.url.clone();
             self.server_request(i, Msg::ListPages);
+            self.profile_signed_out(&url);
         }
     }
 
@@ -790,10 +823,7 @@ impl App {
                         s.account = None;
                         save_account(&s.link.url, None);
                         // Signed out: back to this device's tools.
-                        if crate::profile::in_use() == s.link.url {
-                            let url = String::new();
-                            self.pending_profile = Some(url);
-                        }
+                        self.pending_profile = Some(s.link.url.clone());
                         Some(note)
                     } else {
                         let a = (user, role, token);

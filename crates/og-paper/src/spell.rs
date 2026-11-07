@@ -35,7 +35,11 @@ mod dict {
                 let _ = DICT.set(d);
             }
         };
-        if std::thread::Builder::new().name("spell".into()).spawn(load).is_err() {
+        if std::thread::Builder::new()
+            .name("spell".into())
+            .spawn(load)
+            .is_err()
+        {
             load();
         }
     }
@@ -67,7 +71,10 @@ pub fn words(text: &str) -> Vec<Range<usize>> {
     let mut out = Vec::new();
     let mut chunk_start = 0;
     // Whitespace-separated chunks first: a link or address is skipped whole.
-    for (i, c) in text.char_indices().chain(std::iter::once((text.len(), ' '))) {
+    for (i, c) in text
+        .char_indices()
+        .chain(std::iter::once((text.len(), ' ')))
+    {
         if !c.is_whitespace() {
             continue;
         }
@@ -87,7 +94,10 @@ pub fn words(text: &str) -> Vec<Range<usize>> {
 fn words_in(chunk: &str, base: usize, out: &mut Vec<Range<usize>>) {
     let is_part = |c: char| c.is_alphanumeric() || c == '\'' || c == '’';
     let mut start: Option<usize> = None;
-    for (i, c) in chunk.char_indices().chain(std::iter::once((chunk.len(), ' '))) {
+    for (i, c) in chunk
+        .char_indices()
+        .chain(std::iter::once((chunk.len(), ' ')))
+    {
         match (start, is_part(c)) {
             (None, true) => start = Some(i),
             (Some(s), false) => {
@@ -163,6 +173,11 @@ pub fn suggest(word: &str) -> Vec<String> {
     #[cfg(not(target_arch = "wasm32"))]
     {
         static MEMO: Mutex<Option<(String, Vec<String>)>> = Mutex::new(None);
+        // Suggesting is slow for long words (this runs on the frame being
+        // drawn): no real word is this long.
+        if word.chars().count() > 30 {
+            return Vec::new();
+        }
         let Some(d) = dict::get() else {
             return Vec::new();
         };
@@ -254,7 +269,11 @@ mod tests {
         let t = "The quick brwon fox doesn't jumpp";
         let bad: Vec<&str> = misspelled(t).into_iter().map(|r| &t[r]).collect();
         assert_eq!(bad, ["brwon", "jumpp"]);
-        assert!(suggest("brwon").iter().any(|s| s == "brown"), "{:?}", suggest("brwon"));
+        assert!(
+            suggest("brwon").iter().any(|s| s == "brown"),
+            "{:?}",
+            suggest("brwon")
+        );
         // Ignored, then fine.
         ignore("Jumpp");
         assert!(check("jumpp"));

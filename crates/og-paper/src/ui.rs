@@ -877,6 +877,51 @@ pub struct UiState {
     pub presets_dirty: bool,
 }
 
+/// The settings list in the apps (the web page sends its own). Phones and
+/// tablets have no file dialogs yet: no Open, Import, Merge, Changes,
+/// Folder, Export or Insert picture there.
+fn default_app_items() -> Vec<AppItem> {
+    let all = [
+        AppItem::Pages,
+        AppItem::New,
+        AppItem::Open,
+        AppItem::Import,
+        AppItem::Merge,
+        AppItem::Changes,
+        AppItem::Folder,
+        AppItem::Live,
+        AppItem::Connect,
+        AppItem::Export,
+        AppItem::Paste,
+        AppItem::Library,
+        AppItem::Picture,
+        AppItem::Home,
+        AppItem::Search,
+        AppItem::LayoutMenu,
+        AppItem::Plugins,
+        AppItem::Diagram,
+        AppItem::Layers,
+        AppItem::Frames,
+        AppItem::Hotkeys,
+    ];
+    let files = cfg!(any(desktop, target_arch = "wasm32"));
+    all.into_iter()
+        .filter(|i| {
+            files
+                || !matches!(
+                    i,
+                    AppItem::Open
+                        | AppItem::Import
+                        | AppItem::Merge
+                        | AppItem::Changes
+                        | AppItem::Folder
+                        | AppItem::Export
+                        | AppItem::Picture
+                )
+        })
+        .collect()
+}
+
 impl Default for UiState {
     fn default() -> Self {
         Self {
@@ -936,29 +981,7 @@ impl Default for UiState {
             strokes: 0,
             message: None,
             touch_ui: false,
-            app_items: vec![
-                AppItem::Pages,
-                AppItem::New,
-                AppItem::Open,
-                AppItem::Import,
-                AppItem::Merge,
-                AppItem::Changes,
-                AppItem::Folder,
-                AppItem::Live,
-                AppItem::Connect,
-                AppItem::Export,
-                AppItem::Paste,
-                AppItem::Library,
-                AppItem::Picture,
-                AppItem::Home,
-                AppItem::Search,
-                AppItem::LayoutMenu,
-                AppItem::Plugins,
-                AppItem::Diagram,
-                AppItem::Layers,
-                AppItem::Frames,
-                AppItem::Hotkeys,
-            ],
+            app_items: default_app_items(),
             hide_tools: false,
             hide_panel: false,
             hide_bar: false,
@@ -1859,7 +1882,10 @@ pub fn draw(ctx: &egui::Context, st: &mut UiState) -> Vec<Action> {
         let off_bars = !on(&["toolbar_menu", "inventory", "quick_bar", "radial_bar"]) && !on_fan;
         // Holding a tool from the inventory, a press off it only lets go
         // of the tool (the inventory stays open).
-        let let_go = off_bars && (std::mem::take(&mut st.let_go_press) || st.cancel_held());
+        // (Taken every frame, so a press on a bar doesn't linger and
+        // swallow a later one.)
+        let pressed = std::mem::take(&mut st.let_go_press);
+        let let_go = off_bars && (pressed || st.cancel_held());
         if !let_go {
             if st.bar_menu && off_bars {
                 st.bar_menu = false;
@@ -2867,7 +2893,11 @@ fn inventory_at(
             (true, 0) => 52.0,
             (true, r) => r as f32 * (s + gap) - gap + 34.0,
         }
-        + if st.views_open && st.bookmark_views.is_empty() { 20.0 } else { 0.0 }
+        + if st.views_open && st.bookmark_views.is_empty() {
+            20.0
+        } else {
+            0.0
+        }
         + if st.view_naming.is_some() { 40.0 } else { 0.0 };
     // Fill the panel with empty slots, like a game's inventory grid.
     let fit = (((area.height() - 90.0 - footer) + gap) / (s + gap))
@@ -5448,14 +5478,30 @@ fn text_section(
 /// A text box's border and fill: on or off, and their colors.
 fn textbox_border(ui: &mut egui::Ui, border: &mut Option<ShapeStyle>, text_color: u32) {
     const LINES: [u32; 8] = [
-        0xff24_1c1c, 0xff8a_8a8a, 0xff3c_3cd6, 0xff2a_8ae0, 0xff4a_a83c, 0xffd6_7a2a, 0xff9a_3cb4, 0xffff_ffff,
+        0xff24_1c1c,
+        0xff8a_8a8a,
+        0xff3c_3cd6,
+        0xff2a_8ae0,
+        0xff4a_a83c,
+        0xffd6_7a2a,
+        0xff9a_3cb4,
+        0xffff_ffff,
     ];
     const FILLS: [u32; 8] = [
-        0xffff_ffff, 0xfff2_f2f2, 0xffd6_e0ff, 0xffcc_f2ff, 0xffd0_f2d6, 0xffff_e8d0, 0xfff0_d6f6, 0xff24_1c1c,
+        0xffff_ffff,
+        0xfff2_f2f2,
+        0xffd6_e0ff,
+        0xffcc_f2ff,
+        0xffd0_f2d6,
+        0xffff_e8d0,
+        0xfff0_d6f6,
+        0xff24_1c1c,
     ];
     heading(ui, "Text box");
     let mut on = border.is_some();
-    let t = ui.checkbox(&mut on, "Border").on_hover_text("An outline around the box");
+    let t = ui
+        .checkbox(&mut on, "Border")
+        .on_hover_text("An outline around the box");
     if t.changed() {
         *border = on.then(|| ShapeStyle {
             kind: shapes::ShapeKind::Rect,
@@ -5480,7 +5526,10 @@ fn textbox_border(ui: &mut egui::Ui, border: &mut Option<ShapeStyle>, text_color
                 p.circle_stroke(
                     r.center(),
                     9.0,
-                    Stroke::new(if *cur == c { 2.5 } else { 1.0 }, if *cur == c { ACCENT } else { EDGE }),
+                    Stroke::new(
+                        if *cur == c { 2.5 } else { 1.0 },
+                        if *cur == c { ACCENT } else { EDGE },
+                    ),
                 );
                 if resp.clicked() {
                     *cur = c;
@@ -6070,9 +6119,11 @@ fn text_editor(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>)
                             // The cursor goes to the end of the new word.
                             let end = text[..r.start + p.len()].chars().count();
                             let mut state = out.state.clone();
-                            state.cursor.set_char_range(Some(egui::text::CCursorRange::one(
-                                egui::text::CCursor::new(end),
-                            )));
+                            state
+                                .cursor
+                                .set_char_range(Some(egui::text::CCursorRange::one(
+                                    egui::text::CCursor::new(end),
+                                )));
                             state.store(ui.ctx(), edit_id);
                         }
                     }
@@ -7095,7 +7146,8 @@ fn tool_icon(p: &egui::Painter, c: Pos2, r: f32, tool: Tool, ink: Color32) {
                 .map(|i| {
                     let t = i as f32 / 24.0;
                     let x = c.x - s * 1.0 + t * s * 1.1;
-                    let y = c.y + s * 0.35 - (t * std::f32::consts::TAU * 2.0).sin().abs() * s * 0.55;
+                    let y =
+                        c.y + s * 0.35 - (t * std::f32::consts::TAU * 2.0).sin().abs() * s * 0.55;
                     pos2(x, y)
                 })
                 .collect();
@@ -10904,9 +10956,16 @@ mod tests {
         let mut st = UiState::default();
         st.text_edit = Some((pos2(10.0, 10.0), "the cat sat on teh".into()));
         let texts = editor_texts(&mut st);
-        assert!(texts.iter().any(|t| t == "the"), "a spelling to pick: {texts:?}");
+        assert!(
+            texts.iter().any(|t| t == "the"),
+            "a spelling to pick: {texts:?}"
+        );
         assert!(texts.iter().any(|t| t == "Add to dictionary"), "{texts:?}");
-        assert_eq!(st.text_edit.as_ref().unwrap().1, "the cat sat on teh", "nothing changes by itself");
+        assert_eq!(
+            st.text_edit.as_ref().unwrap().1,
+            "the cat sat on teh",
+            "nothing changes by itself"
+        );
         // Spell check off: no spellings.
         st.spell = false;
         let texts = editor_texts(&mut st);

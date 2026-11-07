@@ -627,6 +627,17 @@ pub fn decode(text: &str) -> Option<Saved> {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn path() -> Option<std::path::PathBuf> {
+    // Tests keep theirs aside, each test its own (as the prefs do).
+    #[cfg(test)]
+    return Some(std::env::temp_dir().join(format!(
+        "ogp-test-hotbar-{}-{}.txt",
+        std::process::id(),
+        std::thread::current()
+            .name()
+            .unwrap_or("other")
+            .replace(|c: char| !c.is_ascii_alphanumeric(), "_")
+    )));
+    #[cfg(not(test))]
     Some(crate::fonts_dir()?.parent()?.join("hotbar.txt"))
 }
 
