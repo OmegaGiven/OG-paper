@@ -145,7 +145,7 @@ rt.upgraded = client => ({ status: 101, webSocket: client });
  * A site: the API mounted at /paper/api with accounts alice, bob, carol,
  * dave (ids 1-4; admin: 9). The signed-in account is the x-test-user header.
  */
-export function site({ config = {}, quota } = {}) {
+export function site({ config = {}, quota, limit } = {}) {
   const users = { 1: 'alice', 2: 'bob', 3: 'carol', 4: 'dave', 9: 'admin' };
   const emails = { 'bob@example.com': 2 };
   const env = { DB: new FakeD1() };
@@ -164,6 +164,8 @@ export function site({ config = {}, quota } = {}) {
     names: async (_env, ids) => Object.fromEntries(ids.map(i => [i, users[i] || null])),
     isAdmin: u => u.id === '9',
   };
+  // limit(env, kind, key) -> true: over a rate limit (the site's, optional).
+  if (limit) auth.limit = limit;
   const api = createPaperApi({ auth, config, onReport: r => reports.push(r) });
   const ORIGIN = 'https://omegagiven.com';
   const call = async (as, method, path, body, headers = {}) => {

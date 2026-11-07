@@ -16,7 +16,8 @@
 
 import { configFrom } from './config.js';
 import { Chat, cleanName } from './chat.js';
-import { Lease, charge } from './quota.js';
+import { Lease, charge, give, take } from './quota.js';
+import { fileReport } from './report.js';
 import { KIND, READY, TAG, parseFrame, seqFrame, wants } from './protocol.js';
 
 const EDIT = new Set(['owner', 'editor']);
@@ -51,20 +52,7 @@ export class PaperRoom {
     this.env = env;
     this.cfg = configFrom(env, { ...(env.PAPER_CONFIG || {}), ...config });
     this.sql = ctx.storage.sql;
-    this.sql.exec(`CREATE TABLE IF NOT EXISTS frames (
-      seq INTEGER PRIMARY KEY AUTOINCREMENT, kind INTEGER NOT NULL, tiles TEXT NOT NULL DEFAULT '',
-      author TEXT NOT NULL, at INTEGER NOT NULL, size INTEGER NOT NULL, body BLOB, store TEXT NOT NULL DEFAULT '')`);
-    // What a full copy replaced is kept keepReplacedDays (gone: when, gone_by: the
-    // copy's seq) so an owner or the admin can bring it back; rooms made
-    // before this get the two columns here.
-    try { this.sql.exec('SELECT gone, gone_by FROM frames LIMIT 0'); } catch (e) {
-      this.sql.exec('ALTER TABLE frames ADD COLUMN gone INTEGER');
-      this.sql.exec('ALTER TABLE frames ADD COLUMN gone_by INTEGER');
-    }
-    this.sql.exec('CREATE TABLE IF NOT EXISTS chunks (seq INTEGER NOT NULL, i INTEGER NOT NULL, body BLOB NOT NULL, PRIMARY KEY (seq, i))');
-    this.sql.exec('CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT)');
-    // Tile subscriptions per socket (a socket's attachment holds at most 2 KB).
-    this.sql.exec('CREATE TABLE IF NOT EXISTS subs (sock TEXT NOT NULL, tile TEXT NOT NULL, PRIMARY KEY (sock, tile))');
+    this.setup();
     this.lease = new Lease(env.DB, this.cfg.leaseChunk,
       () => ({ owner: this.meta('owner'), lease: Number(this.meta('lease') || 0) }),
       (owner, lease) => { this.setMeta('owner', owner || ''); this.setMeta('lease', String(lease)); },
@@ -74,6 +62,34 @@ export class PaperRoom {
     this.buckets = new Map();
     this.subCache = new Map();
     this.chat = new Chat(this);
+  }
+
+  /** The room's tables (made on first use, and again after destroy() emptied the storage). */
+  setup() {
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS frames (
+      seq INTEGER PRIMARY KEY AUTOINCREMENT, kind INTEGER NOT NULL, tiles TEXT NOT NULL DEFAULT '',
+      author TEXT NOT NULL, at INTEGER NOT NULL, size INTEGER NOT NULL, body BLOB, store TEXT NOT NULL DEFAULT '')`);
+    // What a full copy replaced is kept keepReplacedDays (gone: when, gone_by: the
+    // copy's seq, gone_owner: 1 when an owner sent that copy) so an owner or
+    // the admin can bring it back; older rooms get the columns here.
+    try { this.sql.exec('SELECT gone, gone_by FROM frames LIMIT 0'); } catch (e) {
+      this.sql.exec('ALTER TABLE frames ADD COLUMN gone INTEGER');
+      this.sql.exec('ALTER TABLE frames ADD COLUMN gone_by INTEGER');
+    }
+    try { this.sql.exec('SELECT gone_owner FROM frames LIMIT 0'); } catch (e) {
+      this.sql.exec('ALTER TABLE frames ADD COLUMN gone_owner INTEGER');
+    }
+    this.sql.exec('CREATE TABLE IF NOT EXISTS chunks (seq INTEGER NOT NULL, i INTEGER NOT NULL, body BLOB NOT NULL, PRIMARY KEY (seq, i))');
+    this.sql.exec('CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT)');
+    // Tile subscriptions per socket (a socket's attachment holds at most 2 KB).
+    this.sql.exec('CREATE TABLE IF NOT EXISTS subs (sock TEXT NOT NULL, tile TEXT NOT NULL, PRIMARY KEY (sock, tile))');
+  }
+
+  /** Run `fn` after every kept frame before it, and before any after it. */
+  exclusive(fn) {
+    const job = this.queue.then(fn);
+    this.queue = job.catch(e => console.error('og-paper room', e));
+    return job;
   }
 
   /** A socket's tiles, or null when it takes the whole page. */
@@ -102,7 +118,16 @@ export class PaperRoom {
   att(ws) { return ws.deserializeAttachment() || {}; }
   setAtt(ws, a) { ws.serializeAttachment(a); }
 
+  /** After destroy() emptied the storage, the tables come back on the next call. */
+  ready() {
+    if (!this.wiped) return;
+    this.wiped = false;
+    this.setup();
+    this.chat.setup();
+  }
+
   async fetch(req) {
+    this.ready();
     const url = new URL(req.url);
     const h = req.headers;
     if (h.get('x-paper-owner')) this.setMeta('owner', this.meta('owner') || h.get('x-paper-owner'));
@@ -117,9 +142,14 @@ export class PaperRoom {
       case '/untrash': this.setMeta('trashed', ''); return json({ ok: true });
       case '/history': return json(this.history());
       case '/restore': return this.restore(await req.json().catch(() => ({})));
+      case '/handover': return this.handover(await req.json().catch(() => ({})));
       case '/chat-settings': return json(this.chat.set(await req.json().catch(() => ({}))));
       case '/chat-clear': return json(this.chat.clear());
-      case '/chat-export': return json(this.chat.export());
+      case '/chat-export': { const b = await req.json().catch(() => ({})); return json(this.chat.export(b.for == null ? null : String(b.for))); }
+      case '/chat-around': { const b = await req.json().catch(() => ({})); return json(this.chat.around(b.id, 3)); }
+      case '/chat-remove': return json(this.chat.remove((await req.json().catch(() => ({}))).id));
+      case '/blocks': { const b = await req.json().catch(() => ({})); return json({ list: this.chat.setBlocks(String(b.user || ''), Array.isArray(b.list) ? b.list : []) }); }
+      case '/forget-user': return this.forgetUser(await req.json().catch(() => ({})));
       case '/chat-get': return json(this.chat.welcome());
       case '/stats': return json({ chat: this.chat.count(), bytes: this.bytes(), replaced: this.replacedBytes(), frames: this.frameCount(), sockets: this.sockets().length, lease: Number(this.meta('lease') || 0), head: this.head() });
       default: return json({ error: 'not found' }, 404);
@@ -134,7 +164,16 @@ export class PaperRoom {
     const user = h.get('x-paper-user') || '';
     const role = h.get('x-paper-role') || '';
     if (!['owner', 'editor', 'viewer'].includes(role)) return json({ error: 'no access' }, 403);
-    if (this.sockets().length >= this.cfg.maxSockets) return json({ error: 'This page has too many people on it right now' }, 503);
+    // Owners always get in (up to twice the room's size); nobody else may
+    // take more than maxSocketsPerUser of the room's places.
+    const n = this.sockets().length;
+    if (role === 'owner' ? n >= this.cfg.maxSockets * 2 : n >= this.cfg.maxSockets) return json({ error: 'This page has too many people on it right now' }, 503);
+    if (role !== 'owner' && this.ctx.getWebSockets('u:' + user).length >= this.cfg.maxSocketsPerUser) {
+      return json({ error: 'This page is open in too many places for you: close it somewhere first' }, 429);
+    }
+    // Whom this person blocked (from the API), for their chat.
+    const blocks = h.get('x-paper-blocks');
+    if (blocks != null) { let list = []; try { list = JSON.parse(blocks); } catch (e) {} this.chat.setBlocks(user, Array.isArray(list) ? list : []); }
     const [client, server] = rt.pair();
     const via = h.get('x-paper-via') || '';
     this.ctx.acceptWebSocket(server, ['u:' + user, ...(via ? ['v:' + via] : [])]);
@@ -328,7 +367,11 @@ export class PaperRoom {
         kind, tiles.join('\n'), a.user, now, body.length, store === '' ? body : null, store);
       seq = Number(this.sql.exec('SELECT last_insert_rowid() AS s').toArray()[0].s);
       // Replaced, not deleted: kept keepReplacedDays (see restore()).
-      for (const r of covered) this.sql.exec('UPDATE frames SET gone = ?, gone_by = ? WHERE seq = ?', now, seq, r.seq);
+      const byOwner = a.role === 'owner' ? 1 : 0;
+      for (const r of covered) this.sql.exec('UPDATE frames SET gone = ?, gone_by = ?, gone_owner = ? WHERE seq = ?', now, seq, byOwner, r.seq);
+      // What is left of the lease, with the frame it paid for: a room that
+      // hibernates now can't hand the spent part back again.
+      if (this.lease.left != null) this.setMeta('lease', String(this.lease.left));
       if (store === 'chunks') {
         for (let i = 0, at = 0; at < body.length; i++, at += this.cfg.chunkBytes) {
           this.sql.exec('INSERT INTO chunks (seq, i, body) VALUES (?, ?, ?)', seq, i, body.slice(at, at + this.cfg.chunkBytes));
@@ -435,6 +478,7 @@ export class PaperRoom {
   }
 
   async alarm() {
+    this.ready();
     if (await this.purgeTrash()) return;
     await this.syncPage();
     await this.purgeReplaced();
@@ -453,17 +497,35 @@ export class PaperRoom {
     if (due.length) await this.alarmIn(Math.max(1000, Math.min(...due) - Date.now()), false);
   }
 
-  /** Drop what full copies replaced more than keepReplacedDays ago, and the oldest beyond keepReplacedBytes. */
+  /**
+   * Drop what full copies replaced more than keepReplacedDays ago, and, past
+   * keepReplacedBytes, whole replaced sets (all one copy replaced) in this
+   * order: those replaced by copies from people who aren't owners, newest
+   * first (never the oldest set: an editor sending copy after copy can't
+   * push the page as it was out of its history), then the rest oldest
+   * first. The newest set left always stays, however big.
+   */
   async purgeReplaced(now = Date.now()) {
     const cutoff = now - this.cfg.keepReplacedDays * DAY;
     const drop = this.sql.exec('SELECT seq, size, store FROM frames WHERE gone IS NOT NULL AND gone <= ?', cutoff).toArray();
-    let left = Number(this.sql.exec('SELECT COALESCE(SUM(size), 0) AS n FROM frames WHERE gone > ?', cutoff).toArray()[0].n);
-    if (left > this.cfg.keepReplacedBytes) {
-      for (const r of this.sql.exec('SELECT seq, size, store FROM frames WHERE gone > ? ORDER BY gone, seq', cutoff).toArray()) {
-        if (left <= this.cfg.keepReplacedBytes) break;
-        drop.push(r);
-        left -= Number(r.size);
+    const sets = this.sql.exec(`SELECT f.gone_by AS by, SUM(f.size) AS bytes, MAX(f.gone_owner) AS byOwner, c.author AS author
+      FROM frames f LEFT JOIN frames c ON c.seq = f.gone_by WHERE f.gone > ? GROUP BY f.gone_by ORDER BY f.gone_by`, cutoff).toArray();
+    let left = sets.reduce((n, x) => n + Number(x.bytes), 0);
+    if (left > this.cfg.keepReplacedBytes && sets.length > 1) {
+      const owner = this.meta('owner');
+      // Rooms from before gone_owner: a copy by the billing owner counts as an owner's.
+      const owners = x => x.byOwner == null ? x.author != null && x.author === owner : Number(x.byOwner) === 1;
+      const oldest = sets[0];
+      const order = [...sets.filter(x => x !== oldest && !owners(x)).reverse(), ...sets.filter(x => x === oldest || owners(x))];
+      let kept = sets.length;
+      const gone = [];
+      for (const x of order) {
+        if (left <= this.cfg.keepReplacedBytes || kept <= 1) break;
+        gone.push(Number(x.by));
+        left -= Number(x.bytes);
+        kept--;
       }
+      for (const by of gone) drop.push(...this.sql.exec('SELECT seq, size, store FROM frames WHERE gone IS NOT NULL AND gone_by = ?', by).toArray());
     }
     if (!drop.length) return 0;
     this.ctx.storage.transactionSync(() => {
@@ -488,21 +550,33 @@ export class PaperRoom {
   }
 
   /**
-   * Bring back what full copies at seq >= since replaced. Nothing is taken
+   * Bring back what full copies at seq >= since replaced (`only`: just the
+   * one at seq == since). Nothing is taken
    * away (pages only add), so the page ends up with both; the owner is
-   * charged for it again (even past the quota: getting a page back matters
-   * more), and everyone on the page gets the frames now.
+   * charged for it again, and everyone on the page gets the frames now.
+   * Refused (409) when the owner's storage has no room for it, unless
+   * `force` (the admin rolling a page back may take the account past its
+   * quota).
    */
-  async restore({ since = 0 }) {
-    await this.queue;
-    const rows = this.sql.exec('SELECT seq, size FROM frames WHERE gone IS NOT NULL AND gone_by >= ? ORDER BY seq', since).toArray();
+  restore({ since = 0, force = false, only = false }) {
+    return this.exclusive(() => this.restoreNow(Number(since) || 0, !!force, !!only));
+  }
+  /** only: just what the copy at seq `since` replaced (not newer copies' too). */
+  async restoreNow(since, force, only) {
+    const rows = this.sql.exec(`SELECT seq, size FROM frames WHERE gone IS NOT NULL AND gone_by ${only ? '=' : '>='} ? ORDER BY seq`, since).toArray();
     if (!rows.length) return json({ restored: 0, bytes: 0 });
     const bytes = rows.reduce((n, r) => n + Number(r.size), 0);
-    this.ctx.storage.transactionSync(() => {
-      for (const r of rows) this.sql.exec('UPDATE frames SET gone = NULL, gone_by = NULL WHERE seq = ?', r.seq);
-    });
     const owner = this.meta('owner');
-    if (owner && this.env.DB) await charge(this.env.DB, owner, bytes);
+    if (owner && this.env.DB) {
+      if (force) await charge(this.env.DB, owner, bytes);
+      else if (!(await take(this.env.DB, owner, bytes))) {
+        const acct = await this.env.DB.prepare('SELECT quota, used FROM paper_accounts WHERE user_id = ?1').bind(owner).first();
+        return json({ error: `There isn't room in the owner's storage to bring that back (${mb(bytes)}). Free some space first.`, full: 'bytes', bytes, used: acct?.used ?? null, quota: acct?.quota ?? null }, 409);
+      }
+    }
+    this.ctx.storage.transactionSync(() => {
+      for (const r of rows) this.sql.exec('UPDATE frames SET gone = NULL, gone_by = NULL, gone_owner = NULL WHERE seq = ?', r.seq);
+    });
     this.setMeta('dirty', '1');
     this.dirty = true;
     await this.syncPage();
@@ -536,12 +610,15 @@ export class PaperRoom {
     const page = this.meta('page');
     const db = this.env.DB;
     if (page && db) {
-      const p = await db.prepare('SELECT deleted_at FROM paper_pages WHERE id = ?1').bind(page).first();
+      const p = await db.prepare('SELECT deleted_at, blocked FROM paper_pages WHERE id = ?1').bind(page).first();
       if (p && p.deleted_at == null) { this.setMeta('trashed', ''); return false; }  // restored meanwhile
+      // Taken down: kept for the admin to look at (they delete it themselves); ask again in a day.
+      if (p && p.blocked) { this.setMeta('trash-until', String(now + DAY)); return false; }
       await db.batch([
         db.prepare('DELETE FROM paper_members WHERE page_id = ?1').bind(page),
         db.prepare('DELETE FROM paper_links WHERE page_id = ?1').bind(page),
         db.prepare('DELETE FROM paper_transfers WHERE page_id = ?1').bind(page),
+        db.prepare('DELETE FROM paper_chatters WHERE page_id = ?1').bind(page),
         db.prepare('DELETE FROM paper_pages WHERE id = ?1').bind(page),
       ]);
     }
@@ -559,6 +636,32 @@ export class PaperRoom {
     this.dirty = false;
   }
 
+  /**
+   * Give the page to a new billing owner in one step, between kept frames:
+   * settle up with the old owner, move what the page keeps from their
+   * account to the new one's (409 if it has no room), and charge the new
+   * owner from then on.
+   */
+  handover({ to }) {
+    return this.exclusive(async () => {
+      to = String(to || '');
+      if (!to) return json({ error: 'to whom?' }, 400);
+      this.setMeta('dirty', '1');
+      this.dirty = true;
+      await this.syncPage();
+      await this.lease.release();
+      const bytes = this.bytes();
+      const from = this.meta('owner');
+      if (this.env.DB && from !== to) {
+        if (bytes > 0 && !(await take(this.env.DB, to, bytes))) return json({ error: 'full', bytes }, 409);
+        if (from) await give(this.env.DB, from, bytes);
+      }
+      this.setMeta('owner', to);
+      this.lease.left = null;
+      return json({ ok: true, bytes });
+    });
+  }
+
   /** Before the page changes billing owner: settle up with the old one. */
   async flush(body) {
     await this.queue;
@@ -569,6 +672,32 @@ export class PaperRoom {
     if (body.owner) this.setMeta('owner', String(body.owner));
     this.lease.left = null;
     return json({ bytes: this.bytes() });
+  }
+
+  /** An account was deleted: its chat here goes, and it is shown the door. */
+  async forgetUser({ user }) {
+    if (!user) return json({ error: 'who?' }, 400);
+    const out = this.chat.forget(String(user));
+    this.kick({ user: String(user), why: 'This account was deleted' });
+    return json(out);
+  }
+
+  /** Someone chatted here: note it in the directory once (to find it if their account is deleted). */
+  async chatted(user, seen) {
+    if (seen.has(user)) return;
+    seen.add(user);
+    const page = this.meta('page');
+    if (!page || !this.env.DB) return;
+    try {
+      await this.env.DB.prepare('INSERT OR IGNORE INTO paper_chatters (page_id, user_id, created_at) VALUES (?1, ?2, ?3)').bind(page, user, Date.now()).run();
+    } catch (e) { seen.delete(user); console.error('og-paper chatters', e); }
+  }
+
+  /** A report from the room itself (the chat's word filter). */
+  async report(r) {
+    const page = this.meta('page');
+    if (!page || !this.env.DB) return;
+    try { await fileReport(this.env.DB, { ...r, page }, this.env, p => this.ctx.waitUntil?.(p)); } catch (e) { console.error('og-paper report', e); }
   }
 
   /** Delete everything the page keeps, giving its bytes back to the owner. */
@@ -586,6 +715,12 @@ export class PaperRoom {
     }
     await this.ctx.storage.deleteAlarm();
     await this.ctx.storage.deleteAll();
+    // The object lives on: the next call (another destroy, a late flush)
+    // makes empty tables again and finds nothing.
+    this.wiped = true;
+    this.lease.left = null;
+    this.subCache.clear();
+    this.dirty = false;
     return json({ bytes });
   }
 }

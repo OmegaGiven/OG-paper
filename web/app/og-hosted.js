@@ -99,7 +99,7 @@ export class HostedProvider {
   }
   untrash(page) { return this.call('POST', `/pages/${page.id}/untrash`); }
   history(page) { return this.call('GET', `/pages/${page.id}/history`); }
-  restore(page, since) { return this.call('POST', `/pages/${page.id}/restore`, { since }); }
+  restore(page, since, only = false) { return this.call('POST', `/pages/${page.id}/restore`, { since, only }); }
   async leave(page, me) {
     const r = await this.call('DELETE', `/pages/${encodeURIComponent(page.id)}/members/${encodeURIComponent(me)}`);
     await this.drop(page.id);
@@ -616,11 +616,11 @@ export function startHosted(ui, cfg) {
     if (hist) hp.history(page).then(h => {
       if (!h.replaced?.length || !hist.isConnected) return;
       hist.innerHTML = `<div class="og-shared-head">Earlier versions</div>
-        <p><small>Someone saved a full copy of this page that left out earlier work. What it replaced is kept ${h.keepDays} days; bringing it back adds it to the page again (nothing is removed).${h.replaced.length > 1 ? ' Newest first: bringing back an older one also brings back the newer ones above it.' : ''}</small></p>
-        <ul class="og-list">${h.replaced.map((r, i) => `<li data-since="${Number(r.seq)}"><span class="go">${r.frames} change${r.frames === 1 ? '' : 's'} · ${fmtBytes(r.bytes)}<small>replaced ${ago(r.at)}${r.size != null ? ` by a ${fmtBytes(r.size)} copy` : ''}</small></span><button class="mini" data-act="restore"${i ? ` title="Brings back this one and the ${i} newer one${i === 1 ? '' : 's'} above it"` : ''}>${i ? 'Bring back this and newer' : 'Bring back'}</button></li>`).join('')}</ul>`;
+        <p><small>Someone saved a full copy of this page that left out earlier work. What it replaced is kept ${h.keepDays} days; bringing it back adds it to the page again (nothing is removed).</small></p>
+        <ul class="og-list">${h.replaced.map((r, i) => `<li data-since="${Number(r.seq)}"><span class="go">${r.frames} change${r.frames === 1 ? '' : 's'} · ${fmtBytes(r.bytes)}<small>replaced ${ago(r.at)}${r.size != null ? ` by a ${fmtBytes(r.size)} copy` : ''}</small></span><button class="mini" data-act="restore">Bring back</button></li>`).join('')}</ul>`;
       for (const li of hist.querySelectorAll('[data-since]')) {
         li.querySelector('[data-act=restore]').onclick = () => guard(async () => {
-          const r = await hp.restore(page, Number(li.dataset.since));
+          const r = await hp.restore(page, Number(li.dataset.since), true);
           say(`Brought back ${r.restored} change${r.restored === 1 ? '' : 's'}`);
           details(page);
         });

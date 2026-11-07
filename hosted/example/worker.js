@@ -35,6 +35,9 @@ export default {
         headers: { Location: url.searchParams.get('next') || '/paper/', 'Set-Cookie': `dev_user=${ok ? as : ''}; Path=/; HttpOnly; SameSite=Lax${ok ? '' : '; Max-Age=0'}` },
       });
     }
+    if (url.pathname === '/dev/logout') {
+      return new Response(null, { status: 302, headers: { Location: '/paper/', 'Set-Cookie': 'dev_user=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0' } });
+    }
     if (url.pathname === '/dev/storage') {
       return new Response('<!doctype html><title>More storage</title><h1>More storage</h1><p>Paid cloud storage plans would be sold here.</p>', { headers: { 'content-type': 'text/html' } });
     }
@@ -49,7 +52,7 @@ export default {
       if (!(res.headers.get('content-type') || '').includes('text/html')) return res;
       return new HTMLRewriter().on('head', {
         element(e) {
-          e.append('<meta name="og-paper-api" content="/paper/api"><meta name="og-paper-signin" content="/dev/login?as=alice&next={next}">', { html: true });
+          e.append('<meta name="og-paper-api" content="/paper/api"><meta name="og-paper-signin" content="/dev/login?as=alice&next={next}"><meta name="og-paper-signout" content="/dev/logout">', { html: true });
         },
       }).transform(res);
     }

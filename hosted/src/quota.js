@@ -42,11 +42,11 @@ export async function account(db, user, freeQuota, now = Date.now()) {
 }
 
 /**
- * A room's lease on its owner's quota. The lease is written to the room's
- * storage only when quota is taken or handed back (not on every change, to
- * keep row writes down); a room evicted mid-lease hands back what was last
- * written, so the account can come out under by at most one chunk until an
- * admin recount.
+ * A room's lease on its owner's quota. `store` writes it to the room's
+ * storage when quota is taken or handed back, and the room writes what is
+ * left of it with every frame it keeps (in the same transaction as the
+ * frame), so a room that hibernates or is evicted mid-lease hands back only
+ * what it really did not spend.
  */
 export class Lease {
   constructor(db, chunk, load, store, onTake) {

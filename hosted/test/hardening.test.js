@@ -161,12 +161,18 @@ test('the admin can roll a page back too', async () => {
 
 test('replaced frames go after keepReplacedDays, and beyond keepReplacedBytes', async () => {
   const s = site({ config: { keepReplacedBytes: 600 } });
-  const { page } = await filled(s);
+  const { page, a } = await filled(s);
   await tinyCheckpoint(s, 1, page);
   const room = s.room(page);
   assert.ok(room.ctx.storage.alarmAt != null, 'an alarm is set');
-  // Over the byte cap: the oldest go first, down to the cap.
+  // One set over the byte cap: it stays (the newest set always does).
   await fire(room);
+  assert.ok(room.replacedBytes() > 600, String(room.replacedBytes()));
+  // Another full copy: whole sets go, the oldest first, down to the cap.
+  for (let i = 0; i < 3; i++) { a.log.add('n' + i, 't', 'y'.repeat(50)); await a.push(); }
+  await tinyCheckpoint(s, 1, page);
+  await fire(room);
+  assert.equal(room.history().replaced.length, 1);
   assert.ok(room.replacedBytes() <= 600 && room.replacedBytes() > 0, String(room.replacedBytes()));
   // Past the days: all of it.
   room.sql.exec('UPDATE frames SET gone = ? WHERE gone IS NOT NULL', Date.now() - 31 * DAY);

@@ -82,7 +82,7 @@ are.
 | room | `{t:'denied', msg}`: not allowed (a viewer writing) |
 | room | `{t:'kicked', msg}`: access changed; the socket closes (4003) |
 | room | `{t:'compact'}`: please send a checkpoint |
-| both | chat: `chat`, `chat-del`, `chat-react`, `typing` and the room's answers, see [Chat](#chat) |
+| both | chat: `chat`, `chat-del`, `chat-react`, `typing`, `blocks` and the room's answers, see [Chat](#chat) |
 
 ### Infinite zoom and big pages: tiles and resume
 
@@ -132,11 +132,18 @@ they can share the site's database):
   and co-owners), editor, viewer.
 - `paper_links(id, token_hash, page_id, role)`: "anyone with the link";
   only a hash of the token is kept.
-- `paper_reports(page_id, reporter_id, reason, resolved_at, resolution)`.
+- `paper_reports(page_id, reporter_id, reason, resolved_at, resolution,
+  kind, subject_id, context)`: `kind` is null for a page, `chat` for a
+  message someone reported, `chat-auto` for the word filter; `subject_id`
+  whose message; `context` a JSON copy of it and the messages around it.
+- `paper_chatters(page_id, user_id)`: pages an account has chatted or
+  reacted on (to find its messages when the account is deleted).
+- `paper_blocks(user_id, blocked_id)`: people an account has blocked.
 
 **Room** (one per page, SQLite): `frames(seq, kind, tiles, author, at,
-size, body, store)`, `chunks` (frames over 1 MB without R2), `subs` (tile
-subscriptions per socket), `meta` (page, owner, pinned room, lease).
+size, body, store, gone, gone_by, gone_owner)`, `chunks` (frames over 1 MB
+without R2), `subs` (tile subscriptions per socket), `meta` (page, owner,
+pinned room, lease), `chat`, `chat_blocks` (who on this page blocked whom).
 
 **R2** (optional, `PAPER_BUCKET`): `og-paper/<page>/<seq>` for frames over
 1 MB.
@@ -152,8 +159,8 @@ subscriptions per socket), `meta` (page, owner, pinned room, lease).
 | make a copy into own account | ✓ | ✓ | ✓ | ✓ | |
 | give away (transfer billing), delete | | | | ✓ | delete |
 | leave | ✓ | ✓ | ✓ | | |
-| report | ✓ | ✓ | ✓ | | |
-| take down, delete, set quotas, read reports | | | | | ✓ |
+| report a page or a chat message, block a person | ✓ | ✓ | ✓ | ✓ | |
+| take down, delete, set quotas, block accounts, read reports and chat | | | | | ✓ |
 
 - Viewers get the **view key** only, so even their app cannot sign
   changes; the room also refuses their `PUT`/`CKPT` and never stores or
@@ -190,6 +197,12 @@ subscriptions per socket), `meta` (page, owner, pinned room, lease).
   or about 5-10 phone photos.
 - Plus at most **100 pages** per account, **25 people** per page, **5 links**
   per page.
+- What a room has taken ahead (its lease) is written with every change it
+  keeps, so a room that sleeps or is moved never hands back more than it
+  had left.
+- **Giving a page away** settles its bytes in one step in the room,
+  between changes: what the page keeps moves to the new owner's account
+  and every change after it is theirs.
 - The **room enforces it**, not the app: before keeping a change it takes
   quota from the billing owner's account with one conditional UPDATE
   (`used + n <= quota`), so an account never goes over however many of
@@ -238,13 +251,29 @@ subscriptions per socket), `meta` (page, owner, pinned room, lease).
   the API through the adapter (`limit(env, kind, key)`: `api`, `write`,
   `create`, `ws`), mapped onto omegagiven.com's `RL_*` bindings.
 - **Size caps** per frame (above), per page name, per report.
-- **At most 32 people** in one room at once.
+- **At most 32 people** in one room at once, and at most 4 sockets per
+  person (`maxSocketsPerUser`; owners always get in, up to 64), so one
+  account can't fill a page.
 - **No public listing** (above).
 - **Reports:** anyone who can see a page can report it (`POST
-  /pages/:id/report`); the site's `onReport` hook is called (send it to
-  Signal, email…). Admins (`PAPER_ADMINS`) list reports, look at a page
-  (view only), take it down (everyone is disconnected; it answers 451),
-  delete it, block an account, set its quota, or recount its usage.
+  /pages/:id/report`) or one of its chat messages (`POST
+  /pages/:id/chat/report`); the site's `onReport` hook is called (send it
+  to Signal, email…) with `{id, page, reporter, reason}` (plus `kind`,
+  `subject`, `context` for chat). Admins (`PAPER_ADMINS`) list reports,
+  look at a page (view only: the `open.link` from `GET /admin/pages/:id`
+  joins it as a viewer), read, clear or remove its chat, take it down
+  (everyone is disconnected; it answers 451; its owner can't delete it for
+  good meanwhile, and the trash running out doesn't take it), delete it,
+  block an account, set its quota, or recount its usage.
+- **Blocked accounts** (`POST /admin/accounts/:uid {blocked: true}`) are
+  disconnected from every page at once and refused every write, live
+  page and chat; they can still list and download their pages.
+- **Lookups by email** (sharing, giving away) answer the same whether or
+  not an account uses the address (no username back), and have their own
+  rate limit (`find`, mapped to `RL_CREATE` on omegagiven.com). By
+  username they still say who it is (usernames are public on the site).
+- **Anonymous visitors** (view links without an account, off by default)
+  get a random id per visit, so the people list never shows their IP.
 
 ## HTTP API
 
@@ -259,7 +288,7 @@ status.
 | `GET /pages/:id` | the page; members and links for owners |
 | `PATCH /pages/:id {name}` / `DELETE /pages/:id` | rename (editor+) / to the trash (billing owner); `DELETE ?forever=1` on a page in the trash deletes it for good |
 | `POST /pages/:id/untrash` | back from the trash (billing owner) |
-| `GET /pages/:id/history` / `POST /pages/:id/restore {since}` | what full copies replaced (owners) / bring it back (all of it, or what copies at seq ≥ since replaced) |
+| `GET /pages/:id/history` / `POST /pages/:id/restore {since}` | what full copies replaced (owners) / bring it back (all of it, or what copies at seq ≥ since replaced; `only: true`: just what the copy at seq = since replaced; 409 `{full}` when the owner's storage has no room) |
 | `POST /pages/:id/open` | `{link, role, canvas, name}` (the relay link with the key for my role) |
 | `GET /pages/:id/relay` | the live room (WebSocket) |
 | `POST /pages/:id/copy {canvas, edit, view}` | a copy in my account: `{page, open, from}` |
@@ -267,12 +296,14 @@ status.
 | `PATCH/DELETE /pages/:id/members/:uid` | change role / remove (owners); remove myself = leave |
 | `POST /pages/:id/links {role}` / `DELETE /pages/:id/links/:lid` | make / turn off a link (owners) |
 | `GET/POST /links/:token` | what a link opens / open it (adds me) |
-| `POST /pages/:id/transfer {who, leave}` / `DELETE` | offer the page to someone (billing owner; by username or email only) / withdraw it |
+| `POST /pages/:id/transfer {who, leave}` / `DELETE` | offer the page to someone (billing owner; by username or email only; by email the answer never says who) / withdraw it |
 | `POST /offers/:id/accept` / `decline` | the recipient takes the page (bytes and ownership move now) or says no |
 | `POST /pages/:id/report {reason}` | report |
 | `GET /pages/:id/chat` | the chat's settings and kept messages (data export; members, or owners only while chat is off) |
 | `PATCH /pages/:id/chat {on, keep}` / `DELETE /pages/:id/chat` | chat on/off, kept or ephemeral / clear it (owners) |
-| `/admin/reports`, `/admin/reports/:id`, `/admin/pages/:id` (GET, DELETE), `/admin/pages/:id/block`, `/admin/pages/:id/history`, `/admin/pages/:id/restore`, `/admin/accounts/:uid`, `/admin/accounts/:uid/recount` | admin |
+| `POST /pages/:id/chat/report {id, reason}` | report a chat message (anyone on the page; not their own) |
+| `GET /blocks` / `POST /blocks {user}` / `DELETE /blocks/:uid` | the people I blocked / block someone (by account id, from the chat) / unblock |
+| `/admin/reports`, `/admin/reports/:id`, `/admin/pages/:id` (GET, DELETE), `/admin/pages/:id/block`, `/admin/pages/:id/history`, `/admin/pages/:id/restore`, `/admin/pages/:id/chat` (GET, DELETE), `/admin/pages/:id/chat/:msg` (DELETE), `/admin/accounts/:uid` (`{quota, blocked}`), `/admin/accounts/:uid/recount` | admin |
 
 ## The web app
 
@@ -284,7 +315,12 @@ account; both answer `list`, `create`, `open`, `rename`, `remove`,
 ```html
 <meta name="og-paper-api" content="/paper/api">
 <meta name="og-paper-signin" content="/account/?next={next}">
+<meta name="og-paper-signout" content="/account/logout">
 ```
+
+`og-paper-signout` (optional) is the site's sign-out address (put the
+site's real one; `/account/logout` above is only an example): with it, My
+account shows a Sign out button. `hosted/example/` uses `/dev/logout`.
 
 Then, signed in: the **My account** panel opens by itself with My pages
 and Shared with me (or the page last open reopens), **+ New page**, **Keep
@@ -308,9 +344,9 @@ right, above the pen) appears once two or more people are on the page (or
 there is kept history, or unread messages), with an unread badge (red when
 someone @mentioned you). It opens a side panel (a bottom sheet on phones)
 with who is here (tap someone: go to where they are on the page, mention
-them, or for owners remove them from the page), who is typing, the
-messages with name and time, quick reactions (👍 ❤️ 😂 🎉 👀 ✅), deleting
-your own messages, `@` completion of the people on the page, and a "go to
+them, block or unblock them, or for owners remove them from the page), who
+is typing, the messages with name and time, quick reactions (👍 ❤️ 😂 🎉 👀
+✅), reporting someone else's message, deleting your own messages, `@` completion of the people on the page, and a "go to
 them" link on messages from people still here (`og_go_to_peer(name)` in
 the app flies to their view). Owners also get, in the panel's ⋯ menu and in
 the page's Share card: Chat on this page, Keep chat history, Clear chat.
@@ -343,6 +379,7 @@ account, never a field of the message):
 | app | `{t:'chat-react', id, emoji}`: toggles; only the six listed → `{t:'chat-react', id, reacts:{emoji:[{user,name}]}}` |
 | app | `{t:'typing', on}` → the others: `{t:'typing', user, name, on}` |
 | room | `{t:'chat-settings', on, keep, …}` / `{t:'chat-clear'}`: an owner changed or cleared it |
+| room | `{t:'blocks', list}`: the accounts I blocked (on joining, and when it changes) |
 | room | `{t:'chat-error', msg, ref}`: refused (off, too long, too fast, not yours, no account) |
 
 **Safety** (applies docs/LAUNCH-AUDIT.md):
@@ -361,6 +398,20 @@ account, never a field of the message):
 - Visitors on an anonymous view link (off by default) can read along but
   not chat. Viewers can chat.
 - Reactions are a fixed list; anything else is ignored.
+- **Reporting a message** (`POST /pages/:id/chat/report {id, reason}`,
+  the ⚑ on a message) keeps a copy of it and up to three messages before
+  and after with the report, so it still holds once an ephemeral chat is
+  gone, and calls `onReport`.
+- **Blocking someone** (their name in the people list → Block): the room
+  no longer sends me their messages or typing notes (nor in history or my
+  download), and they can't add me to their pages or offer me pages. They
+  aren't told; by email the answer is the same as always.
+- **Word filter:** whole words from `chatWords` (a site's list, or
+  `PAPER_CHAT_WORDS=a,b,c`; a small built-in list of slurs by default; `[]`
+  turns it off) are masked with `*` for everyone, and the admin gets a
+  `chat-auto` report with the original (at most one a minute per person).
+- **The admin** reads a page's chat (`GET /admin/pages/:id/chat`), clears
+  it, or takes one message down (`DELETE /admin/pages/:id/chat/:msg`).
 - History: at most `chatHistory` (500) messages per page, in the room's
   own storage (a `chat` table: no D1 change, no Durable Object migration),
   deleted with the page (the room's storage goes) and exported with
@@ -427,7 +478,14 @@ From the launch audit (docs/LAUNCH-AUDIT.md H1, H2, H4, M2-M4, L1, L3, H5; og-pa
 - **Earlier versions.** A full copy (`CKPT`, `TCKP`) no longer deletes
   what it replaces: those frames are marked replaced and kept
   `keepReplacedDays` (30), at most `keepReplacedBytes` (25 MB) per page,
-  and no longer count to the owner's storage. Owners see them in the page's
+  and no longer count to the owner's storage. Past that cap whole sets go
+  (all one copy replaced): first those replaced by copies from people who
+  aren't owners, newest first, but never the oldest set (so an editor
+  sending copy after copy can't push the page as it was out of its
+  history), then the rest oldest first; the newest set left always stays,
+  even when it alone is over the cap. Bringing one back counts toward the
+  owner's storage and is refused when it has no room (the admin may take
+  the account past its quota). Owners see them in the page's
   card (*Earlier versions*) and *Bring back* re-adds them (pages only add,
   so nothing is lost; it counts again). The admin can do the same. A full
   copy from someone who isn't an owner that is under 10% of what it would
@@ -452,9 +510,12 @@ From the launch audit (docs/LAUNCH-AUDIT.md H1, H2, H4, M2-M4, L1, L3, H5; og-pa
   when that fits, else JPEG.
 
 **For the site (omegagiven.com):** nothing to set up. The API adds
-`paper_pages.deleted_at` and `paper_transfers` to D1 itself the first
-time it runs (`hosted/src/schema.js`; don't write a wrangler migration for
-them), and rooms add their two new columns themselves. Bump
+`paper_pages.deleted_at`, `paper_transfers`, the new `paper_reports`
+columns, `paper_chatters` and `paper_blocks` to D1 itself the first time it
+runs (`hosted/src/schema.js`; don't write a wrangler migration for the
+columns; `migrations/0002_og_paper_safety.sql` has the two new tables as
+`CREATE TABLE IF NOT EXISTS`, safe to apply before or after), and rooms add
+their new columns themselves. Bump
 `vendor/og-paper` and `public/paper` (web-dist) together: an older app
 still works with the new rooms and API, but shows no Trash, offers or
 earlier versions (its Give away then makes an offer the recipient can't
@@ -476,8 +537,39 @@ migration and no new binding**, and the CSP already allows the socket
 3. `npm run deploy`, then try it with two accounts on one page.
 4. Privacy policy: mention chat messages (kept with the page only if its
    owner turns on history, else gone once everyone leaves; deleted with the
-   page). The future "export all / delete account" (LAUNCH-AUDIT M1) should
-   include `GET /pages/:id/chat` for each page.
+   page). Deleting an account deletes its messages (see
+   [Account deletion](#account-deletion)).
+
+## Account deletion
+
+App Store guideline 5.1.1(v) and GDPR: someone who can make an account
+must be able to delete it. OG Paper has no accounts of its own, so the
+site's "Delete account" flow calls one function before it deletes its own
+user row:
+
+```js
+import { deleteAccount } from '../vendor/og-paper-hosted/src/index.js';
+// in the site's POST /account/delete, after checking the session and
+// that the person typed their username to confirm:
+await deleteAccount(env, String(user.id));   // { pages, left, links, chats }
+// then the site's own sessions, identities and user row
+```
+
+It removes:
+
+- every page the account owns, the trash too (each room deletes its frames,
+  chat and R2 objects; the directory rows go);
+- its places on other pages; the links it made there (and the people who
+  came in by them); offers from or to it;
+- its chat messages and reactions on other people's pages (the rooms it
+  chatted or reacted in are listed in `paper_chatters`; everyone there is
+  told the messages are gone);
+- who it blocked and who blocked it, and its `paper_accounts` row.
+
+Reports it made or that are about it stay for the admin, with its id
+removed (a chat report's copy of the message stays: the admin may still
+need it). It is safe to run twice. Before deleting, offer "Export all
+pages" (each page's Export, and `GET /pages/:id/chat` for its chat).
 
 ## Cloudflare limits and costs
 
@@ -522,7 +614,12 @@ checkpoint to R2.
 ## Tests
 
 - `cd hosted && node --test test/*.test.js` (Node 22.5+, no dependencies;
-  in CI): 30 tests with stand-ins for D1, Durable Objects and WebSockets.
+  in CI): 87 tests with stand-ins for D1, Durable Objects and WebSockets.
+  - `safety.test.js`: history an editor can't flush, leases across
+    hibernation, restore and quotas, lookups by email, anonymous ids,
+    give-away billing, sockets per person, account deletion, chat reports,
+    the admin's chat tools, blocked accounts, blocking people, the word
+    filter.
   - `collab.test.js`: two and three people editing at once; rival edits of
     one stroke settle the same everywhere; delete against edit; offline
     edits merge on reconnect, fetching only what came after; tiles;
@@ -546,7 +643,7 @@ checkpoint to R2.
   text cleaning, site switch, anonymous visitors) and how the app shows
   messages (HTML stays text, only http(s) links, mentions).
 - `test/chat-e2e.mjs`: chat in two browsers (desktop + phone) against
-  `wrangler dev`. `test/run-browser-e2e.sh` builds the web app, starts
+  `wrangler dev`, including reporting a message and blocking someone. `test/run-browser-e2e.sh` builds the web app, starts
   `wrangler dev` and runs both browser tests (`forge run
   hosted/test/run-browser-e2e.sh`; `SHOTS=dir` keeps screenshots).
 - `test/browser-e2e.mjs`: the real web app (Rust in Chromium, Playwright)

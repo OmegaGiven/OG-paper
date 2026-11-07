@@ -35,6 +35,8 @@ export const DEFAULTS = {
   maxFramesBeforeCheckpoint: 5000,
   /** Sockets one room takes at once. */
   maxSockets: 32,
+  /** Sockets one person (not an owner) may have open on one page. */
+  maxSocketsPerUser: 4,
   /** Tiles one socket may subscribe to. */
   maxSubs: 512,
   /** Per socket: frames per second (sustained) and burst. */
@@ -79,6 +81,11 @@ export const DEFAULTS = {
   /** Per account: messages per second (sustained) and burst. */
   chatRate: 0.5,
   chatBurst: 8,
+  /** Words masked in chat (whole words, any case); a message with one is
+   * also reported to the admin. null: a small built-in list of slurs; []: none. */
+  chatWords: null,
+  /** People one account may block. */
+  maxBlocks: 500,
 };
 
 export function configFrom(env = {}, over = {}) {
@@ -91,6 +98,7 @@ export function configFrom(env = {}, over = {}) {
   if (env.PAPER_LINK_SHARING != null) c.linkSharing = !/^(0|off|false|no)$/i.test(String(env.PAPER_LINK_SHARING));
   if (env.PAPER_CHAT != null) c.chat = !/^(0|off|false|no)$/i.test(String(env.PAPER_CHAT));
   if (env.PAPER_CHAT_KEEP != null) c.chatDefaultKeep = /^(1|on|true|yes)$/i.test(String(env.PAPER_CHAT_KEEP));
+  if (env.PAPER_CHAT_WORDS != null) c.chatWords = String(env.PAPER_CHAT_WORDS).split(',').map(w => w.trim()).filter(Boolean);
   if (env.PAPER_LINK_ANON != null) c.linkAnonymousView = /^(1|on|true|yes)$/i.test(String(env.PAPER_LINK_ANON));
   return c;
 }

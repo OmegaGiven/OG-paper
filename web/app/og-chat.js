@@ -9,6 +9,8 @@
 // people are on the page (or there is kept history), and a panel (a side
 // panel on wide screens, a bottom sheet on phones) with who is here and
 // typing, the messages, reactions, @mentions, and a jump to someone's view.
+// Anyone can report a message to the site's moderators, and block a person
+// (their messages are no longer shown; the room stops sending them too).
 
 const CSS = `
 .og-chat-btn { position: fixed; z-index: 20; right: calc(12px + env(safe-area-inset-right)); bottom: calc(150px + env(safe-area-inset-bottom));
@@ -167,6 +169,7 @@ export function startChat(ui, host) {
     role: null,
     me: null,           // my account id, as the room knows it
     peers: [],
+    blocks: new Set(),  // accounts I blocked (the room says which)
     msgs: [],           // { id, user, name, text, at, reacts, pending?, ref? }
     typing: new Map(),  // user → { name, until }
     unread: 0,
@@ -233,7 +236,7 @@ export function startChat(ui, host) {
       av.style.background = colorOf(p.user);
       av.textContent = initial(p.name);
       const n = el('span');
-      n.textContent = p.user === st.me ? `${p.name || 'You'} (you)` : (p.name || 'Someone');
+      n.textContent = p.user === st.me ? `${p.name || 'You'} (you)` : `${p.name || 'Someone'}${st.blocks.has(p.user) ? ' (blocked)' : ''}`;
       b.append(av, n);
       if ((st.typing.get(p.user)?.until || 0) > now) b.classList.add('typing');
       if (p.user !== st.me) b.onclick = e => personMenu(p, e.currentTarget);
@@ -279,8 +282,36 @@ export function startChat(ui, host) {
       { label: `Go to where ${p.name || 'they'} ${p.name ? 'is' : 'are'}`, run: () => ui.app.og_go_to_peer?.(p.name || '') },
       { label: `Mention @${p.name}`, run: () => insertMention(p.name) },
     ];
+    if (canBlock(p.user)) {
+      items.push(st.blocks.has(p.user)
+        ? { label: 'Unblock', run: () => unblock(p) }
+        : { label: 'Block…', danger: true, run: () => block(p) });
+    }
     if (isOwner()) items.push({ label: 'Remove from this page…', danger: true, run: () => removePerson(p) });
     openPop(items, anchor);
+  }
+  // Visitors without an account can't be blocked (nor can they chat).
+  const anon = () => String(st.me || '').startsWith('anon:');
+  const canBlock = uid => uid && uid !== st.me && !anon() && !String(uid).startsWith('anon:');
+  async function block(p) {
+    if (!confirm(`Block ${p.name || 'them'}? You won't see their messages, and they can't share pages with you or offer you pages. They aren't told.`)) return;
+    try { await host.call('POST', '/blocks', { user: p.user }); setBlocks([...st.blocks, p.user]); say(`${p.name || 'They'} is blocked`); }
+    catch (e) { say(e.message || String(e)); }
+  }
+  async function unblock(p) {
+    try { await host.call('DELETE', `/blocks/${encodeURIComponent(p.user)}`); st.blocks.delete(p.user); renderPeople(); say(`${p.name || 'They'} is unblocked`); }
+    catch (e) { say(e.message || String(e)); }
+  }
+  function setBlocks(list) {
+    st.blocks = new Set((list || []).map(String));
+    st.msgs = st.msgs.filter(m => !st.blocks.has(m.user));
+    renderPeople(); renderLog();
+  }
+  async function report(m) {
+    const reason = prompt(`Report ${m.name || 'this person'}’s message to the site’s moderators? Say what is wrong (optional).`, '');
+    if (reason == null) return;
+    try { await host.call('POST', `/pages/${host.page()}/chat/report`, { id: m.id, reason }); say('Reported. Thank you: a moderator will look at it.'); }
+    catch (e) { say(e.message || String(e)); }
   }
   async function removePerson(p) {
     if (!confirm(`Remove ${p.name || 'them'} from this page? They lose access at once (share it with them again to undo).`)) return;
@@ -367,6 +398,12 @@ export function startChat(ui, host) {
       add.textContent = '☺';
       add.onclick = e => openPop((st.cfg.reactions || []).map(r => ({ label: r, run: () => react(m.id, r) })), e.currentTarget, 'emoji');
       acts.append(add);
+      if (m.user !== st.me && !anon()) {
+        const rep = el('button', { type: 'button', title: 'Report', 'aria-label': 'Report' });
+        rep.textContent = '⚑';
+        rep.onclick = () => report(m);
+        acts.append(rep);
+      }
       if (m.user === st.me || isOwner()) {
         const del = el('button', { type: 'button', title: m.user === st.me ? 'Delete' : 'Delete (owner)', 'aria-label': 'Delete' });
         del.textContent = '🗑';
@@ -504,10 +541,14 @@ export function startChat(ui, host) {
           renderPeople(); sync();
           return false;
         case 'chat-history':
-          st.msgs = m.list || [];
+          st.msgs = (m.list || []).filter(x => !st.blocks.has(x.user));
           renderLog(); sync();
           return true;
+        case 'blocks':
+          setBlocks(m.list);
+          return true;
         case 'chat': {
+          if (st.blocks.has(m.msg?.user) && m.msg.user !== st.me) return true;
           const i = m.ref ? st.msgs.findIndex(x => x.pending && x.ref === m.ref) : -1;
           if (i >= 0) st.msgs[i] = m.msg; else { st.msgs.push(m.msg); notify(m.msg); }
           if (st.msgs.length > (st.cfg?.history || 500)) st.msgs.splice(0, st.msgs.length - (st.cfg?.history || 500));
@@ -538,6 +579,7 @@ export function startChat(ui, host) {
           return true;
         }
         case 'typing':
+          if (st.blocks.has(m.user)) return true;
           if (m.on) st.typing.set(m.user, { name: m.name, until: Date.now() + 6000 }); else st.typing.delete(m.user);
           renderPeople();
           return true;
@@ -553,9 +595,9 @@ export function startChat(ui, host) {
     /** The live socket went away (or another page is opening). */
     disconnected() { st.live = false; st.typing.clear(); sync(); },
     /** Not on a hosted page any more. */
-    reset() { Object.assign(st, { cfg: null, msgs: [], peers: [], unread: 0, mentioned: false, open: false, live: false }); renderLog(); sync(); },
+    reset() { Object.assign(st, { cfg: null, msgs: [], peers: [], blocks: new Set(), unread: 0, mentioned: false, open: false, live: false }); renderLog(); sync(); },
     /** For tests and the account panel: open the chat. */
     open: () => { if (visible() || st.cfg?.on) setOpen(true); },
-    get state() { return { on: !!st.cfg?.on, keep: !!st.cfg?.keep, unread: st.unread, open: st.open, visible: visible(), messages: st.msgs.length }; },
+    get state() { return { on: !!st.cfg?.on, keep: !!st.cfg?.keep, unread: st.unread, open: st.open, visible: visible(), messages: st.msgs.length, blocked: [...st.blocks] }; },
   };
 }

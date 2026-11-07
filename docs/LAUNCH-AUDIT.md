@@ -56,6 +56,22 @@ Fixed in og-paper (see HOSTED.md "Safety nets"; tests in
 Still open: C1 and C2 (human: Workers Paid, Terms/Privacy v2), H3, H4
 backups, H6, H7, M1, M5-M11, L2, L4-L9.
 
+### Second review of `hosted/` (2026-11-07)
+
+Fixed in og-paper (tests in `hosted/test/safety.test.js` and
+`chat-e2e.mjs`; see HOSTED.md "Account deletion" and "Chat"):
+
+| | Fix |
+| --- | --- |
+| Account deletion (M1, Apple 5.1.1(v), GDPR) | `deleteAccount(env, uid)` removes the account's pages (trash too), memberships, links it made, offers, chat messages and reactions, blocks and quota row; reports keep no id. The site still needs its own "Delete account" page that calls it, and "export all pages" |
+| Chat moderation (Apple 1.2, part of H6) | Report a chat message (a copy with the messages around it goes to `paper_reports` and `onReport`); admin read/clear/remove chat, admin look link opens the page view only; blocked accounts can't write, open pages or chat and are kicked at once; people can block each other (chat hidden, no sharing or offers to the blocker); a word filter masks a configurable list and reports it |
+| Earlier versions | Past `keepReplacedBytes`, sets replaced by non-owners' copies go newest first, never the oldest set; the newest set left always stays |
+| Quota | Leases are stored with every kept frame; restore is charged and refused when full (admin may exceed); quotas over 2 GiB kept whole; give-away settles bytes in one room step |
+| Privacy | Sharing or giving by email answers the same whether or not the address has an account (own rate limit, `find`); anonymous visitors get a random id instead of their IP |
+| Rooms | At most `maxSocketsPerUser` (4) sockets per person, owners always get in; a co-owner who leaves takes their links; a taken-down page can't be deleted for good by its owner (nor by the trash running out); one broken room no longer stops the trash purge; a room can be destroyed twice; report reasons are cleaned |
+
+Still to do for H6: the admin page itself (the API is there).
+
 ## Severity summary
 
 | # | Sev | Issue | Area |

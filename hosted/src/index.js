@@ -22,9 +22,13 @@
 //     names(env, ids)       -> { [id]: name }       display names (optional)
 //     isAdmin(user, env)    -> boolean              may moderate (optional)
 //     limit(env, kind, key) -> boolean              true: over a rate limit (optional;
-//                                                   kind: api, write, create, ws)
+//                                                   kind: api, write, create, ws,
+//                                                   find: lookups by email)
 //   }
+//
+// deleteAccount(env, userId) removes everything OG Paper keeps about an
+// account (the site's own "Delete account" calls it; see HOSTED.md).
 
-export { createApi as createPaperApi } from './api.js';
+export { createApi as createPaperApi, deleteAccount } from './api.js';
 export { PaperRoom } from './room.js';
 export { DEFAULTS as PAPER_DEFAULTS } from './config.js';

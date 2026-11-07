@@ -14,7 +14,9 @@
 //
 // Admins: PAPER_ADMINS, a comma-separated list of user ids (a var or secret).
 
-const LIMITS = { api: 'RL_API', write: 'RL_WRITE', create: 'RL_CREATE', ws: 'RL_WS' };
+// find: sharing or giving a page by email (kept tight: it could be used to
+// probe which addresses have accounts).
+const LIMITS = { api: 'RL_API', write: 'RL_WRITE', create: 'RL_CREATE', ws: 'RL_WS', find: 'RL_CREATE' };
 
 export function omegagivenAuth({ currentUser, limited }) {
   return {

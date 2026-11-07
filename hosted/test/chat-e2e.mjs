@@ -3,7 +3,8 @@
 // only once two people are on the page, messages arrive live as text (HTML
 // stays text, links are links), unread badge and @mention, typing, emoji
 // reactions, deleting one's own message, the owner turning chat off and
-// keeping history, the data export, and the owner removing someone.
+// keeping history, the data export, reporting a message (the admin gets a
+// copy), blocking and unblocking someone, and the owner removing someone.
 //   BASE=http://127.0.0.1:8799 PW=/dir/with/node_modules node hosted/test/chat-e2e.mjs
 // (hosted/test/run-browser-e2e.sh does all of it.) SHOTS=dir keeps screenshots.
 
@@ -148,6 +149,48 @@ console.log('owner: chat off hides it for everyone; on again (Page card) brings 
 await alice.waitForSelector('section[data-name="Page"] [data-chat=keep]:not([disabled])');
 await alice.click('section[data-name="Page"] h2 .close');
 await alice.waitForSelector('section[data-name="Page"]', { state: 'hidden' });
+
+// Alice reports bob's message: the moderators get a copy of it.
+await alice.click('.og-chat-btn');
+await alice.waitForSelector('.og-chat:not([hidden])');
+const hisMsg = alice.locator('.og-chat .msg', { hasText: 'on my way' });
+await hisMsg.hover();
+assert.equal(await alice.locator('.og-chat .msg', { hasText: 'see https://example.com/plan' }).locator('.acts button[aria-label=Report]').count(), 0, 'no Report on my own message');
+await hisMsg.locator('.acts button[aria-label=Report]').click();
+const adminCtx = await browser.newContext();
+const admin = await adminCtx.newPage();
+await admin.goto(`${BASE}/dev/login?as=admin&next=/paper/api/me`);
+let rep;
+await until(async () => { rep = (await api(admin, 'GET', '/admin/reports')).body.reports?.find(r => r.kind === 'chat'); return !!rep; }, 10000, 'chat report reached the admin');
+assert.equal(rep.subject_id, 'bob');
+assert.equal(JSON.parse(rep.context).message.text, 'on my way');
+await adminCtx.close();
+await alice.click('.og-chat [data-act=close]');
+console.log('alice: reported bob\'s message; the admin has a copy');
+
+// Bob blocks alice from the people list: her messages stop; then unblocks.
+await bob.click('.og-chat-btn');
+await bob.waitForSelector('.og-chat:not([hidden])');
+await bob.click('.og-chat .people .person:has-text("alice")');
+await shot(bob, 'chat-block-menu-phone');
+await bob.click('.og-chat .pop button:has-text("Block")');
+await until(async () => (await chat(bob)).blocked.includes('alice'), 10000, 'bob blocked alice');
+assert.equal(await bob.locator('.og-chat .msg', { hasText: 'hi @bob' }).count(), 0, 'her messages are hidden');
+await alice.click('.og-chat-btn');
+await alice.fill('.og-chat textarea', 'can you hear me');
+await alice.press('.og-chat textarea', 'Enter');
+await alice.waitForFunction(() => [...document.querySelectorAll('.og-chat .msg:not(.pending) .text')].some(t => t.textContent === 'can you hear me'));
+await wait(1000);
+assert.equal(await bob.locator('.og-chat .msg', { hasText: 'can you hear me' }).count(), 0, 'not delivered to bob');
+await bob.click('.og-chat .people .person:has-text("alice")');
+await bob.click('.og-chat .pop button:has-text("Unblock")');
+await until(async () => (await chat(bob)).blocked.length === 0, 10000, 'bob unblocked alice');
+await alice.fill('.og-chat textarea', 'and now?');
+await alice.press('.og-chat textarea', 'Enter');
+await bob.waitForFunction(() => [...document.querySelectorAll('.og-chat .msg .text')].some(t => t.textContent === 'and now?'), null, { timeout: 10000 });
+await alice.click('.og-chat [data-act=close]');
+console.log('bob: blocked alice (her messages stopped), then unblocked her');
+
 await alice.click('.og-chat-btn');
 await alice.click('.og-chat .people .person:has-text("bob")');
 await shot(alice, 'chat-person-menu-desktop');
