@@ -1,0 +1,11 @@
+OG Paper is an infinite-canvas drawing app. No account or sign-in is needed, and it works fully offline.
+
+To review:
+1. Draw with the round tool button (bottom right) or the quick toolbar; zoom with pinch. There is no zoom limit.
+2. New in 1.1: the Write tool (pick Write in the tool button's list of tools) turns handwriting into typed text, read on the device with Apple's Vision framework. Text boxes wrap and shrink their words to fit, and spell check underlines words as you type and suggests spellings; it never changes them by itself.
+3. Portals: open the tool button, pick Portal, tap "This view" in its panel, then drag a rectangle somewhere. The rectangle shows that view live; zoom into it to go through it.
+4. Settings (gear, top right) has Pages, Search, Layers, Frames, Library, Plugins and the UI settings.
+
+Network features are optional and only used when the user chooses them: Share live (end-to-end encrypted, with people the user invites by link) and page servers the user adds by link. Signing in is only to such a server, with an account its owner made; the app cannot create accounts, and there is no chat or public content in the app. No data is collected; canvases stay on the device.
+
+Support: https://omegagiven.github.io/OG-paper/support/
