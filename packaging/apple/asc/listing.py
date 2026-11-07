@@ -15,7 +15,10 @@
   listing.py --platform IOS --version 1.1 --whats-new FILE
       set What's New (not on a first version)
   listing.py --platform IOS --version 1.1 --create ...
-      create the version first if App Store Connect has none yet
+      create the version first if App Store Connect has none yet (or
+      renumber the version in preparation if it has another number)
+  listing.py --platform IOS --version 1.1 --release MANUAL
+      hold it after approval until someone presses Release
 
 It never submits for review. Needs ASC_KEY, ASC_KEY_ID, ASC_ISSUER."""
 
@@ -57,16 +60,39 @@ def version(platform, ver, create=False):
             return aid, v
     if not create:
         sys.exit(f"no {platform} version {ver} (create it with --create)")
+    # Only one version per platform can be in preparation. If one is there
+    # under another number (made by hand, say "1.0.1"), renumber it: the
+    # build's version has to match it.
+    for v in call("GET", f"/v1/apps/{aid}/appStoreVersions", limit=50)["data"]:
+        a = v["attributes"]
+        if a["platform"] == platform and a["appStoreState"] in EDITABLE:
+            call("PATCH", f"/v1/appStoreVersions/{v['id']}", {"data": {
+                "type": "appStoreVersions", "id": v["id"],
+                "attributes": {"versionString": ver}}})
+            print("renumbered", platform, "version", a["versionString"], "to", ver)
+            return aid, v
     # A new version starts from the live one's listing (description,
-    # screenshots, review contact); it is released as soon as it is approved.
+    # screenshots, review contact).
     v = call("POST", "/v1/appStoreVersions", {"data": {
         "type": "appStoreVersions",
-        "attributes": {"platform": platform, "versionString": ver,
-                       "releaseType": "AFTER_APPROVAL"},
+        "attributes": {"platform": platform, "versionString": ver},
         "relationships": {"app": {"data": {"type": "apps", "id": aid}}}}})["data"]
     print("created", platform, "version", ver)
     time.sleep(5)
     return aid, v
+
+
+# States in which a version's number and listing can still be changed.
+EDITABLE = ("PREPARE_FOR_SUBMISSION", "DEVELOPER_REJECTED", "REJECTED",
+            "METADATA_REJECTED", "INVALID_BINARY")
+
+
+def set_release(v, kind):
+    """MANUAL: someone presses Release after approval; AFTER_APPROVAL: it
+    goes out as soon as Apple approves it."""
+    call("PATCH", f"/v1/appStoreVersions/{v['id']}", {"data": {
+        "type": "appStoreVersions", "id": v["id"], "attributes": {"releaseType": kind}}})
+    print("release set to", kind)
 
 
 def attach_latest(aid, v, platform, ver):
@@ -197,9 +223,14 @@ def main():
     p.add_argument("--copyright")
     p.add_argument("--whats-new")
     p.add_argument("--create", action="store_true",
-                   help="create the version if App Store Connect has none yet")
+                   help="create the version if App Store Connect has none yet "
+                        "(or renumber the one in preparation)")
+    p.add_argument("--release", choices=("MANUAL", "AFTER_APPROVAL"),
+                   help="how the version goes out once approved")
     a = p.parse_args()
     aid, v = version(a.platform, a.version, a.create)
+    if a.release:
+        set_release(v, a.release)
     if a.build:
         attach_latest(aid, v, a.platform, a.version)
     if a.shots:

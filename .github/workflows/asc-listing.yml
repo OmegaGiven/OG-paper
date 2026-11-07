@@ -42,8 +42,8 @@ on:
         description: Create the version if App Store Connect has none yet (an update, e.g. 1.1)
         type: boolean
         default: false
-      whats_new:
-        description: What's New file under packaging/apple/appstore (empty = leave; updates only)
+      release:
+        description: After approval, MANUAL (wait for Release) or AFTER_APPROVAL (empty = leave)
         default: ""
 
 permissions:
@@ -65,7 +65,7 @@ jobs:
           args=(--platform "${{ inputs.platform }}" --version "${{ inputs.version }}")
           if [ "${{ inputs.create }}" = "true" ]; then args+=(--create); fi
           if [ "${{ inputs.attach_build }}" = "true" ]; then args+=(--build latest); fi
-          if [ -n "${{ inputs.whats_new }}" ]; then args+=(--whats-new "packaging/apple/appstore/${{ inputs.whats_new }}"); fi
+          if [ -n "${{ inputs.release }}" ]; then args+=(--release "${{ inputs.release }}"); fi
           if [ -n "${{ inputs.shots }}" ]; then args+=(--shots "packaging/apple/appstore/${{ inputs.shots }}" --display "${{ inputs.display }}"); fi
           if [ -n "${{ inputs.notes }}" ]; then args+=(--notes "packaging/apple/appstore/${{ inputs.notes }}"); fi
           if [ -n "${{ inputs.description }}" ]; then args+=(--description "packaging/apple/appstore/${{ inputs.description }}"); fi
