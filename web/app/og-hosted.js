@@ -7,7 +7,9 @@
 //
 // A site turns this on with <meta name="og-paper-api" content="/paper/api">
 // (and optionally og-paper-signin: where to send people to sign in, with
-// {next} for the way back; og-paper-upgrade: where to buy more storage).
+// {next} for the way back; og-paper-signout: the site's sign-out, likewise,
+// which adds a Sign out button that first takes the account's pages off
+// this browser; og-paper-upgrade: where to buy more storage).
 
 import { startChat } from './og-chat.js';
 
@@ -32,7 +34,7 @@ export class LocalProvider {
 }
 
 export class HostedProvider {
-  constructor(api, app) { this.kind = 'hosted'; this.api = api.replace(/\/$/, ''); this.app = app; }
+  constructor(api, app) { this.kind = 'hosted'; this.api = api.replace(/\/$/, ''); this.app = app; this.onDrop = null; }
 
   async call(method, path, body) {
     const r = await fetch(this.api + path, {
@@ -81,18 +83,34 @@ export class HostedProvider {
   /** Copy a page into my account: open it, then join the copy with its content. */
   async copy(page, current, waitSynced) {
     const r = await this.call('POST', `/pages/${page.id}/copy`, this.keys());
-    if (current !== page.id) { this.app.og_join(r.from.link); await waitSynced(); }
+    // The original is kept on this device while copying: noted like any
+    // account page, so signing out takes it off again.
+    if (current !== page.id) { remember(page.id, r.from); this.app.og_join(r.from.link); await waitSynced(); }
     remember(r.page.id, r.open);
     this.app.og_join_upload(r.open.link);
     return r.page;
   }
   rename(page, name) { return this.call('PATCH', `/pages/${page.id}`, { name }); }
   /** To the trash (restorable for 30 days); from the trash, `forever`. */
-  remove(page, forever = false) { forget(page.id); return this.call('DELETE', `/pages/${page.id}${forever ? '?forever=1' : ''}`); }
+  async remove(page, forever = false) {
+    const r = await this.call('DELETE', `/pages/${encodeURIComponent(page.id)}${forever ? '?forever=1' : ''}`);
+    await this.drop(page.id);
+    return r;
+  }
   untrash(page) { return this.call('POST', `/pages/${page.id}/untrash`); }
   history(page) { return this.call('GET', `/pages/${page.id}/history`); }
   restore(page, since) { return this.call('POST', `/pages/${page.id}/restore`, { since }); }
-  leave(page, me) { forget(page.id); return this.call('DELETE', `/pages/${page.id}/members/${encodeURIComponent(me)}`); }
+  async leave(page, me) {
+    const r = await this.call('DELETE', `/pages/${encodeURIComponent(page.id)}/members/${encodeURIComponent(me)}`);
+    await this.drop(page.id);
+    return r;
+  }
+  /** A page gone from this account: its link and its copy here go too. */
+  async drop(id) {
+    const canvas = known()[id]?.canvas;
+    forget(id);
+    if (canvas) await this.onDrop?.([canvas]);
+  }
   share(page, who, role) { return this.call('POST', `/pages/${page.id}/members`, { who, role }); }
   setRole(page, uid, role) { return this.call('PATCH', `/pages/${page.id}/members/${encodeURIComponent(uid)}`, { role }); }
   unshare(page, uid) { return this.call('DELETE', `/pages/${page.id}/members/${encodeURIComponent(uid)}`); }
@@ -111,23 +129,53 @@ export class HostedProvider {
 
 // Pages opened from the account, so this device can reopen them offline
 // (the link holds the page's key; it stays on this device, like any link).
-const MAP = 'og-hosted-pages';
-const known = () => { try { return JSON.parse(localStorage.getItem(MAP)) || {}; } catch (e) { return {}; } };
+// EVER: every account canvas this device has held a copy of, so signing out
+// takes them all off even if a page's link was dropped some other way.
+// SYNC: per canvas, its change count now and when the account last had it
+// all ({ n, synced }), to ask before removing work not in the account yet.
+const MAP = 'og-hosted-pages', EVER = 'og-hosted-canvases', SYNC = 'og-hosted-sync';
+const lsJson = (k, d) => { try { return JSON.parse(localStorage.getItem(k)) || d; } catch (e) { return d; } };
+const lsPut = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} };
+const known = () => lsJson(MAP, {});
 function remember(id, open) {
   const m = known();
   m[id] = { link: open.link, canvas: open.canvas, role: open.role, name: open.name };
-  try { localStorage.setItem(MAP, JSON.stringify(m)); localStorage.setItem('og-hosted-last', id); } catch (e) {}
+  lsPut(MAP, m);
+  try { localStorage.setItem('og-hosted-last', id); } catch (e) {}
+  const ever = lsJson(EVER, []);
+  if (open.canvas && !ever.includes(open.canvas)) lsPut(EVER, [...ever, open.canvas]);
 }
 function forget(id) {
   const m = known();
+  const canvas = m[id]?.canvas;
   delete m[id];
-  try { localStorage.setItem(MAP, JSON.stringify(m)); } catch (e) {}
+  lsPut(MAP, m);
+  if (canvas) {
+    lsPut(EVER, lsJson(EVER, []).filter(c => c !== canvas));
+    const s = lsJson(SYNC, {}); delete s[canvas]; lsPut(SYNC, s);
+  }
 }
 /** Every account page this device keeps (signing out drops them all). */
 function forgetAll() {
-  const canvases = Object.values(known()).map(v => v.canvas).filter(Boolean);
-  try { localStorage.removeItem(MAP); localStorage.removeItem('og-hosted-last'); } catch (e) {}
+  const canvases = [...new Set([...Object.values(known()).map(v => v.canvas), ...lsJson(EVER, [])].filter(Boolean))];
+  try { for (const k of [MAP, EVER, SYNC, 'og-hosted-last']) localStorage.removeItem(k); } catch (e) {}
   return canvases;
+}
+const holdsPages = () => Object.keys(known()).length > 0 || lsJson(EVER, []).length > 0;
+/** Account pages here with changes the account may not have yet: [{ id, name }]. */
+function unsyncedPages() {
+  const s = lsJson(SYNC, {});
+  return Object.entries(known()).filter(([, v]) => { const r = s[v.canvas]; return r && r.n !== r.synced; })
+    .map(([id, v]) => ({ id, name: v.name || 'Untitled', canvas: v.canvas }));
+}
+/** The name others see (og-prefs `name=`): the account's, or none. */
+function setPrefName(name) {
+  try {
+    const lines = (localStorage.getItem('og-prefs') || '').split('\n').filter(l => l.trim() && !/^\s*name\s*=/.test(l));
+    const n = name ? String(name).replace(/[\r\n]+/g, ' ').trim().slice(0, 40) : '';
+    if (n) lines.push(`name=${n}`);
+    localStorage.setItem('og-prefs', lines.map(l => l + '\n').join(''));
+  } catch (e) {}
 }
 const pageOfCanvas = canvas => Object.entries(known()).find(([, v]) => v.canvas === canvas)?.[0] || null;
 
@@ -138,6 +186,7 @@ export function hostedConfig() {
   return {
     api,
     signIn: meta('og-paper-signin') || window.OG_PAPER_HOSTED?.signIn || '/account/?next={next}',
+    signOut: meta('og-paper-signout') || window.OG_PAPER_HOSTED?.signOut || null,
     // The site's page for buying more storage (the API's /me can name it too).
     upgrade: meta('og-paper-upgrade') || window.OG_PAPER_HOSTED?.upgrade || null,
   };
@@ -165,8 +214,12 @@ export function startHosted(ui, cfg) {
     og_join_upload: link => { closedFor = null; ui.app.og_join_upload(link); },
   };
   const hp = new HostedProvider(cfg.api, app);
-  const state = { me: null, list: null, peers: [], role: null, refused: false, open: null };
+  hp.onDrop = canvases => ui.dropLocal?.(canvases);
+  // ended: signed out (the session ran out, or signed out on the site) with
+  // the account's pages still here: they stay until the person says.
+  const state = { me: null, list: null, peers: [], role: null, refused: false, open: null, ended: false };
   const signInUrl = () => cfg.signIn.replace('{next}', encodeURIComponent(location.pathname + location.hash));
+  const signOutUrl = () => cfg.signOut && cfg.signOut.replace('{next}', encodeURIComponent(location.pathname));
 
   const c = ui.card('My account');
   ui.cards.account = c;
@@ -217,8 +270,19 @@ export function startHosted(ui, cfg) {
   ui.root.append(chip);
   chip.onclick = () => openPanel();
   let chipKey = '';
+  // What the account has of each page opened here (see SYNC).
+  function noteSync(c = cloudState()) {
+    const canvas = ui.status().canvas;
+    if (!canvas || !currentPage()) return;
+    const all = lsJson(SYNC, {});
+    const r = all[canvas] || {};
+    const n = changesNow();
+    const next = c === 'saved' ? { n, synced: n } : { n, synced: r.synced ?? null };
+    if (next.n !== r.n || next.synced !== r.synced) { all[canvas] = next; lsPut(SYNC, all); }
+  }
   setInterval(() => {
     const c = cloudState();
+    noteSync(c);
     const signedIn = !!state.me?.user;
     const text = c === 'local' ? (signedIn ? 'Only in this browser: keep it in your account' : 'Only in this browser: sign in to save to the cloud')
       : c === 'unsaved' ? (cloud.dropped ? '⚠ Not saved to your account' : '⚠ Not saved to your account yet (offline)')
@@ -262,20 +326,71 @@ export function startHosted(ui, cfg) {
     removePerson: uid => hp.unshare({ id: currentPage() }, uid),
   });
 
-  // Whose pages this device holds. Signed out, or someone else signed in:
-  // their links (with edit keys) and offline copies go (a shared computer
-  // must not reopen them).
+  // Whose pages this device holds. Someone else signed in: the other
+  // account's links (with edit keys) and offline copies go at once (a shared
+  // computer must not reopen them). Signed out (the session ran out, or
+  // signed out on the site): nothing goes by itself, so offline edits are
+  // not lost; the panel offers signing in again, or removing them.
   const OWNER = 'og-hosted-user';
+  const owner = () => { try { return localStorage.getItem(OWNER); } catch (e) { return null; } };
+  let endedSaid = false;
   async function checkOwner() {
     const now = state.me?.user?.id || null;
-    let was = null;
-    try { was = localStorage.getItem(OWNER); } catch (e) {}
-    if (was !== now && (was || !now) && Object.keys(known()).length) {
-      await ui.dropLocal?.(forgetAll());
-      state.open = null;
-      if (was) say(now ? 'Signed in as someone else: the other account\'s pages were removed from this device' : 'Signed out: your pages were removed from this device');
+    const was = owner();
+    if (now && was && was !== now && holdsPages()) {
+      await wipe();
+      say('Signed in as someone else: the other account\'s pages were removed from this device');
     }
-    try { if (now) localStorage.setItem(OWNER, now); else localStorage.removeItem(OWNER); } catch (e) {}
+    // People see who they are on others' screens: this account's name.
+    if (now && was !== now) setPrefName(state.me.user.name);
+    if (now) { try { localStorage.setItem(OWNER, now); } catch (e) {} }
+    state.ended = !now && (!!was || holdsPages());
+    if (state.ended && !endedSaid) {
+      endedSaid = true;
+      say('You are signed out: your pages stay in this browser until you sign in again or remove them');
+    }
+    if (now) endedSaid = false;
+  }
+  /** Take every account page off this browser (copies, links, the name shown). */
+  async function wipe() {
+    await ui.dropLocal?.(forgetAll());
+    state.open = null;
+    setPrefName(null);
+    try { localStorage.removeItem(OWNER); } catch (e) {}
+    state.ended = false;
+  }
+  /**
+   * Sign out here: the account's pages leave this browser. Changes the
+   * account may not have yet: ask first (sign in again, download copies, or
+   * remove anyway). `then`: where to go afterwards (the site's sign-out).
+   */
+  async function signOutHere(then, force = false) {
+    await ui.autosave();
+    noteSync();
+    const left = force ? [] : unsyncedPages();
+    if (left.length) return askUnsynced(left, then);
+    await wipe();
+    if (ui.isOpen() === 'signout') ui.show(null);
+    say('Signed out: your pages were removed from this browser');
+    if (then) location.href = then;
+    else render();
+  }
+  const so = ui.card('Not in your account yet');
+  ui.cards.signout = so;
+  function askUnsynced(left, then) {
+    so.querySelectorAll(':scope > :not(h2)').forEach(n => n.remove());
+    so.append(el('div', {}, `<p>${left.length === 1 ? 'This page has' : 'These pages have'} changes your account may not have yet:</p>
+      <ul>${left.map(p => `<li>${esc(p.name)}</li>`).join('')}</ul>
+      <p>Removing ${left.length === 1 ? 'it' : 'them'} from this browser now loses those changes.</p>
+      <div class="og-row" style="flex-wrap:wrap"><a class="og-btn primary" data-act="signin" href="${esc(signInUrl())}">Sign in again</a>
+        <button class="og-btn" data-act="download">Download copies</button>
+        <button class="og-btn" data-act="remove-anyway">Remove anyway</button></div>`));
+    so.querySelector('[data-act=download]').onclick = async () => {
+      for (const p of left) await ui.downloadCopy?.(p.canvas, p.name);
+      say(left.length === 1 ? 'Copy downloaded: open it later with Open copy' : 'Copies downloaded: open them later with Open copy');
+    };
+    so.querySelector('[data-act=remove-anyway]').onclick = () => guard(() => signOutHere(then, true));
+    if (ui.isOpen() !== 'signout') ui.show('signout');
   }
 
   async function refresh() {
@@ -304,12 +419,20 @@ export function startHosted(ui, cfg) {
     const meta = mine
       ? `${p.bytes ? fmtBytes(p.bytes) + ' · ' : ''}${ago(p.updated)}${p.blocked ? ' · taken down' : ''}${p.offer ? ` · offered to ${esc(p.offer.to.name || 'someone')}` : ''}`
       : `${esc(p.owner?.name || 'someone')} · ${p.role === 'viewer' ? 'can view' : p.role === 'owner' ? 'co-owner' : 'can edit'} · ${ago(p.updated)}`;
-    return `<li data-id="${p.id}" data-mine="${mine ? 1 : 0}"><button class="go">${live ? '● ' : ''}${esc(p.name)}<small>${meta}</small></button>
+    return `<li data-id="${esc(String(p.id))}" data-mine="${mine ? 1 : 0}"><button class="go">${live ? '● ' : ''}${esc(p.name)}<small>${meta}</small></button>
       <button class="mini" data-act="share" title="${mine || p.role === 'owner' ? 'Share' : 'Details'}">${mine || p.role === 'owner' ? 'Share' : '⋯'}</button></li>`;
   }
 
   function render() {
     const me = state.me;
+    if ((!me || !me.user) && state.ended) {
+      body.innerHTML = `<p><b>You are signed out</b>: the session ended, or you signed out on the site.</p>
+        <p>Your account's pages are still in this browser, with any changes made here. Sign in again to keep saving them to your account.</p>
+        <div class="og-row" style="flex-wrap:wrap"><a class="og-btn primary" href="${esc(signInUrl())}" data-act="signin">Sign in again</a>
+          <button class="og-btn" data-act="forget-device" title="Sign out here: the account's pages leave this browser">Remove them from this browser</button></div>`;
+      body.querySelector('[data-act=forget-device]').onclick = () => guard(() => signOutHere(null));
+      return;
+    }
     if (!me || !me.user) {
       body.innerHTML = `<p>Sign in to keep your pages in your account: they open on any device, save as you draw, and you can share them and draw on them together.</p>
         <p>Signed out, pages stay in this browser only.</p>
@@ -332,6 +455,7 @@ export function startHosted(ui, cfg) {
         <button class="mini" data-act="accept" title="Take it: it becomes yours and counts toward your storage">Accept</button><button class="mini" data-act="decline" title="No thanks">✕</button></li>`).join('')}</ul>` : ''}
       <div class="og-shared-head">Shared with me</div>
       <ul class="og-list" data-list="shared">${l.shared.map(p => item(p, false)).join('') || '<li class="og-empty">Nothing shared with you yet.</li>'}</ul>
+      ${signOutUrl() ? '<div class="og-row"><button class="og-btn" data-act="signout" title="Your pages leave this browser; they stay in your account">Sign out</button></div>' : ''}
       ${(l.trash || []).length ? `<div class="og-shared-head">Trash <small>(deleted pages, kept 30 days)</small></div>
       <ul class="og-list" data-list="trash">${l.trash.map(p => `<li data-trash="${esc(p.id)}"><span class="go">${esc(p.name)}<small>${p.bytes ? fmtBytes(p.bytes) + ' · ' : ''}deleted ${ago(p.deleted)} · gone ${new Date(p.purge).toLocaleDateString()}</small></span>
         <button class="mini" data-act="untrash" title="Put it back in My pages">Restore</button><button class="mini" data-act="forever" title="Delete it for good now">✕</button></li>`).join('')}</ul>` : ''}`;
@@ -341,10 +465,17 @@ export function startHosted(ui, cfg) {
       if (name === null) return;
       await guard(async () => { await ui.autosave(); await hp.create(name || 'Untitled'); say('New page: it saves to your account as you draw'); ui.show(null); refresh(); });
     });
+    act('[data-act=signout]', () => guard(() => signOutHere(signOutUrl())));
     act('[data-act=keep]', async () => {
       const name = prompt('Keep the open canvas in your account as', ui.status().name || 'Untitled');
       if (name === null) return;
-      await guard(async () => { await hp.keep(name || 'Untitled'); refresh(); });
+      await guard(async () => {
+        // Each picture or clip goes up as one change, which the site caps:
+        // a canvas bigger than that may hold one too big to keep.
+        const cap = state.me?.maxOpBytes, size = await ui.canvasBytes?.();
+        if (cap && size > cap) say(`Note: a picture or sound clip over ${fmtBytes(cap)} stays in this browser only (your account keeps up to ${fmtBytes(cap)} each)`);
+        await hp.keep(name || 'Untitled'); refresh();
+      });
     });
     for (const li of body.querySelectorAll('li[data-id]')) {
       const page = [...l.mine, ...l.shared].find(p => p.id === li.dataset.id);
@@ -398,7 +529,7 @@ export function startHosted(ui, cfg) {
           ${m.billing ? '' : roleSel(m.role, 'data-role') + '<button class="mini" data-act="unshare" title="Remove">✕</button>'}</li>`).join('')}</ul>
         <div class="og-row"><input placeholder="Username or email" data-who>${roleSel('editor', 'data-newrole')}<button class="og-btn primary" data-act="add">Share</button></div>
         ${state.me.linkSharing ? `<div class="og-shared-head">Anyone with the link</div>
-        <ul class="og-list">${(info.links || []).map(k => `<li data-link="${k.id}"><span class="go">${k.role === 'editor' ? 'Can edit' : 'Can view'}<small>made ${k.by?.name ? `by ${esc(k.by.name)} ` : ''}${ago(k.created)}</small></span><button class="mini" data-act="unlink">Turn off</button></li>`).join('') || '<li class="og-empty">No links.</li>'}</ul>
+        <ul class="og-list">${(info.links || []).map(k => `<li data-link="${esc(String(k.id))}"><span class="go">${k.role === 'editor' ? 'Can edit' : 'Can view'}<small>made ${k.by?.name ? `by ${esc(k.by.name)} ` : ''}${ago(k.created)}</small></span><button class="mini" data-act="unlink">Turn off</button></li>`).join('') || '<li class="og-empty">No links.</li>'}</ul>
         <div class="og-row"><button class="og-btn" data-act="link-view">New view link</button><button class="og-btn" data-act="link-edit">New edit link</button></div>
         <div class="og-row" hidden data-newlink><input readonly><button class="og-btn primary" data-act="copylink">Copy</button></div>` : ''}` : ''}
       ${owner && info.chat ? `
@@ -485,8 +616,8 @@ export function startHosted(ui, cfg) {
     if (hist) hp.history(page).then(h => {
       if (!h.replaced?.length || !hist.isConnected) return;
       hist.innerHTML = `<div class="og-shared-head">Earlier versions</div>
-        <p><small>Someone saved a full copy of this page that left out earlier work. What it replaced is kept ${h.keepDays} days; bringing it back adds it to the page again (nothing is removed).</small></p>
-        <ul class="og-list">${h.replaced.map(r => `<li data-since="${r.seq}"><span class="go">${r.frames} change${r.frames === 1 ? '' : 's'} · ${fmtBytes(r.bytes)}<small>replaced ${ago(r.at)}${r.size != null ? ` by a ${fmtBytes(r.size)} copy` : ''}</small></span><button class="mini" data-act="restore">Bring back</button></li>`).join('')}</ul>`;
+        <p><small>Someone saved a full copy of this page that left out earlier work. What it replaced is kept ${h.keepDays} days; bringing it back adds it to the page again (nothing is removed).${h.replaced.length > 1 ? ' Newest first: bringing back an older one also brings back the newer ones above it.' : ''}</small></p>
+        <ul class="og-list">${h.replaced.map((r, i) => `<li data-since="${Number(r.seq)}"><span class="go">${r.frames} change${r.frames === 1 ? '' : 's'} · ${fmtBytes(r.bytes)}<small>replaced ${ago(r.at)}${r.size != null ? ` by a ${fmtBytes(r.size)} copy` : ''}</small></span><button class="mini" data-act="restore"${i ? ` title="Brings back this one and the ${i} newer one${i === 1 ? '' : 's'} above it"` : ''}>${i ? 'Bring back this and newer' : 'Bring back'}</button></li>`).join('')}</ul>`;
       for (const li of hist.querySelectorAll('[data-since]')) {
         li.querySelector('[data-act=restore]').onclick = () => guard(async () => {
           const r = await hp.restore(page, Number(li.dataset.since));
@@ -512,7 +643,7 @@ export function startHosted(ui, cfg) {
 
   async function guard(f) {
     try { await f(); } catch (e) {
-      if (e.status === 401) { state.me = { user: null }; render(); }
+      if (e.status === 401) { state.me = { user: null }; state.ended = !!owner() || holdsPages(); render(); }
       if (e.data?.full) showFull(e.message, e.data);
       else say(e.message || String(e));
     }
@@ -567,14 +698,14 @@ export function startHosted(ui, cfg) {
   async function boot() {
     await refresh();
     if (!state.me?.user) {
+      // Signed out with the account's pages here: say what can be done.
+      if (state.ended && !location.hash.startsWith('#l=')) ui.show('account');
       await fromLink();
       return;
     }
-    // People see who they are on others' screens.
-    try {
-      const prefs = localStorage.getItem('og-prefs') || '';
-      if (state.me.user.name && !/^name=/m.test(prefs)) localStorage.setItem('og-prefs', prefs + `name=${state.me.user.name}\n`);
-    } catch (e) {}
+    // People see who they are on others' screens (set on an account change
+    // in checkOwner; here for a browser signed in before that).
+    try { if (state.me.user.name && !/^\s*name\s*=/m.test(localStorage.getItem('og-prefs') || '')) setPrefName(state.me.user.name); } catch (e) {}
     if (location.hash.startsWith('#l=')) return fromLink();
     // Signed in: carry on with the account page last open, else show the list.
     const last = localStorage.getItem('og-hosted-last');
@@ -610,9 +741,9 @@ export function startHosted(ui, cfg) {
       else if (m.t === 'kept') cloud.kept++;
       else if (m.t === 'usage') noteUsage(m.used, m.quota);
       else if (m.t === 'peers') { state.peers = m.list; if (ui.isOpen() === 'account') render(); }
-      else if (m.t === 'full') { cloud.kept++; cloud.dropped = true; showFull(m.msg, m); }
-      else if (m.t === 'denied' || m.t === 'error') { if (m.drop) { cloud.kept++; if (m.t === 'error') cloud.dropped = true; } say(m.msg); }
-      else if (m.t === 'kicked') { closedFor = m.msg; say(m.msg); chat.reset(); refresh(); }
+      else if (m.t === 'full') { cloud.kept++; cloud.dropped = true; showFull(m.msg || 'Your storage is full: this change is not saved to your account', m); }
+      else if (m.t === 'denied' || m.t === 'error') { if (m.drop) { cloud.kept++; if (m.t === 'error') cloud.dropped = true; } if (m.msg) say(m.msg); }
+      else if (m.t === 'kicked') { closedFor = m.msg || 'You no longer have access to this page'; say(closedFor); chat.reset(); refresh(); }
     },
     /** Whether to dial a room again (not after being shown the door). */
     mayConnect(url) {

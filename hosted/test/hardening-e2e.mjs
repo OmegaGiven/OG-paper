@@ -1,8 +1,11 @@
 // The launch-audit hardening in the web app, against a hosted site in
 // workerd: a big photo is made to fit before it goes up, give-away is an
 // offer bob accepts, a tiny full copy is undone from "Earlier versions",
-// delete goes to the trash and comes back, and signing out takes the
-// account's pages (links with keys, offline copies) off the device.
+// delete goes to the trash and comes back (and takes the page's copy off
+// the device), an expired session keeps the pages and offline edits, signing
+// out here asks about unsynced work and then takes the account's pages
+// (links with keys, offline copies, the name shown) off the device, and
+// another account signing in is shown under its own name.
 // SHOTS=dir keeps phone and desktop screenshots of the new panels.
 //   BASE=http://127.0.0.1:8799 PW=/path/with/node_modules/playwright node hosted/test/hardening-e2e.mjs
 
@@ -161,26 +164,103 @@ await bob.waitForSelector(`[data-list=mine] li[data-id="${id}"]`);
 assert.equal((await api(carol, 'POST', `/pages/${id}/open`)).status, 200, 'back for carol');
 console.log('trash: deleted (gone for everyone), restored');
 
-// ---- signing out takes the account's pages off the device ---------------------------
-const before = await carol.evaluate(() => ({ map: Object.keys(JSON.parse(localStorage.getItem('og-hosted-pages') || '{}')).length, owner: localStorage.getItem('og-hosted-user') }));
-assert.equal(before.map, 1);
+// ---- deleting a page takes its copy off the device at once ------------------------
+const local = p => p.evaluate(() => ({
+  map: JSON.parse(localStorage.getItem('og-hosted-pages') || 'null'),
+  owner: localStorage.getItem('og-hosted-user'),
+  pages: localStorage.getItem('og-pages') || '',
+  prefs: localStorage.getItem('og-prefs') || '',
+  sync: JSON.parse(localStorage.getItem('og-hosted-sync') || '{}'),
+}));
+const hasCopy = (p, c) => p.evaluate(c => new Promise(ok => {
+  const r = indexedDB.open('og-paper');
+  r.onsuccess = () => { const q = r.result.transaction('canvases').objectStore('canvases').get('page:' + c); q.onsuccess = () => ok(!!q.result); };
+}), c);
+const canvasOf = async (p, pid) => (await local(p)).map?.[pid]?.canvas;
+const newPage = async (p, name, text) => {
+  const had = (await api(p, 'GET', '/pages')).body.mine.map(x => x.id);
+  p.answer = name;
+  await p.evaluate(() => window.ogPaper.account());
+  await p.waitForSelector('section[data-name="My account"] [data-act=new]');
+  await p.click('section[data-name="My account"] [data-act=new]');
+  let pid;
+  await until(async () => (pid = (await api(p, 'GET', '/pages')).body.mine.map(x => x.id).find(x => !had.includes(x))), 15000, 'no new page');
+  await until(async () => !!(await canvasOf(p, pid)), 15000, 'new page not noted on the device');
+  await wait(1500);
+  await p.evaluate(t => window.ogPaper.run([{ add: 'text', x: 0, y: 0, text: t }]), text);
+  await until(async () => (await p.evaluate(() => window.ogPaper.cloud())) === 'saved', 30000, `${name} not saved`);
+  const c = await canvasOf(p, pid);
+  await until(() => hasCopy(p, c), 15000, `no offline copy of ${name}`);
+  await wait(2500);  // the copy here has the text too (autosave)
+  return { pid, c };
+};
+const before = await local(carol);
+assert.equal(Object.keys(before.map).length, 1);
 assert.equal(before.owner, 'hope');
-const canvas = await carol.evaluate(() => JSON.parse(localStorage.getItem('og-hosted-pages'))[Object.keys(JSON.parse(localStorage.getItem('og-hosted-pages')))[0]].canvas);
-await until(async () => carol.evaluate(c => new Promise(ok => {
-  const r = indexedDB.open('og-paper');
-  r.onsuccess = () => { const q = r.result.transaction('canvases').objectStore('canvases').get('page:' + c); q.onsuccess = () => ok(!!q.result); };
-}), canvas), 15000, 'no offline copy to begin with');
-await carol.goto(`${BASE}/dev/login?as=`);
+assert.match(before.prefs, /^name=hope$/m, 'others see her account name');
+const canvas = Object.values(before.map)[0].canvas;
+await until(() => hasCopy(carol, canvas), 15000, 'no offline copy to begin with');
+const gone = await newPage(carol, 'Carol gone', 'carol-gone-text');
+await carol.evaluate(() => window.ogPaper.account());
+await carol.waitForSelector(`[data-list=mine] li[data-id="${gone.pid}"] [data-act=share]`);
+await carol.click(`[data-list=mine] li[data-id="${gone.pid}"] [data-act=share]`);
+await carol.waitForSelector('section[data-name="Page"] [data-act=delete]');
+await carol.click('section[data-name="Page"] [data-act=delete]');
+await until(async () => !(await local(carol)).map?.[gone.pid], 15000, 'the deleted page is still noted');
+await until(async () => !(await hasCopy(carol, gone.c)), 15000, 'the deleted page\'s copy is still here');
+await wait(3000);  // autosave must not bring it back
+assert.equal(await hasCopy(carol, gone.c), false, 'the deleted page\'s copy stays gone');
+assert.ok(!(await local(carol)).pages.includes(gone.c), 'the deleted page is not under On this device');
+console.log('delete: the page\'s copy left the device with it');
+
+// ---- an expired session keeps the pages (and offline edits) ---------------------------
+const two = await newPage(carol, 'Carol two', 'carol-two-text');
+await carol.context().clearCookies();
+await carol.reload();
 await ready(carol);
-await until(async () => (await carol.evaluate(() => localStorage.getItem('og-hosted-pages'))) === null, 15000, 'links with keys left on the device');
-const left = await carol.evaluate(c => new Promise(ok => {
-  const r = indexedDB.open('og-paper');
-  r.onsuccess = () => { const q = r.result.transaction('canvases').objectStore('canvases').get('page:' + c); q.onsuccess = () => ok(!!q.result); };
-}), canvas);
-assert.equal(left, false, 'the offline copy is gone');
-assert.ok(!(await texts(carol)).includes('keep-me-alice'), 'the page is not on screen');
-assert.ok(!(await carol.evaluate(() => localStorage.getItem('og-pages') || '')).includes(canvas), 'not listed under On this device');
-console.log('sign-out: links (keys) and offline copies removed from the device');
+await carol.waitForSelector('section[data-name="My account"] [data-act=forget-device]', { timeout: 15000 });
+await shots(carol, 'session-ended');
+let now = await local(carol);
+assert.equal(now.owner, 'hope', 'still known whose pages these are');
+assert.equal(Object.keys(now.map || {}).length, 2, 'links kept');
+assert.ok(await hasCopy(carol, canvas) && await hasCopy(carol, two.c), 'offline copies kept');
+await until(async () => (await texts(carol)).includes('carol-two-text'), 20000, 'the page is not on screen any more');
+await carol.evaluate(() => window.ogPaper.run([{ add: 'text', x: 0, y: 300, text: 'offline-edit' }]));
+await until(async () => { const r = (await local(carol)).sync[two.c]; return r && r.n !== r.synced; }, 15000, 'the offline edit is not noted as unsynced');
+await wait(2500);  // autosaved here
+await carol.reload();
+await ready(carol);
+await carol.waitForSelector('section[data-name="My account"] [data-act=forget-device]', { timeout: 15000 });
+await until(async () => (await texts(carol)).includes('offline-edit'), 20000, 'the offline edit did not survive a reload while signed out');
+console.log('expired session: pages, offline copies and an offline edit all kept; sign-in prompt shown');
+
+// ---- signing out here: asks about unsynced work, then takes everything off -------------
+await carol.click('section[data-name="My account"] [data-act=forget-device]');
+await carol.waitForSelector('section[data-name="Not in your account yet"]:not([hidden]) [data-act=remove-anyway]', { timeout: 15000 });
+assert.match(await carol.textContent('section[data-name="Not in your account yet"]'), /Carol two/);
+await shots(carol, 'signout-unsynced');
+assert.equal(Object.keys((await local(carol)).map).length, 2, 'nothing removed before the answer');
+await carol.click('section[data-name="Not in your account yet"] [data-act=remove-anyway]');
+await until(async () => (await local(carol)).map === null, 15000, 'links with keys left on the device');
+for (const c of [canvas, two.c, gone.c]) assert.equal(await hasCopy(carol, c), false, `the offline copy ${c} is gone`);
+now = await local(carol);
+assert.equal(now.owner, null);
+assert.ok(![canvas, two.c, gone.c].some(c => now.pages.includes(c)), 'not listed under On this device');
+assert.doesNotMatch(now.prefs, /^name=/m, 'the account name is not left for the next person');
+let after = '';
+await until(async () => { after = await texts(carol); return !/keep-me-alice|carol-two-text|offline-edit/.test(after); }, 15000, 'the pages are still on screen').catch(e => { console.log('on screen:', after); throw e; });
+console.log('sign-out: asked first (unsynced edit), then links (keys), offline copies and the name removed');
+
+// ---- another account signing in: the name others see follows -------------------------
+assert.match((await local(bob)).prefs, /^name=hiro$/m);
+await bob.goto(`${BASE}/dev/login?as=iris`);
+await ready(bob);
+await until(async () => /^name=iris$/m.test((await local(bob)).prefs), 15000, 'the name is still the last account\'s');
+now = await local(bob);
+assert.doesNotMatch(now.prefs, /^name=hiro$/m);
+assert.equal(now.owner, 'iris');
+assert.ok(!now.map || !now.map[id], 'hiro\'s page is not on the device for iris');
+console.log('switching account: hiro\'s pages removed, others now see "iris"');
 
 await browser.close();
 console.log('HARDENING E2E OK');

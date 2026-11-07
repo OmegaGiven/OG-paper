@@ -282,7 +282,8 @@ export async function start({ mode = 'app' } = {}) {
 
   let toastTimer;
   const say = msg => {
-    toast.innerHTML = fmt(msg);
+    if (msg == null || msg === '') return;
+    toast.innerHTML = fmt(String(msg));
     toast.classList.add('on');
     clearTimeout(toastTimer);
     toastTimer = setTimeout(() => toast.classList.remove('on'), 2600);
@@ -599,13 +600,21 @@ export async function start({ mode = 'app' } = {}) {
       if (name) { it.name = name; await idbPut(it.id, it, 'library'); libLoad(); }
       return;
     }
-    og_sticker_place(it.bytes);
+    placeSticker(it.bytes);
     if (matchMedia('(max-width: 700px)').matches) show(null);
   };
   libGrid.addEventListener('dragstart', e => {
     const d = e.target.closest('.og-sticker');
     if (d) { e.dataTransfer.setData(STICKER, d.dataset.id); e.dataTransfer.effectAllowed = 'copy'; }
   });
+  // A sticker is its own format (not a picture file), so it cannot be made
+  // smaller here: on an account page, one bigger than a change may be is
+  // said before it goes (the room keeps what fits).
+  function placeSticker(bytes, at) {
+    const limit = pictureLimit();
+    if (limit && bytes.length > limit) say(`This sticker is ${MB(bytes.length)}: a picture in it over ${MB(limit)} stays in this browser only, not in your account`);
+    og_sticker_place(bytes, at?.[0], at?.[1]);
+  }
   async function stickerSave() {
     const bytes = og_sticker_take();
     if (!bytes) return;
@@ -1359,18 +1368,23 @@ export async function start({ mode = 'app' } = {}) {
     let img;
     try { img = await createImageBitmap(blob); } catch (e) {
       img = new Image();
-      img.src = URL.createObjectURL(blob);
-      await img.decode();
+      const url = URL.createObjectURL(blob);
+      img.src = url;
+      try { await img.decode(); } finally { URL.revokeObjectURL(url); }
     }
     const w = img.width || img.naturalWidth, h = img.height || img.naturalHeight;
-    // See-through? (looked at small: cheap)
-    const t = document.createElement('canvas');
-    t.width = t.height = 32;
-    const tg = t.getContext('2d', { willReadFrequently: true });
-    tg.drawImage(img, 0, 0, 32, 32);
-    const px = tg.getImageData(0, 0, 32, 32).data;
+    // See-through? Looked at up to 1024 px across, any pixel not fully
+    // opaque counts (a small see-through corner must stay see-through).
     let alpha = false;
-    if (type !== 'image/jpeg') for (let i = 3; i < px.length; i += 4) if (px[i] < 250) { alpha = true; break; }
+    if (type !== 'image/jpeg') {
+      const k = Math.min(1, 1024 / Math.max(w, h, 1));
+      const t = document.createElement('canvas');
+      t.width = Math.max(1, Math.round(w * k)); t.height = Math.max(1, Math.round(h * k));
+      const tg = t.getContext('2d', { willReadFrequently: true });
+      tg.drawImage(img, 0, 0, t.width, t.height);
+      const px = tg.getImageData(0, 0, t.width, t.height).data;
+      for (let i = 3; i < px.length; i += 4) if (px[i] < 255) { alpha = true; break; }
+    }
     const out = await fitCanvas(img, w, h, limit, alpha, false);
     img.close?.();
     if (!out) throw new Error(tooBig(bytes.length, limit));
@@ -1476,6 +1490,9 @@ export async function start({ mode = 'app' } = {}) {
       if (cancelled) { og_audio_cancelled('Recording cancelled'); return; }
       const dur = Math.round(performance.now() - started);
       const blob = new Blob(parts, { type: rec.mimeType || mimeType || 'audio/webm' });
+      // An account page keeps each clip as one change, which the site caps.
+      const cap = pictureLimit();
+      if (cap && blob.size > cap) { og_audio_cancelled(`That clip is ${MB(blob.size)}: too long to keep in your account (the most is ${MB(cap)}). Record a shorter one`); return; }
       og_audio_recorded(new Uint8Array(await blob.arrayBuffer()), Math.min(dur, maxMs));
     };
     recBar.querySelector('.stop').onclick = () => rec.stop();
@@ -1515,7 +1532,7 @@ export async function start({ mode = 'app' } = {}) {
     const sid = dt.getData?.(STICKER);
     if (sid) {
       const it = lib.find(x => x.id === sid);
-      if (it) og_sticker_place(it.bytes, at?.[0], at?.[1]);
+      if (it) placeSticker(it.bytes, at);
       return;
     }
     const text = dt.getData('text/plain');
@@ -1648,6 +1665,9 @@ export async function start({ mode = 'app' } = {}) {
   // listed in localStorage 'og-pages'; 'og-page' is the one last open.
   let pages = isTry ? [] : (lsGet('og-pages') || []);
   const pushPages = () => { if (!isTry) og_set_pages(JSON.stringify(pages)); };
+  // Canvases taken off this device (signed out, page deleted or left):
+  // never saved here again.
+  const dropped = new Set();
   let saved = null;
   if (isTry) saved = await idbGet('try');
   else {
@@ -1665,7 +1685,23 @@ export async function start({ mode = 'app' } = {}) {
   if (hostedCfg) {
     hosted = startHosted({
       root, card, cards, show, say, status, el, esc, autosave, exporter: () => openExport(), isOpen: () => open,
-      app: { og_join, og_join_upload, og_view_token, og_set_name, og_go_to_peer },
+      // The open canvas's size as saved here (bytes), after saving it now.
+      canvasBytes: async () => { await autosave(); return (await idbGet('page:' + status().canvas))?.length || 0; },
+      // Download this browser's copy of a canvas (.ogpt, opened with Open copy).
+      downloadCopy: async (canvas, name) => {
+        if (canvas === status().canvas) await autosave();
+        const bytes = await idbGet('page:' + canvas);
+        if (!bytes) return false;
+        const a = el('a', { download: `${String(name || 'og-paper').replace(/[\\/:*?"<>|]+/g, '-').slice(0, 60)}.ogpt` });
+        a.href = URL.createObjectURL(new Blob([bytes], { type: 'application/octet-stream' }));
+        document.body.append(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+        return true;
+      },
+      // Opening a page again (say, back from the trash) saves it here again.
+      app: { og_join: l => { dropped.clear(); og_join(l); }, og_join_upload: l => { dropped.clear(); og_join_upload(l); }, og_view_token, og_set_name, og_go_to_peer },
       // The room's own messages (chat) go up the live socket as text frames.
       sendControl: text => { if (!ws || ws.readyState !== 1) return false; ws.send(text); return true; },
       // Signed out (or another account): the account's pages leave this
@@ -1673,6 +1709,7 @@ export async function start({ mode = 'app' } = {}) {
       dropLocal: async canvases => {
         const gone = new Set(canvases);
         if (!gone.size) return;
+        for (const c of gone) dropped.add(c);
         if (gone.has(status().canvas)) {
           netClose();
           og_blank();
@@ -1728,9 +1765,12 @@ export async function start({ mode = 'app' } = {}) {
   async function autosave() {
     if (saving) return;
     saving = true;
+    // The canvas being saved: if another one opened while the snapshot was
+    // taken (or this one was taken off the device), the bytes are not its.
+    const canvas = status().canvas;
     const bytes = await snapshot(false);
     const st = status();
-    if (bytes && st.canvas && await idbPut(isTry ? 'try' : 'page:' + st.canvas, bytes)) {
+    if (bytes && st.canvas && st.canvas === canvas && !dropped.has(canvas) && await idbPut(isTry ? 'try' : 'page:' + st.canvas, bytes)) {
       lastSave = Date.now();
       if (!isTry) {
         lsSet('og-page', st.canvas);
