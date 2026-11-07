@@ -14,6 +14,8 @@
       set the copyright line
   listing.py --platform IOS --version 1.1 --whats-new FILE
       set What's New (not on a first version)
+  listing.py --platform IOS --version 1.1 --create ...
+      create the version first if App Store Connect has none yet
 
 It never submits for review. Needs ASC_KEY, ASC_KEY_ID, ASC_ISSUER."""
 
@@ -47,13 +49,24 @@ def call(method, path, body=None, **params):
         sys.exit(f"{method} {path}: {e.code} {e.read().decode()[:800]}")
 
 
-def version(platform, ver):
+def version(platform, ver, create=False):
     aid = call("GET", "/v1/apps", **{"filter[bundleId]": BUNDLE})["data"][0]["id"]
     for v in call("GET", f"/v1/apps/{aid}/appStoreVersions", limit=50)["data"]:
         a = v["attributes"]
         if a["platform"] == platform and a["versionString"] == ver:
             return aid, v
-    sys.exit(f"no {platform} version {ver}")
+    if not create:
+        sys.exit(f"no {platform} version {ver} (create it with --create)")
+    # A new version starts from the live one's listing (description,
+    # screenshots, review contact); it is released as soon as it is approved.
+    v = call("POST", "/v1/appStoreVersions", {"data": {
+        "type": "appStoreVersions",
+        "attributes": {"platform": platform, "versionString": ver,
+                       "releaseType": "AFTER_APPROVAL"},
+        "relationships": {"app": {"data": {"type": "apps", "id": aid}}}}})["data"]
+    print("created", platform, "version", ver)
+    time.sleep(5)
+    return aid, v
 
 
 def attach_latest(aid, v, platform, ver):
@@ -183,8 +196,10 @@ def main():
     p.add_argument("--preview-type")
     p.add_argument("--copyright")
     p.add_argument("--whats-new")
+    p.add_argument("--create", action="store_true",
+                   help="create the version if App Store Connect has none yet")
     a = p.parse_args()
-    aid, v = version(a.platform, a.version)
+    aid, v = version(a.platform, a.version, a.create)
     if a.build:
         attach_latest(aid, v, a.platform, a.version)
     if a.shots:

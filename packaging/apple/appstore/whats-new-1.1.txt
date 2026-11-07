@@ -1,0 +1,7 @@
+• Write tool: write by hand and your words become typed text, read on your device.
+• Text boxes: words wrap inside the box and shrink to fit it.
+• Spell check while you type. It underlines and suggests; it never changes your words.
+• Views now start with Home: a tap flies back to your home view.
+• Diagram lines can join things inside a box, not only the box.
+• Tidier toolbars: any bin takes a dropped tool, and a tap on nothing lets go of the tool in hand.
+• The interface always appears on launch, even when the first frame is skipped.

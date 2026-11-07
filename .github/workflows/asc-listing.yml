@@ -38,6 +38,13 @@ on:
       display:
         description: Screenshot display type (APP_IPAD_PRO_3GEN_129 = 13" iPad, APP_IPHONE_67 = 6.9" iPhone)
         default: APP_IPAD_PRO_3GEN_129
+      create:
+        description: Create the version if App Store Connect has none yet (an update, e.g. 1.1)
+        type: boolean
+        default: false
+      whats_new:
+        description: What's New file under packaging/apple/appstore (empty = leave; updates only)
+        default: ""
 
 permissions:
   contents: read
@@ -56,7 +63,9 @@ jobs:
         run: |
           set -euo pipefail
           args=(--platform "${{ inputs.platform }}" --version "${{ inputs.version }}")
+          if [ "${{ inputs.create }}" = "true" ]; then args+=(--create); fi
           if [ "${{ inputs.attach_build }}" = "true" ]; then args+=(--build latest); fi
+          if [ -n "${{ inputs.whats_new }}" ]; then args+=(--whats-new "packaging/apple/appstore/${{ inputs.whats_new }}"); fi
           if [ -n "${{ inputs.shots }}" ]; then args+=(--shots "packaging/apple/appstore/${{ inputs.shots }}" --display "${{ inputs.display }}"); fi
           if [ -n "${{ inputs.notes }}" ]; then args+=(--notes "packaging/apple/appstore/${{ inputs.notes }}"); fi
           if [ -n "${{ inputs.description }}" ]; then args+=(--description "packaging/apple/appstore/${{ inputs.description }}"); fi
