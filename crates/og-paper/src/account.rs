@@ -316,7 +316,7 @@ mod imp {
         }
     }
 
-    static BACKEND: Mutex<Option<Backend>> = Mutex::new(None);
+    pub(super) static BACKEND: Mutex<Option<Backend>> = Mutex::new(None);
 
     fn backend() -> Backend {
         let mut b = BACKEND.lock().unwrap_or_else(|e| e.into_inner());
@@ -474,7 +474,7 @@ mod imp {
     }
 
     /// The tokens in use. Held while refreshing, so only one refresh runs.
-    static TOKENS: Mutex<Option<Tokens>> = Mutex::new(None);
+    pub(super) static TOKENS: Mutex<Option<Tokens>> = Mutex::new(None);
 
     fn signed_in() -> Option<Tokens> {
         let slot = backend().slot();
@@ -1298,6 +1298,106 @@ mod tests {
             let _ = s.read_to_string(&mut String::new());
         });
         assert_eq!(wait_for_vault(l, "abc", &AtomicBool::new(false)), Err("Cancelled here".into()));
+    }
+
+    /// The vault's sign-in as a browser already signed in there would do it:
+    /// start → "Continue as …" → back to the app's loopback with the code.
+    fn browser_at_vault(session: String) -> impl FnOnce(&str) -> Result<(), String> {
+        move |start: &str| {
+            let start = start.to_string();
+            std::thread::spawn(move || {
+                let agent: ureq::Agent = ureq::Agent::config_builder().max_redirects(0).http_status_as_error(false).build().into();
+                let cookie = format!("ogv_session={session}");
+                let r = agent.get(&start).header("Cookie", &cookie).call().expect("start");
+                let cont = r.headers().get("location").expect("to the sign-in page").to_str().unwrap().to_string();
+                let origin = start.split("/auth/").next().unwrap().to_string();
+                let cont = if cont.starts_with('/') { format!("{origin}{cont}") } else { cont };
+                let r = agent
+                    .post(&cont)
+                    .header("Cookie", &cookie)
+                    .header("Origin", &origin)
+                    .send_form([("confirm", "yes")])
+                    .expect("continue as");
+                let back = r.headers().get("location").expect("back to the app").to_str().unwrap().to_string();
+                assert!(back.starts_with("http://127.0.0.1:"), "{back}");
+                ureq::get(&back).call().expect("the app's loopback");
+            });
+            Ok(())
+        }
+    }
+
+    /// A vault end to end (tests/vault/run-native.sh, a throwaway vault): sign
+    /// in through the vault's page, keep a page, get it back on a second
+    /// device that signs in too, and draw on it live from both.
+    #[test]
+    #[ignore = "needs a throwaway vault"]
+    fn a_page_kept_in_a_vault_comes_back_on_a_new_device() {
+        use crate::App;
+        use serde_json::json;
+        use std::sync::atomic::AtomicBool;
+        use std::sync::Arc;
+        use std::time::{Duration, Instant};
+
+        let vault = std::env::var("OGP_VAULT").expect("OGP_VAULT");
+        let session = std::env::var("OGP_VAULT_SESSION").expect("OGP_VAULT_SESSION");
+        let pump = |apps: &mut [&mut App], secs: u64, done: &dyn Fn(&[&mut App]) -> bool| {
+            let until = Instant::now() + Duration::from_secs(secs);
+            while Instant::now() < until && !done(apps) {
+                for a in apps.iter_mut() {
+                    a.account_tick();
+                    a.net_tick();
+                }
+                std::thread::sleep(Duration::from_millis(30));
+            }
+            done(apps)
+        };
+        let home = |n: &str| {
+            let d = std::env::temp_dir().join(format!("ogp-vault-e2e-{}-{n}", std::process::id()));
+            std::fs::create_dir_all(&d).unwrap();
+            std::env::set_var("HOME", &d);
+            crate::prefs::save(&Default::default());
+        };
+        let has = |a: &App, t: &str| a.texts_at(&a.cam).iter().any(|x| x.to_string().contains(t));
+
+        // Device 1.
+        home("one");
+        let label = match vault_sign_in(vault.clone(), Arc::new(AtomicBool::new(false)), browser_at_vault(session.clone())) {
+            Done::SignedIn(l) => l,
+            Done::Failed(why) => panic!("sign-in failed: {why}"),
+            _ => panic!("sign-in failed"),
+        };
+        assert!(label.contains(" @ "), "{label}");
+        let mut one = App::new(None);
+        one.account_tick();
+        assert_eq!(one.ui.account.name.as_deref(), Some(label.as_str()));
+        assert!(one.ui.account.vault);
+        let r = one.run_commands(&json!([{"add": "text", "x": 0, "y": 0, "text": "from-native-one", "size": 30}]));
+        assert_eq!(r[0]["ok"], true, "{r}");
+        one.account_op(crate::account::Op::Keep);
+        assert!(pump(&mut [&mut one], 30, &|a| !a[0].ui.account.pages.is_empty()), "kept: {}", one.ui.account.state);
+        pump(&mut [&mut one], 4, &|_| false);
+
+        // Device 2: nothing on it; signs in to the same vault.
+        let saved_tokens = TOKENS.lock().unwrap().take();
+        *BACKEND.lock().unwrap() = None;
+        home("two");
+        let label2 = match vault_sign_in(vault.clone(), Arc::new(AtomicBool::new(false)), browser_at_vault(session)) {
+            Done::SignedIn(l) => l,
+            Done::Failed(why) => panic!("second sign-in failed: {why}"),
+            _ => panic!("second sign-in failed"),
+        };
+        assert_eq!(label, label2);
+        let mut two = App::new(None);
+        assert!(!has(&two, "from-native-one"));
+        two.account_tick();
+        assert!(pump(&mut [&mut two], 30, &|a| !a[0].ui.account.pages.is_empty()), "listed: {}", two.ui.account.state);
+        two.account_op(crate::account::Op::Open(0));
+        assert!(pump(&mut [&mut two], 30, &|a| has(&a[0], "from-native-one")), "the page came back");
+        // Both live on it (one process, one account: the same tokens serve both).
+        drop(saved_tokens);
+        let r = two.run_commands(&json!([{"add": "text", "x": 0, "y": 60, "text": "from-native-two", "size": 30}]));
+        assert_eq!(r[0]["ok"], true, "{r}");
+        assert!(pump(&mut [&mut one, &mut two], 30, &|a| has(&a[0], "from-native-two")), "live to device one");
     }
 
     /// The whole thing against a real hosted server: tests/account/run-e2e.sh.

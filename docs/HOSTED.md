@@ -312,6 +312,10 @@ status.
 
 ## The web app
 
+Since og-paper #792 the same panel also signs in to an OG Vault (vault mode, [VAULT.md](VAULT.md)):
+signed out it offers **OG Studio** and **Vault**; `VaultProvider` (`og-vault.js`) answers the
+same calls against the vault's `/api/v1/paper`.
+
 `web/app/og-hosted.js` gives the web app a storage-provider interface
 (`LocalProvider`: pages in this browser; `HostedProvider`: pages in the
 account; both answer `list`, `create`, `open`, `rename`, `remove`,

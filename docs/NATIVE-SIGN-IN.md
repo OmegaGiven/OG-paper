@@ -6,7 +6,7 @@ with a copy kept on the device as well. Ships in the next version.
 
 ## Status
 
-Built on branch `worktree-task-native-signin`, not released:
+Built on branch `worktree-task-native-signin`, merged into main with vault mode (task #792, [VAULT.md](VAULT.md)); not released. The sign-in now offers OG Studio (this flow) or a vault.
 
 | Part | State |
 | --- | --- |
@@ -16,7 +16,7 @@ Built on branch `worktree-task-native-signin`, not released:
 | Privacy page | Updated on the branch, published with the release |
 | Sign in with Apple, delete-account page | omegagiven-com task #355 |
 | Mac and iPhone | Compile and Keychain **not yet tested**: need Apple's toolchain, so GitHub's Mac runners |
-| Android | No account: its build has no TLS |
+| Android | Builds with TLS and INTERNET since #792; OG Studio sign-in needs ogstudio.org to deploy `oauth.js` first |
 
 Tests: `forge run --on og-host1 bash tests/account/run-e2e.sh`;
 screenshots: `tests/account/shots.sh`.
@@ -77,7 +77,7 @@ Not done: other pages on the device go up one at a time with **Keep this page**.
 ## To release
 
 1. Finish #355, and create the Apple Services ID and key (owner).
-2. Merge this branch; omegagiven-com bumps `vendor/og-paper` and deploys.
+2. ~~Merge this branch~~ (merged with #792); omegagiven-com bumps `vendor/og-paper` and deploys (until then OG Studio sign-in in the apps answers 404).
 3. Try the real sign-in on ogstudio.org.
 4. `forge publish`, then build version 1.1 for Mac and iOS on GitHub's runners.
 5. Try it on a real iPhone and Mac through TestFlight.
