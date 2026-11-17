@@ -133,38 +133,43 @@ export class HostedProvider {
 // takes them all off even if a page's link was dropped some other way.
 // SYNC: per canvas, its change count now and when the account last had it
 // all ({ n, synced }), to ask before removing work not in the account yet.
-const MAP = 'og-hosted-pages', EVER = 'og-hosted-canvases', SYNC = 'og-hosted-sync';
+// The names are OG Studio's (as always); a vault profile keys them by vault
+// and person instead (og-vault PROFILES.md section 3), see setKeys.
+const KEYS = { map: 'og-hosted-pages', ever: 'og-hosted-canvases', sync: 'og-hosted-sync', last: 'og-hosted-last', owner: 'og-hosted-user', warned: 'og-quota-warned' };
+const K = { ...KEYS };
+/** Key local state with `key(name)` (a vault profile), or OG Studio's names (null). */
+export function setKeys(key) { for (const n of Object.keys(KEYS)) K[n] = key ? key(n) : KEYS[n]; }
 const lsJson = (k, d) => { try { return JSON.parse(localStorage.getItem(k)) || d; } catch (e) { return d; } };
 const lsPut = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} };
-const known = () => lsJson(MAP, {});
+const known = () => lsJson(K.map, {});
 function remember(id, open) {
   const m = known();
   m[id] = { link: open.link, canvas: open.canvas, role: open.role, name: open.name };
-  lsPut(MAP, m);
-  try { localStorage.setItem('og-hosted-last', id); } catch (e) {}
-  const ever = lsJson(EVER, []);
-  if (open.canvas && !ever.includes(open.canvas)) lsPut(EVER, [...ever, open.canvas]);
+  lsPut(K.map, m);
+  try { localStorage.setItem(K.last, id); } catch (e) {}
+  const ever = lsJson(K.ever, []);
+  if (open.canvas && !ever.includes(open.canvas)) lsPut(K.ever, [...ever, open.canvas]);
 }
 function forget(id) {
   const m = known();
   const canvas = m[id]?.canvas;
   delete m[id];
-  lsPut(MAP, m);
+  lsPut(K.map, m);
   if (canvas) {
-    lsPut(EVER, lsJson(EVER, []).filter(c => c !== canvas));
-    const s = lsJson(SYNC, {}); delete s[canvas]; lsPut(SYNC, s);
+    lsPut(K.ever, lsJson(K.ever, []).filter(c => c !== canvas));
+    const s = lsJson(K.sync, {}); delete s[canvas]; lsPut(K.sync, s);
   }
 }
 /** Every account page this device keeps (signing out drops them all). */
 function forgetAll() {
-  const canvases = [...new Set([...Object.values(known()).map(v => v.canvas), ...lsJson(EVER, [])].filter(Boolean))];
-  try { for (const k of [MAP, EVER, SYNC, 'og-hosted-last']) localStorage.removeItem(k); } catch (e) {}
+  const canvases = [...new Set([...Object.values(known()).map(v => v.canvas), ...lsJson(K.ever, [])].filter(Boolean))];
+  try { for (const k of [K.map, K.ever, K.sync, K.last]) localStorage.removeItem(k); } catch (e) {}
   return canvases;
 }
-const holdsPages = () => Object.keys(known()).length > 0 || lsJson(EVER, []).length > 0;
+const holdsPages = () => Object.keys(known()).length > 0 || lsJson(K.ever, []).length > 0;
 /** Account pages here with changes the account may not have yet: [{ id, name }]. */
 function unsyncedPages() {
-  const s = lsJson(SYNC, {});
+  const s = lsJson(K.sync, {});
   return Object.entries(known()).filter(([, v]) => { const r = s[v.canvas]; return r && r.n !== r.synced; })
     .map(([id, v]) => ({ id, name: v.name || 'Untitled', canvas: v.canvas }));
 }
@@ -178,6 +183,9 @@ function setPrefName(name) {
   } catch (e) {}
 }
 const pageOfCanvas = canvas => Object.entries(known()).find(([, v]) => v.canvas === canvas)?.[0] || null;
+
+/** OG Studio's own OG Paper, for sites that don't host OG Studio accounts. */
+const STUDIO_APP = 'https://ogstudio.org/paper/';
 
 export function hostedConfig() {
   const meta = n => document.querySelector(`meta[name="${n}"]`)?.content || null;
@@ -203,8 +211,16 @@ const ago = t => {
  * og-web.js: card, cards, show, say, status, el, esc, autosave, exporter,
  * and the app's calls (og_join, og_join_upload, og_view_token).
  */
-export function startHosted(ui, cfg) {
+export function startHosted(ui, cfg, vault = null) {
   const { el, esc, say } = ui;
+  // Two kinds of account: OG Studio (cfg: this site's own accounts, a
+  // cookie session; null where the site has none) and a vault (vault.session:
+  // the active vault profile, see og-vault.js). Neither: signed out.
+  const V = vault?.mod || null;
+  const session = vault?.session || null;
+  const studio = !!cfg?.api;
+  cfg = cfg || { signIn: STUDIO_APP, signOut: null, upgrade: null };
+  setKeys(session ? n => session.key(n) : null);
   // Set when the room showed us the door (access taken away): no redialling
   // until another page is opened.
   let closedFor = null;
@@ -213,12 +229,14 @@ export function startHosted(ui, cfg) {
     og_join: link => { closedFor = null; ui.app.og_join(link); },
     og_join_upload: link => { closedFor = null; ui.app.og_join_upload(link); },
   };
-  const hp = new HostedProvider(cfg.api, app);
-  hp.onDrop = canvases => ui.dropLocal?.(canvases);
+  const hp = session ? new V.VaultProvider(session, app) : studio ? new HostedProvider(cfg.api, app) : null;
+  if (hp) hp.onDrop = canvases => ui.dropLocal?.(canvases);
+  const isRoom = url => !!hp && (hp.isRoom ? hp.isRoom(url) : url.includes(cfg.api));
+  const feature = f => !hp?.features || hp.features[f] !== false;
   // ended: signed out (the session ran out, or signed out on the site) with
   // the account's pages still here: they stay until the person says.
   const state = { me: null, list: null, peers: [], role: null, refused: false, open: null, ended: false };
-  const signInUrl = () => cfg.signIn.replace('{next}', encodeURIComponent(location.pathname + location.hash));
+  const signInUrl = () => !studio ? STUDIO_APP : cfg.signIn.replace('{next}', encodeURIComponent(location.pathname + location.hash));
   const signOutUrl = () => cfg.signOut && cfg.signOut.replace('{next}', encodeURIComponent(location.pathname));
 
   const c = ui.card('My account');
@@ -274,13 +292,15 @@ export function startHosted(ui, cfg) {
   function noteSync(c = cloudState()) {
     const canvas = ui.status().canvas;
     if (!canvas || !currentPage()) return;
-    const all = lsJson(SYNC, {});
+    const all = lsJson(K.sync, {});
     const r = all[canvas] || {};
     const n = changesNow();
     const next = c === 'saved' ? { n, synced: n } : { n, synced: r.synced ?? null };
-    if (next.n !== r.n || next.synced !== r.synced) { all[canvas] = next; lsPut(SYNC, all); }
+    if (next.n !== r.n || next.synced !== r.synced) { all[canvas] = next; lsPut(K.sync, all); }
   }
   setInterval(() => {
+    // No account kind on this site and none chosen: nothing to say.
+    if (!hp) return;
     const c = cloudState();
     noteSync(c);
     const signedIn = !!state.me?.user;
@@ -301,7 +321,7 @@ export function startHosted(ui, cfg) {
     if (!quota) return;
     usage.used = used; usage.quota = quota;
     const f = used / quota;
-    const key = 'og-quota-warned';
+    const key = K.warned;
     let warned = {};
     try { warned = JSON.parse(localStorage.getItem(key)) || {}; } catch (e) {}
     // Back under 80% (pages deleted, more storage bought): warn again next time.
@@ -331,8 +351,7 @@ export function startHosted(ui, cfg) {
   // computer must not reopen them). Signed out (the session ran out, or
   // signed out on the site): nothing goes by itself, so offline edits are
   // not lost; the panel offers signing in again, or removing them.
-  const OWNER = 'og-hosted-user';
-  const owner = () => { try { return localStorage.getItem(OWNER); } catch (e) { return null; } };
+  const owner = () => { try { return localStorage.getItem(K.owner); } catch (e) { return null; } };
   let endedSaid = false;
   async function checkOwner() {
     const now = state.me?.user?.id || null;
@@ -344,7 +363,7 @@ export function startHosted(ui, cfg) {
     // People see who they are on others' screens: this account's name.
     if (now && was !== now) setPrefName(state.me.user.name);
     if (now && !was) state.firstHere = true;
-    if (now) { try { localStorage.setItem(OWNER, now); } catch (e) {} }
+    if (now) { try { localStorage.setItem(K.owner, now); } catch (e) {} }
     state.ended = !now && (!!was || holdsPages());
     if (state.ended && !endedSaid) {
       endedSaid = true;
@@ -357,7 +376,7 @@ export function startHosted(ui, cfg) {
     await ui.dropLocal?.(forgetAll());
     state.open = null;
     setPrefName(null);
-    try { localStorage.removeItem(OWNER); } catch (e) {}
+    try { localStorage.removeItem(K.owner); } catch (e) {}
     state.ended = false;
   }
   /**
@@ -371,6 +390,7 @@ export function startHosted(ui, cfg) {
     const left = force ? [] : unsyncedPages();
     if (left.length) return askUnsynced(left, then);
     await wipe();
+    if (session) { await V.signOutVault(session); location.reload(); return; }
     if (ui.isOpen() === 'signout') ui.show(null);
     say('Signed out: your pages were removed from this browser');
     if (then) location.href = then;
@@ -386,6 +406,7 @@ export function startHosted(ui, cfg) {
       <div class="og-row" style="flex-wrap:wrap"><a class="og-btn primary" data-act="signin" href="${esc(signInUrl())}">Sign in again</a>
         <button class="og-btn" data-act="download">Download copies</button>
         <button class="og-btn" data-act="remove-anyway">Remove anyway</button></div>`));
+    if (session) so.querySelector('[data-act=signin]').onclick = e => { e.preventDefault(); guard(() => vaultSignIn(session.address)); };
     so.querySelector('[data-act=download]').onclick = async () => {
       for (const p of left) await ui.downloadCopy?.(p.canvas, p.name);
       say(left.length === 1 ? 'Copy downloaded: open it later with Open copy' : 'Copies downloaded: open them later with Open copy');
@@ -394,15 +415,88 @@ export function startHosted(ui, cfg) {
     if (ui.isOpen() !== 'signout') ui.show('signout');
   }
 
+  // ---- signing in: OG Studio or a vault ----------------------------------
+  /** Off to a vault's sign-in page (this page comes back signed in). */
+  async function vaultSignIn(address) {
+    await ui.autosave();
+    const r = await V.signInAt(address);
+    if (!r.ok) throw new Error(r.error);
+  }
+  const QR = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h2v2h-2zM18 18h2v2h-2zM14 18h2M18 14h2"/></svg>';
+  /** The two ways in: OG Studio, or a vault (address or its QR code). */
+  function signInChoice(address = '') {
+    const w = el('div', {}, `<div class="og-row" style="flex-wrap:wrap">
+        <a class="og-btn primary" data-act="studio" href="${esc(signInUrl())}"${studio ? '' : ' target="_blank" rel="noopener"'}>OG Studio</a>
+        ${V ? '<button class="og-btn" data-act="vault">Vault</button>' : ''}</div>
+      <form class="og-row" data-vault hidden><input data-addr type="url" inputmode="url" autocomplete="url" autocapitalize="none" spellcheck="false" placeholder="Vault address" style="flex:1;min-width:0">
+        ${V?.canScan() ? `<button type="button" class="og-btn" data-act="scan" title="Scan QR code" aria-label="Scan QR code">${QR}</button>` : ''}
+        <button class="og-btn primary" type="submit">Continue</button></form>
+      <video data-cam playsinline muted hidden style="width:100%;max-height:40vh;border-radius:8px"></video>`);
+    w.querySelector('[data-act=studio]').onclick = () => { if (studio) V?.setBackend('studio'); };
+    if (!V) return w;
+    const form = w.querySelector('[data-vault]'), addr = w.querySelector('[data-addr]'), cam = w.querySelector('[data-cam]');
+    addr.value = address || vault.here || '';
+    w.querySelector('[data-act=vault]').onclick = () => { form.hidden = !form.hidden; if (!form.hidden) addr.focus(); };
+    form.onsubmit = e => { e.preventDefault(); if (addr.value.trim()) guard(() => vaultSignIn(addr.value.trim())); };
+    let stop = null;
+    const scan = w.querySelector('[data-act=scan]');
+    if (scan) scan.onclick = async () => {
+      if (stop) { stop.abort(); return; }
+      stop = new AbortController();
+      cam.hidden = false;
+      const r = await V.scanQr({ video: cam, signal: stop.signal });
+      cam.hidden = true; stop = null;
+      if (r.text) { addr.value = r.text; guard(() => vaultSignIn(r.text)); }
+      else if (r.error === 'denied') say('Camera not allowed');
+      else if (r.error === 'no_camera') say('No camera');
+    };
+    return w;
+  }
+  /** Leave this account for another: the page reloads as that one. */
+  async function switchTo(choice) {
+    await ui.autosave();
+    V.setBackend(choice);
+    location.reload();
+  }
+  // Accounts: OG Studio (where this site has it) and every saved vault
+  // profile, one active; dots say which vaults answer now.
+  const ac = ui.card('Accounts');
+  ui.cards.accounts = ac;
+  async function accounts() {
+    const draw = list => {
+      ac.querySelectorAll(':scope > :not(h2)').forEach(n => n.remove());
+      const cur = session ? 'vault:' + session.id : studio ? 'studio' : '';
+      const dot = r => r == null ? '' : `<span class="og-dot" style="display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;background:${r ? 'var(--ok)' : '#999'}"></span>`;
+      const rows = [
+        ...(studio ? [`<li data-to="studio"><button class="go">${cur === 'studio' ? '✓ ' : ''}OG Studio</button></li>`] : []),
+        ...list.map(({ profile: p, reachable }) => `<li data-to="vault:${esc(p.vault_id)}"><button class="go">${cur === 'vault:' + p.vault_id ? '✓ ' : ''}${dot(reachable)}${esc(p.user?.name || 'me')} @ ${esc(p.name || p.addresses[0])}<small>${esc(p.addresses[0] || '')}</small></button></li>`),
+      ];
+      const w = el('div', {}, `<ul class="og-list">${rows.join('') || '<li class="og-empty">No accounts yet.</li>'}</ul>`);
+      w.append(signInChoice());
+      ac.append(w);
+      for (const li of w.querySelectorAll('li[data-to]')) {
+        li.querySelector('.go').onclick = () => li.dataset.to === cur ? ui.show('account') : guard(() => switchTo(li.dataset.to));
+      }
+    };
+    draw((await V.listProfiles(false)));
+    if (ui.isOpen() !== 'accounts') ui.show('accounts');
+    V.listProfiles(true).then(l => { if (ui.isOpen() === 'accounts') draw(l); }).catch(() => {});
+  }
+
   async function refresh() {
+    if (!hp) { state.me = { user: null }; render(); return; }
     try {
       state.me = await hp.me();
       await checkOwner();
       state.list = state.me.user ? await hp.list() : null;
       if (state.list?.usage) noteUsage(state.list.usage.used, state.list.usage.quota);
     } catch (e) {
-      state.me = state.me || { user: null };
-      say(e.message);
+      // A vault that doesn't answer (offline, another network): still this
+      // profile, its pages stay here and go up once it answers again.
+      if (session && !e.status) { state.offline = true; state.me = state.me || { user: { ...session.profile.user }, offline: true }; }
+      else state.me = state.me || { user: null };
+      if (e.status === 401 && session) { state.me = { user: null }; state.ended = true; }
+      say(session && !e.status ? `${session.profile.name || 'Your vault'} is not reachable: working on this device` : e.message);
     }
     render();
   }
@@ -427,24 +521,26 @@ export function startHosted(ui, cfg) {
   function render() {
     const me = state.me;
     if ((!me || !me.user) && state.ended) {
-      body.innerHTML = `<p><b>You are signed out</b>: the session ended, or you signed out on the site.</p>
+      body.innerHTML = `<p><b>You are signed out</b>${session ? ` of ${esc(session.label)}` : ': the session ended, or you signed out on the site'}.</p>
         <p>Your account's pages are still in this browser, with any changes made here. Sign in again to keep saving them to your account.</p>
-        <div class="og-row" style="flex-wrap:wrap"><a class="og-btn primary" href="${esc(signInUrl())}" data-act="signin">Sign in again</a>
+        <div class="og-row" style="flex-wrap:wrap">${session ? '<button class="og-btn primary" data-act="vault-again">Sign in again</button>' : `<a class="og-btn primary" href="${esc(signInUrl())}" data-act="signin">Sign in again</a>`}
           <button class="og-btn" data-act="forget-device" title="Sign out here: the account's pages leave this browser">Remove them from this browser</button></div>`;
       body.querySelector('[data-act=forget-device]').onclick = () => guard(() => signOutHere(null));
+      const again = body.querySelector('[data-act=vault-again]');
+      if (again) again.onclick = () => guard(() => vaultSignIn(session.address));
       return;
     }
     if (!me || !me.user) {
       body.innerHTML = `<p>Sign in to keep your pages in your account: they open on any device, save as you draw, and you can share them and draw on them together.</p>
-        <p>Signed out, pages stay in this browser only.</p>
-        <div class="og-row"><a class="og-btn primary" href="${esc(signInUrl())}">Sign in</a></div>`;
+        <p>Signed out, pages stay in this browser only.</p>`;
+      body.append(signInChoice());
       return;
     }
     const l = state.list || { mine: [], shared: [] };
     const cur = currentPage();
     const here = state.open && state.open.id === cur ? state.open : null;
     body.innerHTML = `
-      <p>Signed in as <b>${esc(me.user.name || 'you')}</b></p>
+      <p>Signed in as <b>${esc(me.user.name || 'you')}</b>${session ? ` @ <b>${esc(session.profile.name || 'vault')}</b>` : ''}${state.offline ? ' · <small>not reachable</small>' : ''}</p>
       ${usageBar(l.usage || me)}
       ${here ? `<p>On this page: ${state.peers.map(p => esc(p.name || 'someone') + (p.role === 'viewer' ? ' (viewing)' : '')).join(', ') || 'just you'}</p>` : ''}
       <div class="og-row"><button class="og-btn primary" data-act="new">+ New page</button>
@@ -456,7 +552,7 @@ export function startHosted(ui, cfg) {
         <button class="mini" data-act="accept" title="Take it: it becomes yours and counts toward your storage">Accept</button><button class="mini" data-act="decline" title="No thanks">✕</button></li>`).join('')}</ul>` : ''}
       <div class="og-shared-head">Shared with me</div>
       <ul class="og-list" data-list="shared">${l.shared.map(p => item(p, false)).join('') || '<li class="og-empty">Nothing shared with you yet.</li>'}</ul>
-      ${signOutUrl() ? '<div class="og-row"><button class="og-btn" data-act="signout" title="Your pages leave this browser; they stay in your account">Sign out</button></div>' : ''}
+      <div class="og-row">${signOutUrl() || session ? '<button class="og-btn" data-act="signout" title="Your pages leave this browser; they stay in your account">Sign out</button>' : ''}${V ? '<button class="og-btn" data-act="accounts" title="Accounts">Switch</button>' : ''}</div>
       ${(l.trash || []).length ? `<div class="og-shared-head">Trash <small>(deleted pages, kept 30 days)</small></div>
       <ul class="og-list" data-list="trash">${l.trash.map(p => `<li data-trash="${esc(p.id)}"><span class="go">${esc(p.name)}<small>${p.bytes ? fmtBytes(p.bytes) + ' · ' : ''}deleted ${ago(p.deleted)} · gone ${new Date(p.purge).toLocaleDateString()}</small></span>
         <button class="mini" data-act="untrash" title="Put it back in My pages">Restore</button><button class="mini" data-act="forever" title="Delete it for good now">✕</button></li>`).join('')}</ul>` : ''}`;
@@ -466,7 +562,8 @@ export function startHosted(ui, cfg) {
       if (name === null) return;
       await guard(async () => { await ui.autosave(); await hp.create(name || 'Untitled'); say('New page: it saves to your account as you draw'); ui.show(null); refresh(); });
     });
-    act('[data-act=signout]', () => guard(() => signOutHere(signOutUrl())));
+    act('[data-act=signout]', () => guard(() => signOutHere(session ? null : signOutUrl())));
+    act('[data-act=accounts]', () => accounts());
     act('[data-act=keep]', async () => {
       const name = prompt('Keep the open canvas in your account as', ui.status().name || 'Untitled');
       if (name === null) return;
@@ -519,16 +616,17 @@ export function startHosted(ui, cfg) {
     const me = state.me.user;
     const owner = info.role === 'owner';
     const billing = info.owner.id === me.id;
-    const roleSel = (r, attrs = '') => `<select ${attrs}>${['viewer', 'editor', 'owner'].map(x => `<option value="${x}"${x === r ? ' selected' : ''}>${x === 'viewer' ? 'Can view' : x === 'editor' ? 'Can edit' : 'Co-owner'}</option>`).join('')}</select>`;
+    const people = hp.kind === 'vault' && owner ? await hp.people().catch(() => []) : null;
+    const roleSel = (r, attrs = '') => `<select ${attrs}>${(feature('coOwners') ? ['viewer', 'editor', 'owner'] : ['viewer', 'editor']).map(x => `<option value="${x}"${x === r ? ' selected' : ''}>${x === 'viewer' ? 'Can view' : x === 'editor' ? 'Can edit' : 'Co-owner'}</option>`).join('')}</select>`;
     d.querySelector('h2 span').textContent = info.name;
     d.querySelectorAll(':scope > :not(h2)').forEach(n => n.remove());
     const wrap = el('div', {}, `
       <p>${billing ? 'Yours' : `Owned by ${esc(info.owner.name || 'someone')}`} · ${info.role === 'viewer' ? 'you can view' : info.role === 'editor' ? 'you can edit' : 'you are an owner'}${info.bytes ? ' · ' + fmtBytes(info.bytes) : ''}</p>
       ${owner ? `
         <div class="og-shared-head">People</div>
-        <ul class="og-list og-people">${(info.members || []).map(m => `<li data-uid="${esc(m.id)}"><span class="go">${esc(m.name || m.id)}${m.billing ? ' <small>owner</small>' : m.viaLink ? ' <small>joined by link</small>' : ''}</span>
+        <ul class="og-list og-people">${(info.members || []).map(m => `<li data-uid="${esc(m.kind ? m.kind + ':' + m.id : m.id)}"><span class="go">${esc(m.name || m.id)}${m.billing ? ' <small>owner</small>' : m.viaLink ? ' <small>joined by link</small>' : ''}</span>
           ${m.billing ? '' : roleSel(m.role, 'data-role') + '<button class="mini" data-act="unshare" title="Remove">✕</button>'}</li>`).join('')}</ul>
-        <div class="og-row"><input placeholder="Username or email" data-who>${roleSel('editor', 'data-newrole')}<button class="og-btn primary" data-act="add">Share</button></div>
+        <div class="og-row">${people ? `<select data-who><option value="">Choose someone</option>${people.map(x => `<option value="${esc(x.id)}">${esc(x.name)}</option>`).join('')}</select>` : '<input placeholder="Username or email" data-who>'}${roleSel('editor', 'data-newrole')}<button class="og-btn primary" data-act="add">Share</button></div>
         ${state.me.linkSharing ? `<div class="og-shared-head">Anyone with the link</div>
         <ul class="og-list">${(info.links || []).map(k => `<li data-link="${esc(String(k.id))}"><span class="go">${k.role === 'editor' ? 'Can edit' : 'Can view'}<small>made ${k.by?.name ? `by ${esc(k.by.name)} ` : ''}${ago(k.created)}</small></span><button class="mini" data-act="unlink">Turn off</button></li>`).join('') || '<li class="og-empty">No links.</li>'}</ul>
         <div class="og-row"><button class="og-btn" data-act="link-view">New view link</button><button class="og-btn" data-act="link-edit">New edit link</button></div>
@@ -539,12 +637,12 @@ export function startHosted(ui, cfg) {
         <label class="og-check"><input type="checkbox" data-chat="keep"${info.chat.keep ? ' checked' : ''}${info.chat.on ? '' : ' disabled'}> Keep chat history (the last ${info.chat.history} messages)</label>
         <p><small>${info.chat.keep ? 'Messages stay with the page until deleted.' : 'Messages go once everyone has left the page.'}</small></p>` : ''}
       ${billing && info.offer ? `<p>Offered to <b>${esc(info.offer.to.name || 'someone')}</b> ${ago(info.offer.created)}: it moves to them when they accept. <button class="mini" data-act="withdraw">Withdraw</button></p>` : ''}
-      ${owner ? '<div data-history></div>' : ''}
+      ${owner && feature('history') ? '<div data-history></div>' : ''}
       <div class="og-row" style="flex-wrap:wrap">
         <button class="og-btn" data-act="copy">Make a copy</button>
         ${info.role !== 'viewer' ? '<button class="og-btn" data-act="rename">Rename</button>' : ''}
-        ${billing ? '<button class="og-btn" data-act="transfer">Give away</button><button class="og-btn" data-act="delete">Delete</button>' : '<button class="og-btn" data-act="leave">Leave</button>'}
-        ${billing ? '' : '<button class="og-btn" data-act="report">Report</button>'}
+        ${billing ? `${feature('transfer') ? '<button class="og-btn" data-act="transfer">Give away</button>' : ''}<button class="og-btn" data-act="delete">Delete</button>` : '<button class="og-btn" data-act="leave">Leave</button>'}
+        ${billing || !feature('report') ? '' : '<button class="og-btn" data-act="report">Report</button>'}
       </div>`);
     d.append(wrap);
     const q = s => wrap.querySelector(s);
@@ -560,7 +658,7 @@ export function startHosted(ui, cfg) {
       const who = q('[data-who]').value.trim();
       if (!who) return;
       await hp.share(page, who, q('[data-newrole]').value);
-      say(`Shared with ${who}`);
+      say(`Shared with ${people ? people.find(x => x.id === who)?.name || 'them' : who}`);
       details(page);
     });
     for (const li of wrap.querySelectorAll('[data-uid]')) {
@@ -677,6 +775,7 @@ export function startHosted(ui, cfg) {
 
   // Links: #l=<token> opens a shared page (once signed in).
   async function fromLink() {
+    if (!hp || hp.kind === 'vault') return;
     const m = location.hash.match(/^#l=([A-Za-z0-9_-]{20,64})/);
     if (!m) return;
     if (!state.me?.user) {
@@ -697,7 +796,16 @@ export function startHosted(ui, cfg) {
   }
 
   async function boot() {
+    if (vault?.error) { say(vault.error); ui.show('account'); }
     await refresh();
+    if (session) addEventListener('online', () => { if (state.offline) { state.offline = false; refresh(); } });
+    // A vault not reachable now: carry on with the page last open here, from
+    // this device's copy; it joins (and sends what it lacks) once it answers.
+    if (state.offline) {
+      const last = localStorage.getItem(K.last), k = last && known()[last];
+      if (k?.link) { app.og_join(k.link); state.open = { id: last, name: k.name }; }
+      return;
+    }
     if (!state.me?.user) {
       // Signed out with the account's pages here: say what can be done.
       if (state.ended && !location.hash.startsWith('#l=')) ui.show('account');
@@ -720,7 +828,7 @@ export function startHosted(ui, cfg) {
       return;
     }
     // Signed in: carry on with the account page last open, else show the list.
-    const last = localStorage.getItem('og-hosted-last');
+    const last = localStorage.getItem(K.last);
     const l = state.list;
     const page = last && l && [...l.mine, ...l.shared].find(p => p.id === last);
     if (page) {
@@ -733,6 +841,8 @@ export function startHosted(ui, cfg) {
   return {
     provider: hp,
     boot,
+    /** Where to dial a room now: a promise when a vault adds a fresh one-use ticket, else null. */
+    dialUrl: url => (hp?.dialUrl && isRoom(url) ? hp.dialUrl(url) : null),
     open: openPanel,
     /** The most bytes one picture may take to be kept in the account (null: no limit here). */
     pictureLimit() {
@@ -759,13 +869,13 @@ export function startHosted(ui, cfg) {
     },
     /** Whether to dial a room again (not after being shown the door). */
     mayConnect(url) {
-      if (!closedFor || !url.includes(cfg.api)) return true;
+      if (!closedFor || !isRoom(url)) return true;
       return false;
     },
     get refusal() { return closedFor; },
     /** The live socket opened or closed (url: where to). */
     conn(open, url = '') {
-      cloud.open = open && url.includes(cfg.api);
+      cloud.open = open && isRoom(url);
       if (!open) { cloud.live = false; chat.disconnected(); }
       else if (!cloud.open) chat.reset();
     },
@@ -780,6 +890,6 @@ export function startHosted(ui, cfg) {
     /** saved | saving | unsaved | local (not an account page) | empty */
     cloudState,
     /** Whether closing the tab now would leave work out of the account. */
-    warnOnClose() { const c = cloudState(); return c === 'unsaved' || c === 'saving' || c === 'local'; },
+    warnOnClose() { if (!hp) return false; const c = cloudState(); return c === 'unsaved' || c === 'saving' || c === 'local'; },
   };
 }

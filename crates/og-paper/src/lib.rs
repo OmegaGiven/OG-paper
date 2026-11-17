@@ -267,7 +267,7 @@ pub struct App {
     servers: Vec<pages::ServerConn>,
     /// The open page on its way into a workspace.
     upload: Option<pages::Upload>,
-    #[cfg_attr(any(target_arch = "wasm32", target_os = "android"), allow(dead_code))]
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     account: account::Account,
     /// Connecting to a server known by its address alone.
     probe: Option<pages::Probe>,

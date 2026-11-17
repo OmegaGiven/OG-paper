@@ -1736,7 +1736,6 @@ pub(crate) mod native {
     }
 
     /// The address to connect to, signed in if it is the account's site.
-    #[cfg(not(target_os = "android"))]
     fn request(url: &str) -> tungstenite::handshake::client::Request {
         use tungstenite::client::IntoClientRequest;
         let mut r = url.into_client_request().unwrap_or_default();
@@ -1746,11 +1745,6 @@ pub(crate) mod native {
             r.headers_mut().insert("Authorization", v);
         }
         r
-    }
-
-    #[cfg(target_os = "android")]
-    fn request(url: &str) -> &str {
-        url
     }
 
     pub struct Client {
@@ -1771,7 +1765,6 @@ pub(crate) mod native {
                         let t = Some(Duration::from_millis(15));
                         let _ = match ws.get_mut() {
                             tungstenite::stream::MaybeTlsStream::Plain(s) => s.set_read_timeout(t),
-                            #[cfg(not(target_os = "android"))]
                             tungstenite::stream::MaybeTlsStream::Rustls(s) => {
                                 s.get_mut().set_read_timeout(t)
                             }

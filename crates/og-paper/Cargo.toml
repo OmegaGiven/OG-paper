@@ -38,7 +38,11 @@ i_overlay = "9"
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 spellbook = "0.4"
 getrandom = "0.3"
-tungstenite = { version = "0.26", default-features = false, features = ["handshake"] }
+# wss:// to hosted rooms and vaults, on every native platform.
+tungstenite = { version = "0.26", default-features = false, features = ["handshake", "rustls-tls-webpki-roots"] }
+# Signing in to an account, OG Studio or a vault (see account.rs).
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+webbrowser = "1"
 hayro = "0.7"
 pollster = "0.4"
 egui-winit = { version = "0.36", default-features = false, features = ["links"] }
@@ -53,11 +57,6 @@ rfd = "0.15"
 pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
 arboard = { version = "3", default-features = false, features = ["image-data", "wayland-data-control"] }
 egui-winit = { version = "0.36", default-features = false, features = ["links", "clipboard", "wayland", "x11"] }
-
-# Signing in to an account (see account.rs).
-[target.'cfg(not(any(target_os = "android", target_arch = "wasm32")))'.dependencies]
-ureq = { version = "3", default-features = false, features = ["rustls"] }
-webbrowser = "1"
 
 [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
 security-framework = "3"
@@ -89,6 +88,10 @@ resources = "res"
 [package.metadata.android.sdk]
 min_sdk_version = 29
 target_sdk_version = 34
+
+# Rooms, vaults and page servers are on the network.
+[[package.metadata.android.uses_permission]]
+name = "android.permission.INTERNET"
 
 [package.metadata.android.application]
 label = "OG Paper"

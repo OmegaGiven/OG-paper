@@ -261,20 +261,37 @@ pub struct AccountPage {
     pub role: String,
 }
 
-/// The OG Studio account, as shown (see `account`).
+/// A saved account: OG Studio, or `user @ vault`.
+#[derive(Clone, Debug, Default)]
+pub struct AccountProfile {
+    pub label: String,
+    /// The one in use.
+    pub current: bool,
+}
+
+/// The account (OG Studio or a vault), as shown (see `account`).
 #[derive(Clone, Debug, Default)]
 pub struct AccountView {
     /// This build can sign in (the web app has its own panel).
     pub available: bool,
-    /// Signed in as this name.
+    /// Signed in as this name (`user @ vault` for a vault).
     pub name: Option<String>,
     pub pages: Vec<AccountPage>,
-    /// Waiting for the browser: the code it shows too.
+    /// Waiting for the browser: the code it shows too (empty for a vault).
     pub pair: Option<String>,
     /// What went wrong last.
     pub state: String,
     /// Offer signing in.
     pub prompt: bool,
+    /// The account in use is a vault.
+    pub vault: bool,
+    /// The vault address field is open, and what is in it.
+    pub vault_form: bool,
+    pub vault_input: String,
+    /// Saved accounts to switch between.
+    pub profiles: Vec<AccountProfile>,
+    /// The list of saved accounts is open.
+    pub switching: bool,
 }
 
 /// A server in Pages: its name, how it is, and its pages (name, changed,
@@ -9609,11 +9626,15 @@ fn pages_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>)
     }
 }
 
-/// Waiting for the browser: the code to compare, and a way out.
+/// Waiting for the browser: the code to compare (OG Studio), and a way out.
 fn account_pairing(ui: &mut egui::Ui, code: &str, actions: &mut Vec<Action>) {
     use crate::account::Op;
-    ui.label("Finish signing in in your browser. It should show this code:");
-    ui.label(egui::RichText::new(code).monospace().strong().size(24.0));
+    if code.is_empty() {
+        ui.label("Finish signing in in your browser.");
+    } else {
+        ui.label("Finish signing in in your browser. It should show this code:");
+        ui.label(egui::RichText::new(code).monospace().strong().size(24.0));
+    }
     ui.horizontal(|ui| {
         ui.spinner();
         ui.label(egui::RichText::new("Waiting for the browser").weak());
@@ -9632,12 +9653,12 @@ fn account_section(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action
     }
     let Some(name) = st.account.name.clone() else {
         ui.horizontal(|ui| {
-            ui.strong("OG Studio account");
-            if ui.button("Sign in").clicked() {
-                actions.push(Action::Account(Op::SignIn));
-            }
+            ui.strong("Account");
+            account_choice(ui, st, actions);
         });
-        help(ui, "Optional. Keeps your pages on our servers so you can get them back on any device, with a copy here too. You sign in on ogstudio.org.");
+        help(ui, "Optional. Keeps your pages on OG Studio or your own vault so you can get them back on any device, with a copy here too.");
+        vault_form(ui, st, actions);
+        account_switcher(ui, st, actions);
         if !st.account.state.is_empty() {
             ui.label(egui::RichText::new(&st.account.state).weak());
         }
@@ -9652,8 +9673,19 @@ fn account_section(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action
             if ui.button("Keep this page").on_hover_text("Save the open page to your account. It stays on this device too.").clicked() {
                 actions.push(Action::Account(Op::Keep));
             }
+            if ui.selectable_label(st.account.switching, "Switch").on_hover_text("Accounts").clicked() {
+                st.account.switching = !st.account.switching;
+            }
         });
     });
+    if st.account.switching {
+        account_switcher(ui, st, actions);
+        ui.horizontal(|ui| account_choice(ui, st, actions));
+        vault_form(ui, st, actions);
+    }
+    if !st.account.state.is_empty() {
+        ui.label(egui::RichText::new(&st.account.state).weak());
+    }
     egui::ScrollArea::vertical().id_salt("account_pages").max_height(140.0).auto_shrink([false, true]).show(ui, |ui| {
         if st.account.pages.is_empty() {
             ui.label(egui::RichText::new("No pages in your account yet").weak());
@@ -9666,8 +9698,51 @@ fn account_section(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action
             }
         }
     });
-    if ui.small_button("Delete my account…").on_hover_text("Opens ogstudio.org, where you confirm").clicked() {
+    if !st.account.vault && ui.small_button("Delete my account…").on_hover_text("Opens ogstudio.org, where you confirm").clicked() {
         actions.push(Action::Account(Op::Delete));
+    }
+}
+
+/// The two ways to sign in: OG Studio, or a vault.
+fn account_choice(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>) {
+    use crate::account::Op;
+    if ui.button("OG Studio").on_hover_text("Sign in on ogstudio.org").clicked() {
+        actions.push(Action::Account(Op::SignIn));
+    }
+    if ui.selectable_label(st.account.vault_form, "Vault").on_hover_text("Sign in to an OG Vault").clicked() {
+        st.account.vault_form = !st.account.vault_form;
+    }
+}
+
+/// A vault's address (or the connect link from its QR code), then Continue.
+fn vault_form(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>) {
+    use crate::account::Op;
+    if !st.account.vault_form {
+        return;
+    }
+    ui.horizontal(|ui| {
+        let go = ui.add_enabled(!st.account.vault_input.trim().is_empty(), egui::Button::new("Continue"));
+        let field = ui.add(
+            egui::TextEdit::singleline(&mut st.account.vault_input)
+                .hint_text("Vault address")
+                .desired_width(ui.available_width()),
+        );
+        if go.clicked() || (field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))) {
+            actions.push(Action::Account(Op::VaultSignIn));
+            st.account.vault_form = false;
+        }
+    });
+}
+
+/// Saved accounts, the one in use ticked: tap one to use it.
+fn account_switcher(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>) {
+    use crate::account::Op;
+    for (i, p) in st.account.profiles.iter().enumerate() {
+        let text = if p.current { format!("✓ {}", p.label) } else { p.label.clone() };
+        if ui.selectable_label(p.current, text).clicked() && !p.current {
+            actions.push(Action::Account(Op::Switch(i)));
+            st.account.switching = false;
+        }
     }
 }
 
@@ -9698,8 +9773,14 @@ fn account_card(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>
                     ui.strong("Keep your pages safe");
                     ui.label("Sign in to get your pages back on any device. They stay on this one too. It's optional.");
                     ui.horizontal(|ui| {
-                        if ui.button("Sign in").clicked() {
+                        if ui.button("OG Studio").clicked() {
                             actions.push(Action::Account(Op::SignIn));
+                        }
+                        if ui.button("Vault").clicked() {
+                            // The address goes in Pages, where the account lives.
+                            st.account.vault_form = true;
+                            st.pages_open = true;
+                            actions.push(Action::Account(Op::NotNow));
                         }
                         if ui.button("Not now").clicked() {
                             actions.push(Action::Account(Op::NotNow));

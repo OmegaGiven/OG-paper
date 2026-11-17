@@ -14,6 +14,7 @@ import init, {
   og_timeline, og_timeline_range, og_timeline_restore, og_snapshot_request, og_snapshot_take, og_join_upload,
 } from './pkg/og_paper.js';
 import { hostedConfig, startHosted } from './og-hosted.js';
+import * as vaultMod from './og-vault.js';
 
 const ICONS = {
   play: '<path d="M8 5v14l11-7z"/>',
@@ -634,7 +635,7 @@ export async function start({ mode = 'app' } = {}) {
   const hostedCfg = isTry ? null : hostedConfig();
   let hosted = null;
   const syncMenu = () => {
-    const items = [...(hostedCfg ? ['account'] : []), 'pages', 'new', 'open', 'import', 'merge', 'changes', 'folder', 'live', 'connect', 'export', 'paste', 'library', 'picture', 'search', 'bookmarks', 'timeline', 'home', 'layout', 'plugins', 'diagram', 'symbols', 'layers', 'frames', 'rulers', 'hotkeys'];
+    const items = [...(isTry ? [] : ['account']), 'pages', 'new', 'open', 'import', 'merge', 'changes', 'folder', 'live', 'connect', 'export', 'paste', 'library', 'picture', 'search', 'bookmarks', 'timeline', 'home', 'layout', 'plugins', 'diagram', 'symbols', 'layers', 'frames', 'rulers', 'hotkeys'];
     if (canFs && !document.fullscreenElement) items.push('fullscreen');
     if (isTry) items.push('tour');
     og_set_menu(items.join(','));
@@ -809,14 +810,28 @@ export async function start({ mode = 'app' } = {}) {
   };
   // ---- live connection: the app speaks its protocol, the page carries it ----
   let ws = null;
+  // Bumped by every close: a dial still waiting for its address (a vault's
+  // one-use ticket) is dropped if another connect or a close came first.
+  let dialSeq = 0;
   function netClose() {
+    dialSeq++;
     if (ws) { const w = ws; ws = null; w.onclose = null; try { w.close(); } catch (e) {} }
   }
   function netConnect(url) {
     netClose();
     if (hosted && !hosted.mayConnect(url)) { og_net_closed(0, hosted.refusal); return; }
+    const later = hosted?.dialUrl(url);
+    if (!later) return dial(url, url);
+    const seq = dialSeq;
+    later.then(u => { if (seq === dialSeq) dial(url, u); }, e => {
+      if (seq !== dialSeq) return;
+      og_net_closed(0, String(e.message || e));
+      setTimeout(og_poke, 3200);
+    });
+  }
+  function dial(url, real) {
     let w;
-    try { w = new WebSocket(url); } catch (e) { og_net_closed(0, String(e.message || e)); setTimeout(og_poke, 3200); return; }
+    try { w = new WebSocket(real); } catch (e) { og_net_closed(0, String(e.message || e)); setTimeout(og_poke, 3200); return; }
     w.binaryType = 'arraybuffer';
     ws = w;
     w.onopen = () => { hosted?.conn(true, url); og_net_open(0); };
@@ -1682,7 +1697,18 @@ export async function start({ mode = 'app' } = {}) {
   }
   pushPages();
   loadPlugins();
-  if (hostedCfg) {
+  // Back from a vault's sign-in page, and the vault profile in use (og-vault.js).
+  let vault = null;
+  if (!isTry) {
+    let fin = null, session = null;
+    try { fin = await vaultMod.finishVaultSignIn(); } catch (e) { fin = { error: String(e.message || e) }; }
+    try { session = await vaultMod.activeSession(); } catch (e) { /* no profile */ }
+    // Reach the vault at an address that answers as it (never send tokens elsewhere).
+    if (session) await session.reach().catch(() => false);
+    const here = document.querySelector('meta[name="og-paper-vault"]')?.content === 'self' ? location.origin : '';
+    vault = { mod: vaultMod, session, error: fin?.error || null, here };
+  }
+  if (hostedCfg || vault) {
     hosted = startHosted({
       root, card, cards, show, say, status, el, esc, autosave, exporter: () => openExport(), isOpen: () => open,
       // The open canvas's size as saved here (bytes), after saving it now.
@@ -1720,7 +1746,7 @@ export async function start({ mode = 'app' } = {}) {
         pushPages();
         for (const c of gone) { await idbDel('page:' + c, 'canvases'); await idbDel(`folder.${c}`, 'canvases'); }
       },
-    }, hostedCfg);
+    }, hostedCfg, vault);
     hosted.boot();
   }
   // Opened from a server's page: add that server to Pages.
