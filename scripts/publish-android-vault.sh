@@ -42,8 +42,9 @@ apk=target/release/apk/og-paper.apk
 code="$(python3 - "$name" <<'PY'
 import sys
 ma, mi, pa = (int(x) for x in sys.argv[1].split('.'))
-# ndk-build VersionCode::to_code(1): major << 22 | minor << 14 | patch << 6 | 1
-print(ma << 22 | mi << 14 | pa << 6 | 1)
+# ndk-build VersionCode::to_code(1): 1 << 24 | major << 16 | minor << 8 | patch
+# (checked with aapt2: 0.2.214 is 16777942)
+print(1 << 24 | ma << 16 | mi << 8 | pa)
 PY
 )"
 sha="$(sha256sum "$apk" | cut -d' ' -f1)"
