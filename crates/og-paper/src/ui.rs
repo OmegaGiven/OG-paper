@@ -673,6 +673,8 @@ pub struct UiState {
     pub perf_text: String,
     /// Helper text (how-to lines) shows.
     pub hints: bool,
+    /// Android: hide the system bars (swipe from an edge shows them).
+    pub fullscreen: bool,
     /// Spell check while typing (UI > Spell check): underlines, never
     /// changes a word by itself.
     pub spell: bool,
@@ -1030,6 +1032,7 @@ impl Default for UiState {
             radial_bar: false,
             dark: false,
             hints: true,
+            fullscreen: true,
             spell: true,
             perf: false,
             perf_text: String::new(),
@@ -1603,6 +1606,7 @@ pub enum Action {
     Dark,
     /// Show or hide helper text.
     Hints,
+    HideBars,
     Spell,
     Perf,
     /// UI > Size: one step bigger (+1) or smaller (-1), or normal (0).
@@ -9216,6 +9220,15 @@ fn layout_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>
                         "A round button in the corner that fans out, instead of a bar",
                         Action::RadialBar,
                     );
+                    if cfg!(target_os = "android") {
+                        tick(
+                            ui,
+                            st.fullscreen,
+                            "Full screen",
+                            "Hide the status and navigation bars (swipe from an edge to show them)",
+                            Action::HideBars,
+                        );
+                    }
                     tick(
                         ui,
                         st.hints,
@@ -9665,15 +9678,27 @@ fn account_section(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action
         return;
     };
     ui.horizontal(|ui| {
-        ui.strong(if name.is_empty() { "OG Studio account".to_string() } else { format!("Signed in as {name}") });
+        ui.strong(if name.is_empty() {
+            "OG Studio account".to_string()
+        } else {
+            format!("Signed in as {name}")
+        });
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui.button("Sign out").clicked() {
                 actions.push(Action::Account(Op::SignOut));
             }
-            if ui.button("Keep this page").on_hover_text("Save the open page to your account. It stays on this device too.").clicked() {
+            if ui
+                .button("Keep this page")
+                .on_hover_text("Save the open page to your account. It stays on this device too.")
+                .clicked()
+            {
                 actions.push(Action::Account(Op::Keep));
             }
-            if ui.selectable_label(st.account.switching, "Switch").on_hover_text("Accounts").clicked() {
+            if ui
+                .selectable_label(st.account.switching, "Switch")
+                .on_hover_text("Accounts")
+                .clicked()
+            {
                 st.account.switching = !st.account.switching;
             }
         });
@@ -9686,19 +9711,35 @@ fn account_section(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action
     if !st.account.state.is_empty() {
         ui.label(egui::RichText::new(&st.account.state).weak());
     }
-    egui::ScrollArea::vertical().id_salt("account_pages").max_height(140.0).auto_shrink([false, true]).show(ui, |ui| {
-        if st.account.pages.is_empty() {
-            ui.label(egui::RichText::new("No pages in your account yet").weak());
-        }
-        for (i, p) in st.account.pages.iter().enumerate() {
-            let role = if p.role == "owner" { String::new() } else { format!("  ({})", p.role) };
-            if ui.selectable_label(false, format!("{}{role}", p.name)).clicked() {
-                actions.push(Action::Account(Op::Open(i)));
-                st.pages_open = false;
+    egui::ScrollArea::vertical()
+        .id_salt("account_pages")
+        .max_height(140.0)
+        .auto_shrink([false, true])
+        .show(ui, |ui| {
+            if st.account.pages.is_empty() {
+                ui.label(egui::RichText::new("No pages in your account yet").weak());
             }
-        }
-    });
-    if !st.account.vault && ui.small_button("Delete my account…").on_hover_text("Opens ogstudio.org, where you confirm").clicked() {
+            for (i, p) in st.account.pages.iter().enumerate() {
+                let role = if p.role == "owner" {
+                    String::new()
+                } else {
+                    format!("  ({})", p.role)
+                };
+                if ui
+                    .selectable_label(false, format!("{}{role}", p.name))
+                    .clicked()
+                {
+                    actions.push(Action::Account(Op::Open(i)));
+                    st.pages_open = false;
+                }
+            }
+        });
+    if !st.account.vault
+        && ui
+            .small_button("Delete my account…")
+            .on_hover_text("Opens ogstudio.org, where you confirm")
+            .clicked()
+    {
         actions.push(Action::Account(Op::Delete));
     }
 }
@@ -9706,10 +9747,18 @@ fn account_section(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action
 /// The two ways to sign in: OG Studio, or a vault.
 fn account_choice(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>) {
     use crate::account::Op;
-    if ui.button("OG Studio").on_hover_text("Sign in on ogstudio.org").clicked() {
+    if ui
+        .button("OG Studio")
+        .on_hover_text("Sign in on ogstudio.org")
+        .clicked()
+    {
         actions.push(Action::Account(Op::SignIn));
     }
-    if ui.selectable_label(st.account.vault_form, "Vault").on_hover_text("Sign in to an OG Vault").clicked() {
+    if ui
+        .selectable_label(st.account.vault_form, "Vault")
+        .on_hover_text("Sign in to an OG Vault")
+        .clicked()
+    {
         st.account.vault_form = !st.account.vault_form;
     }
 }
@@ -9721,7 +9770,10 @@ fn vault_form(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>) {
         return;
     }
     ui.horizontal(|ui| {
-        let go = ui.add_enabled(!st.account.vault_input.trim().is_empty(), egui::Button::new("Continue"));
+        let go = ui.add_enabled(
+            !st.account.vault_input.trim().is_empty(),
+            egui::Button::new("Continue"),
+        );
         let field = ui.add(
             egui::TextEdit::singleline(&mut st.account.vault_input)
                 .hint_text("Vault address")
@@ -9738,7 +9790,11 @@ fn vault_form(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>) {
 fn account_switcher(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>) {
     use crate::account::Op;
     for (i, p) in st.account.profiles.iter().enumerate() {
-        let text = if p.current { format!("✓ {}", p.label) } else { p.label.clone() };
+        let text = if p.current {
+            format!("✓ {}", p.label)
+        } else {
+            p.label.clone()
+        };
         if ui.selectable_label(p.current, text).clicked() && !p.current {
             actions.push(Action::Account(Op::Switch(i)));
             st.account.switching = false;

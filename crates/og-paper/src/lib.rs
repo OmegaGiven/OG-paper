@@ -6,6 +6,8 @@
 //! OG Paper: an open-source infinite canvas.
 
 mod account;
+#[cfg(target_os = "android")]
+mod android;
 mod arrange;
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 mod artwork;
@@ -1571,6 +1573,18 @@ impl App {
                 p.insert(
                     "spell".into(),
                     if self.ui.spell { "on" } else { "off" }.into(),
+                );
+                prefs::save(&p);
+                self.redraw();
+            }
+            Action::HideBars => {
+                self.ui.fullscreen = !self.ui.fullscreen;
+                #[cfg(target_os = "android")]
+                android::set_immersive(self.ui.fullscreen);
+                let mut p = prefs::load();
+                p.insert(
+                    "fullscreen".into(),
+                    if self.ui.fullscreen { "on" } else { "off" }.into(),
                 );
                 prefs::save(&p);
                 self.redraw();
@@ -3576,7 +3590,21 @@ impl App {
             name: String::new(),
             cam: hotbar::cam_text(&self.cam, self.view_px()),
         });
-        let raw = self.egui_io.as_mut().expect("egui").take_input(&window);
+        #[allow(unused_mut)]
+        let mut raw = self.egui_io.as_mut().expect("egui").take_input(&window);
+        // Android: the app's own controls stay clear of the status bar, the
+        // gesture/navigation bar and the camera cutout.
+        #[cfg(target_os = "android")]
+        {
+            let [l, t, r, b] = android::insets();
+            let k = self.egui_ctx.pixels_per_point();
+            raw.safe_area_insets = Some(egui::SafeAreaInsets(egui::epaint::MarginF32 {
+                left: l / k,
+                top: t / k,
+                right: r / k,
+                bottom: b / k,
+            }));
+        }
         let mut actions = Vec::new();
         let out = self
             .egui_ctx
@@ -3858,6 +3886,8 @@ impl ApplicationHandler for App {
             }
         }
         self.ui.touch_ui = cfg!(any(target_os = "android", target_os = "ios")) || is_touch_web();
+        #[cfg(target_os = "android")]
+        android::set_immersive(self.ui.fullscreen);
         window.request_redraw();
     }
 
@@ -3914,6 +3944,12 @@ impl ApplicationHandler for App {
                 self.open_dropped(path, Some(self.cursor));
                 window.request_redraw();
             }
+            // The system gives the bars back after a dialog or a swipe away.
+            #[cfg(target_os = "android")]
+            WindowEvent::Focused(true) => {
+                android::set_immersive(self.ui.fullscreen);
+                window.request_redraw();
+            }
             WindowEvent::ModifiersChanged(m) => self.mods = m.state(),
             WindowEvent::KeyboardInput { event, .. } => {
                 if let Key::Named(NamedKey::Space) = event.logical_key {
@@ -3922,7 +3958,16 @@ impl ApplicationHandler for App {
                 if event.state == ElementState::Pressed
                     && !self.egui_ctx.egui_wants_keyboard_input()
                 {
-                    self.shortcut(&event.logical_key);
+                    // The Android back button does what Esc does: close
+                    // menus, cancel an edit, then clear the selection.
+                    match &event.logical_key {
+                        Key::Named(NamedKey::GoBack | NamedKey::BrowserBack) => {
+                            self.shortcut(&Key::Named(NamedKey::Escape));
+                        }
+                        k => {
+                            self.shortcut(k);
+                        }
+                    }
                 }
             }
             WindowEvent::MouseWheel { delta, .. } if !over_ui => {
@@ -3977,7 +4022,19 @@ impl ApplicationHandler for App {
                 _ => {}
             },
             WindowEvent::Touch(t) => {
-                if consumed && self.touches.is_empty() {
+                // egui's own "wants the pointer" lags a frame behind a touch
+                // (a finger has no hover), so a tap on a menu item used to
+                // reach the canvas first, which closed the menu before the
+                // item saw it. Hit-test where this finger landed instead.
+                let ppp = self.egui_ctx.pixels_per_point() as f64;
+                let at = egui::pos2((t.location.x / ppp) as f32, (t.location.y / ppp) as f32);
+                let on_ui = self
+                    .egui_ctx
+                    .layer_id_at(at)
+                    .is_some_and(|l| l.order != egui::Order::Background);
+                if (consumed || (on_ui && matches!(t.phase, TouchPhase::Started)))
+                    && self.touches.is_empty()
+                {
                     return;
                 }
                 let pressure = t.force.map(|f| f.normalized() as f32).unwrap_or(1.0);
@@ -3997,6 +4054,7 @@ pub(crate) fn apply_prefs(ui: &mut UiState, prefs: &prefs::Prefs) {
     ui.radial_bar = prefs.get("radialbar").is_some_and(|v| v == "on");
     ui.dark = prefs.get("dark").is_some_and(|v| v == "on");
     ui.hints = prefs.get("hints").is_none_or(|v| v != "off");
+    ui.fullscreen = prefs.get("fullscreen").is_none_or(|v| v != "off");
     ui.spell = prefs.get("spell").is_none_or(|v| v != "off");
     spell::set_added(prefs.get("spellwords").map_or("", |s| s.as_str()));
     if ui.spell {
