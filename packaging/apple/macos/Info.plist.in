@@ -13,6 +13,11 @@
   <!-- Export compliance: standard algorithms (ChaCha20-Poly1305, Ed25519, TLS)
        in publicly available open-source code; no documentation needed. -->
   <key>ITSAppUsesNonExemptEncryption</key><false/>
+  <key>CFBundleURLTypes</key>
+  <array><dict>
+    <key>CFBundleURLName</key><string>com.omegagiven.ogpaper</string>
+    <key>CFBundleURLSchemes</key><array><string>ogpaper</string></array>
+  </dict></array>
   <key>CFBundleShortVersionString</key><string>__VERSION__</string>
   <key>CFBundleVersion</key><string>__BUILD__</string>
   <key>LSApplicationCategoryType</key><string>public.app-category.graphics-design</string>

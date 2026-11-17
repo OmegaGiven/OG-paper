@@ -20,6 +20,7 @@
 //
 // The new tables are also in migrations/0002_og_paper_safety.sql (CREATE
 // TABLE IF NOT EXISTS: safe either way round); the columns only here.
+//   paper_app_grants/_codes  native apps signed in to an account (oauth.js)
 //
 // Don't turn these into a `wrangler d1 migrations` file: applied after the
 // API has run, the ALTER would fail (the column is already there).
@@ -55,6 +56,29 @@ export const UPGRADE = [
     PRIMARY KEY (user_id, blocked_id)
   )`,
   'CREATE INDEX IF NOT EXISTS paper_blocks_blocked ON paper_blocks(blocked_id)',
+  // Signing in from the native apps (see oauth.js): one grant per device.
+  `CREATE TABLE IF NOT EXISTS paper_app_grants (
+    id                 TEXT PRIMARY KEY,
+    user_id            TEXT NOT NULL,
+    device             TEXT NOT NULL,
+    access_hash        TEXT NOT NULL UNIQUE,
+    access_expires     INTEGER NOT NULL,
+    refresh_hash       TEXT NOT NULL UNIQUE,
+    refresh_expires    INTEGER NOT NULL,
+    prev_refresh_hash  TEXT,
+    rotated_at         INTEGER,
+    created_at         INTEGER NOT NULL,
+    last_used          INTEGER NOT NULL
+  )`,
+  'CREATE INDEX IF NOT EXISTS paper_app_grants_user ON paper_app_grants(user_id)',
+  'CREATE INDEX IF NOT EXISTS paper_app_grants_prev ON paper_app_grants(prev_refresh_hash)',
+  `CREATE TABLE IF NOT EXISTS paper_app_codes (
+    challenge   TEXT PRIMARY KEY,
+    user_id     TEXT NOT NULL,
+    device      TEXT NOT NULL,
+    denied      INTEGER NOT NULL DEFAULT 0,
+    expires_at  INTEGER NOT NULL
+  )`,
 ];
 
 const done = new WeakMap();
@@ -72,7 +96,7 @@ export function ensureSchema(db) {
 
 async function upgrade(db) {
   try {
-    await db.prepare('SELECT p.deleted_at, r.context, c.user_id, b.blocked_id FROM paper_transfers t, paper_pages p, paper_reports r, paper_chatters c, paper_blocks b LIMIT 0').all();
+    await db.prepare('SELECT p.deleted_at, r.context, c.user_id, b.blocked_id, g.rotated_at, k.expires_at FROM paper_transfers t, paper_pages p, paper_reports r, paper_chatters c, paper_blocks b, paper_app_grants g, paper_app_codes k LIMIT 0').all();
     return;
   } catch (e) { /* not yet */ }
   for (const sql of UPGRADE) {

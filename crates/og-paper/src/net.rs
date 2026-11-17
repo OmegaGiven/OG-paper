@@ -1735,6 +1735,24 @@ pub(crate) mod native {
         }
     }
 
+    /// The address to connect to, signed in if it is the account's site.
+    #[cfg(not(target_os = "android"))]
+    fn request(url: &str) -> tungstenite::handshake::client::Request {
+        use tungstenite::client::IntoClientRequest;
+        let mut r = url.into_client_request().unwrap_or_default();
+        if let Some(v) = crate::account::bearer_for(url)
+            .and_then(|t| format!("Bearer {t}").parse().ok())
+        {
+            r.headers_mut().insert("Authorization", v);
+        }
+        r
+    }
+
+    #[cfg(target_os = "android")]
+    fn request(url: &str) -> &str {
+        url
+    }
+
     pub struct Client {
         rx: Receiver<Ev>,
         out: Sender<Out>,
@@ -1748,7 +1766,7 @@ pub(crate) mod native {
             let stop = Arc::new(AtomicBool::new(false));
             let s = stop.clone();
             std::thread::spawn(move || {
-                let why = match tungstenite::connect(url.as_str()) {
+                let why = match tungstenite::connect(request(&url)) {
                     Ok((mut ws, _)) => {
                         let t = Some(Duration::from_millis(15));
                         let _ = match ws.get_mut() {

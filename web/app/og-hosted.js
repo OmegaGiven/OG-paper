@@ -343,6 +343,7 @@ export function startHosted(ui, cfg) {
     }
     // People see who they are on others' screens: this account's name.
     if (now && was !== now) setPrefName(state.me.user.name);
+    if (now && !was) state.firstHere = true;
     if (now) { try { localStorage.setItem(OWNER, now); } catch (e) {} }
     state.ended = !now && (!!was || holdsPages());
     if (state.ended && !endedSaid) {
@@ -707,6 +708,17 @@ export function startHosted(ui, cfg) {
     // in checkOwner; here for a browser signed in before that).
     try { if (state.me.user.name && !/^\s*name\s*=/m.test(localStorage.getItem('og-prefs') || '')) setPrefName(state.me.user.name); } catch (e) {}
     if (location.hash.startsWith('#l=')) return fromLink();
+    // First sign-in here with something drawn: that's what signing in was for,
+    // so it goes into the account without being asked. The browser keeps its copy.
+    if (state.firstHere && !currentPage() && ui.status().strokes > 0) {
+      state.firstHere = false;
+      await guard(async () => {
+        state.open = await hp.keep(ui.status().name || 'Untitled');
+        say('Saved to your account. It stays in this browser too.');
+      });
+      await refresh();
+      return;
+    }
     // Signed in: carry on with the account page last open, else show the list.
     const last = localStorage.getItem('og-hosted-last');
     const l = state.list;

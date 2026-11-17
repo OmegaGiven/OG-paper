@@ -13,6 +13,7 @@ import { account } from './quota.js';
 import { cleanName, cleanText } from './chat.js';
 import { ensureSchema } from './schema.js';
 import { fileReport, setReportHook } from './report.js';
+import { bearerToken, grantOf, oauthRoutes } from './oauth.js';
 
 const ROLES = ['viewer', 'editor', 'owner'];
 const rank = r => ROLES.indexOf(r);
@@ -108,6 +109,8 @@ export async function deleteAccount(env, uid, { roomBinding = 'PAPER_ROOMS' } = 
     db.prepare('DELETE FROM paper_members WHERE user_id = ?1').bind(uid),
     db.prepare('UPDATE paper_reports SET reporter_id = NULL WHERE reporter_id = ?1').bind(uid),
     db.prepare('UPDATE paper_reports SET subject_id = NULL WHERE subject_id = ?1').bind(uid),
+    db.prepare('DELETE FROM paper_app_grants WHERE user_id = ?1').bind(uid),
+    db.prepare('DELETE FROM paper_app_codes WHERE user_id = ?1').bind(uid),
     db.prepare('DELETE FROM paper_accounts WHERE user_id = ?1').bind(uid),
   ]);
   return out;
@@ -141,15 +144,24 @@ export function createApi({ auth, config = {}, roomBinding = 'PAPER_ROOMS', onRe
       if ((req.method !== 'GET' || req.headers.get('Upgrade') === 'websocket') && origin && !allowed.includes(origin)) fail(403, 'Bad origin');
       if (req.method !== 'GET' && req.headers.get('Sec-Fetch-Site') && !['same-origin', 'none'].includes(req.headers.get('Sec-Fetch-Site'))) fail(403, 'Bad origin');
       // Every browser sends one of the two on a write; a write with neither isn't from this site's page.
-      if (req.method !== 'GET' && !origin && !req.headers.get('Sec-Fetch-Site')) fail(403, 'Bad origin');
+      // A native app has neither, but a token isn't sent by a browser on its own
+      // the way a cookie is, and the token endpoint uses no session at all.
+      const token = bearerToken(req);
+      if (req.method !== 'GET' && !origin && !req.headers.get('Sec-Fetch-Site') && !token && path !== '/oauth/token') fail(403, 'Bad origin');
 
       await ensureSchema(db);
-      const user = await auth.user(req, env);
+      // A token speaks for its account alone: a bad one never falls back on a cookie.
+      const grant = token ? await grantOf(db, token) : null;
+      if (token && !grant) return json({ error: 'Sign in again', token: 'invalid' }, 401);
+      const user = grant
+        ? { id: grant.user_id, name: typeof auth.names === 'function' ? (await auth.names(env, [grant.user_id]))[grant.user_id] : null }
+        : await auth.user(req, env);
       // Names come from the host site: one line, no markup, whatever it allows.
       if (user) { user.id = String(user.id); user.name = cleanName(user.name, 40) || null; }
       const ip = req.headers.get('CF-Connecting-IP') || 'local';
       if (await limited(req.method === 'GET' ? 'api' : 'write', user ? 'u' + user.id : 'ip' + ip)) fail(429, 'Too many requests. Please slow down and try again in a minute.');
-      const isAdmin = !!(user && typeof auth.isAdmin === 'function' && await auth.isAdmin(user, env));
+      // Admin work is for the website: an app's token never carries it.
+      const isAdmin = !!(user && !grant && typeof auth.isAdmin === 'function' && await auth.isAdmin(user, env));
       // An account the admin blocked can still see and download its pages,
       // but not change anything, open a live page or chat.
       if (user && !isAdmin && (req.method !== 'GET' || req.headers.get('Upgrade') === 'websocket')) {
@@ -235,6 +247,16 @@ export function createApi({ auth, config = {}, roomBinding = 'PAPER_ROOMS', onRe
         return page(id);
       };
       const kick = (id, what) => roomCall(id, 'kick', what).catch(() => {});
+
+      // End a device's sign-in, and take it off any page it is on now.
+      const revoke = async (id, owner) => {
+        await db.prepare('DELETE FROM paper_app_grants WHERE id = ?1 AND user_id = ?2').bind(id, owner).run();
+        const on = (await db.prepare('SELECT page_id FROM paper_members WHERE user_id = ?1').bind(owner).all()).results;
+        for (const r of on) await kick(r.page_id, { via: 'd:' + id, why: 'This device was signed out' });
+      };
+
+      const signedIn = await oauthRoutes({ path, req, url, db, cfg, user, grant, json, fail, revoke });
+      if (signedIn) return signedIn;
 
       let m;
       // ---- the signed-in account ------------------------------------------------
@@ -377,7 +399,7 @@ export function createApi({ auth, config = {}, roomBinding = 'PAPER_ROOMS', onRe
         need();
         if (await limited('ws', 'u' + user.id)) fail(429, 'Too many connections. Try again in a minute.');
         const { p, role } = await access(m[1]);
-        return enter(p, role, user, '');
+        return enter(p, role, user, grant ? 'd:' + grant.id : '');
       }
       if ((m = path.match(/^\/l\/([A-Za-z0-9_-]{20,64})\/relay$/))) {
         // Opened by link without an account (view only, when allowed).
@@ -653,6 +675,25 @@ export function createApi({ auth, config = {}, roomBinding = 'PAPER_ROOMS', onRe
         if (t.leave) await kick(p.id, { user: t.from_id, why: 'You gave this page away' });
         const mine = await page(p.id);
         return json({ ok: true, page: card(mine, 'owner'), open: openInfo(mine, 'owner') });
+      }
+
+      // ---- this person's devices and account ------------------------------------
+      if (path === '/devices' && req.method === 'GET') {
+        need();
+        const rows = (await db.prepare('SELECT id, device, created_at, last_used FROM paper_app_grants WHERE user_id = ?1 ORDER BY last_used DESC').bind(user.id).all()).results;
+        return json({ devices: rows.map(d => ({ id: d.id, name: d.device, created: d.created_at, used: d.last_used, current: d.id === grant?.id })) });
+      }
+      if ((m = path.match(/^\/devices\/([A-Za-z0-9_-]{24})$/)) && req.method === 'DELETE') {
+        need();
+        await revoke(m[1], user.id);
+        return json({ ok: true });
+      }
+      if (path === '/account' && req.method === 'DELETE') {
+        need();
+        if ((await body()).confirm !== 'delete') fail(400, 'Confirm by sending {confirm: "delete"}');
+        const r = await deleteAccount(env, user.id);
+        if (typeof auth.deleteUser === 'function') await auth.deleteUser(env, user.id);
+        return json({ ok: true, ...r });
       }
 
       // ---- reports and the admin ---------------------------------------------------

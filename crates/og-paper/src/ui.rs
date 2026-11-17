@@ -253,6 +253,30 @@ pub struct LocalPage {
     pub current: bool,
 }
 
+/// A page in the OG Studio account.
+#[derive(Clone, Debug, Default)]
+pub struct AccountPage {
+    pub name: String,
+    /// "owner", "editor" or "viewer".
+    pub role: String,
+}
+
+/// The OG Studio account, as shown (see `account`).
+#[derive(Clone, Debug, Default)]
+pub struct AccountView {
+    /// This build can sign in (the web app has its own panel).
+    pub available: bool,
+    /// Signed in as this name.
+    pub name: Option<String>,
+    pub pages: Vec<AccountPage>,
+    /// Waiting for the browser: the code it shows too.
+    pub pair: Option<String>,
+    /// What went wrong last.
+    pub state: String,
+    /// Offer signing in.
+    pub prompt: bool,
+}
+
 /// A server in Pages: its name, how it is, and its pages (name, changed,
 /// open here).
 #[derive(Clone, Debug, Default)]
@@ -718,6 +742,7 @@ pub struct UiState {
     /// The app's own plugins: name, installed.
     pub plugins_bundled: Vec<(String, bool)>,
     pub local_pages: Vec<LocalPage>,
+    pub account: AccountView,
     /// Pages: renaming page k here (the name being typed).
     pub page_rename: Option<(usize, String)>,
     /// Pages: naming a new page here (the name being typed).
@@ -1039,6 +1064,7 @@ impl Default for UiState {
             plugins: Vec::new(),
             plugins_bundled: Vec::new(),
             local_pages: Vec::new(),
+            account: AccountView::default(),
             page_rename: None,
             page_new: None,
             servers: Vec::new(),
@@ -1437,6 +1463,7 @@ pub enum Action {
     RefreshServer(usize),
     /// Server, page.
     OpenServerPage(usize, usize),
+    Account(crate::account::Op),
     /// Stop hosting, or leave a shared canvas.
     NetStop,
     /// Join by the link typed in Share live.
@@ -2193,6 +2220,8 @@ pub fn draw(ctx: &egui::Context, st: &mut UiState) -> Vec<Action> {
     }
     if st.pages_open {
         pages_panel(ctx, st, &mut actions);
+    } else if st.account.prompt || st.account.pair.is_some() {
+        account_card(ctx, st, &mut actions);
     }
     if st.connect_open {
         connect_panel(ctx, st, &mut actions);
@@ -9561,6 +9590,10 @@ fn pages_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>)
                             pages_tree(ui, st, actions);
                         });
                     pages_drag_end(ui.ctx(), st);
+                    if st.account.available {
+                        ui.separator();
+                        account_section(ui, st, actions);
+                    }
                     ui.separator();
                     ui.horizontal(|ui| {
                         if ui.button("Connect to server…").on_hover_text("Add a server's pages here by its address or link").clicked() {
@@ -9574,6 +9607,106 @@ fn pages_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>)
     if !st.ws_queue.is_empty() {
         actions.push(Action::WsApply);
     }
+}
+
+/// Waiting for the browser: the code to compare, and a way out.
+fn account_pairing(ui: &mut egui::Ui, code: &str, actions: &mut Vec<Action>) {
+    use crate::account::Op;
+    ui.label("Finish signing in in your browser. It should show this code:");
+    ui.label(egui::RichText::new(code).monospace().strong().size(24.0));
+    ui.horizontal(|ui| {
+        ui.spinner();
+        ui.label(egui::RichText::new("Waiting for the browser").weak());
+        if ui.button("Cancel").clicked() {
+            actions.push(Action::Account(Op::Cancel));
+        }
+    });
+}
+
+/// The OG Studio account in Pages: pages kept there, and signing in or out.
+fn account_section(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>) {
+    use crate::account::Op;
+    if let Some(code) = st.account.pair.clone() {
+        account_pairing(ui, &code, actions);
+        return;
+    }
+    let Some(name) = st.account.name.clone() else {
+        ui.horizontal(|ui| {
+            ui.strong("OG Studio account");
+            if ui.button("Sign in").clicked() {
+                actions.push(Action::Account(Op::SignIn));
+            }
+        });
+        help(ui, "Optional. Keeps your pages on our servers so you can get them back on any device, with a copy here too. You sign in on ogstudio.org.");
+        if !st.account.state.is_empty() {
+            ui.label(egui::RichText::new(&st.account.state).weak());
+        }
+        return;
+    };
+    ui.horizontal(|ui| {
+        ui.strong(if name.is_empty() { "OG Studio account".to_string() } else { format!("Signed in as {name}") });
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui.button("Sign out").clicked() {
+                actions.push(Action::Account(Op::SignOut));
+            }
+            if ui.button("Keep this page").on_hover_text("Save the open page to your account. It stays on this device too.").clicked() {
+                actions.push(Action::Account(Op::Keep));
+            }
+        });
+    });
+    egui::ScrollArea::vertical().id_salt("account_pages").max_height(140.0).auto_shrink([false, true]).show(ui, |ui| {
+        if st.account.pages.is_empty() {
+            ui.label(egui::RichText::new("No pages in your account yet").weak());
+        }
+        for (i, p) in st.account.pages.iter().enumerate() {
+            let role = if p.role == "owner" { String::new() } else { format!("  ({})", p.role) };
+            if ui.selectable_label(false, format!("{}{role}", p.name)).clicked() {
+                actions.push(Action::Account(Op::Open(i)));
+                st.pages_open = false;
+            }
+        }
+    });
+    if ui.small_button("Delete my account…").on_hover_text("Opens ogstudio.org, where you confirm").clicked() {
+        actions.push(Action::Account(Op::Delete));
+    }
+}
+
+/// A small card offering to sign in, never in the way of drawing, or the code
+/// to compare once signing in has started.
+fn account_card(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) {
+    use crate::account::Op;
+    let screen = ctx.content_rect();
+    let w = 340.0f32.min(screen.width() - 24.0);
+    egui::Area::new(Id::new("account_card"))
+        .order(Order::Foreground)
+        .pivot(Align2::CENTER_TOP)
+        .fixed_pos(egui::pos2(screen.center().x, screen.top() + if screen.width() < 500.0 { 76.0 } else { 16.0 }))
+        .show(ctx, |ui| {
+            ui.style_mut().visuals = egui::Visuals::light();
+            egui::Frame::new()
+                .fill(FACE)
+                .stroke(Stroke::new(1.0, EDGE))
+                .corner_radius(12.0)
+                .inner_margin(12.0)
+                .shadow(egui::Shadow { offset: [0, 3], blur: 14, spread: 0, color: Color32::from_black_alpha(45) })
+                .show(ui, |ui| {
+                    ui.set_width(w);
+                    if let Some(code) = st.account.pair.clone() {
+                        account_pairing(ui, &code, actions);
+                        return;
+                    }
+                    ui.strong("Keep your pages safe");
+                    ui.label("Sign in to get your pages back on any device. They stay on this one too. It's optional.");
+                    ui.horizontal(|ui| {
+                        if ui.button("Sign in").clicked() {
+                            actions.push(Action::Account(Op::SignIn));
+                        }
+                        if ui.button("Not now").clicked() {
+                            actions.push(Action::Account(Op::NotNow));
+                        }
+                    });
+                });
+        });
 }
 
 /// The bar of what can be done with the selected row.

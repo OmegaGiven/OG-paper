@@ -11,6 +11,8 @@ const MB = 1024 * 1024;
 export const DEFAULTS = {
   /** Where the API is mounted on the host site. */
   prefix: '/paper/api',
+  /** Where to send people to sign in, from a native app ({next}: back here). */
+  signIn: '/account/?next={next}',
   /** Where to send people for more storage (the site's billing page), or null. */
   upgradeUrl: null,
   /** Bytes each free account may keep (pages, pictures, history). */

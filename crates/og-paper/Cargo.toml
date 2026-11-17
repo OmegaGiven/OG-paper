@@ -54,6 +54,14 @@ pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
 arboard = { version = "3", default-features = false, features = ["image-data", "wayland-data-control"] }
 egui-winit = { version = "0.36", default-features = false, features = ["links", "clipboard", "wayland", "x11"] }
 
+# Signing in to an account (see account.rs).
+[target.'cfg(not(any(target_os = "android", target_arch = "wasm32")))'.dependencies]
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+webbrowser = "1"
+
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+security-framework = "3"
+
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wgpu = { version = "30", features = ["webgl"] }
 wasm-bindgen = "=0.2.129"
