@@ -17,9 +17,11 @@ import { inflateSync } from 'zlib';
 
 export const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 // The web app under test: the local build (scripts/serve-web.py), or the
-// published one with UI_WEB=https://omegagiven.github.io/OG-paper.
+// published one with UI_WEB=https://omegagiven.github.io/OG-paper, or the
+// live web-dist build with UI_WEB=https://ogstudio.org/paper UI_APP=/ .
 export const WEB = (process.env.UI_WEB || 'http://127.0.0.1:8990').replace(/\/$/, '');
-const PKG = `${new URL(WEB).pathname.replace(/\/$/, '')}/app/pkg/og_paper.js`;
+const APP = process.env.UI_APP || '/app/';
+const PKG = `${new URL(WEB).pathname.replace(/\/$/, '')}${APP}pkg/og_paper.js`;
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 export const SIZES = {
@@ -121,7 +123,7 @@ export async function launch(size, { demo = false } = {}) {
     '--use-angle=vulkan', '--ignore-gpu-blocklist', ...(process.env.UI_NO_LNA ? ['--disable-features=LocalNetworkAccessChecks,PrivateNetworkAccessSendPreflights,PrivateNetworkAccessRespectPreflightResults,BlockInsecurePrivateNetworkRequests'] : []), '--hide-scrollbars', '--mute-audio',
     // A fake microphone that needs no permission prompt (audio clips).
     '--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream', 'about:blank',
-  ], { stdio: 'ignore' });
+  ], { stdio: process.env.UI_BROWSER_LOG ? 'inherit' : 'ignore' });
   children.push(c);
   let targets;
   for (let i = 0; i < 100; i++) {
@@ -197,7 +199,7 @@ export class T {
   async beat(ms = 600) { await sleep(this.demo ? ms : Math.min(ms, 150)); }
 
   /** Open the app with nothing saved (or `prefs`, the app's settings). */
-  async open(path = '/app/', { prefs = 'hints=off\n', fresh = true, hash = '' } = {}) {
+  async open(path = APP, { prefs = 'hints=off\n', fresh = true, hash = '' } = {}) {
     if (fresh) {
       await this.b.send('Page.navigate', { url: `${WEB}/robots-none.txt` });
       await sleep(300);

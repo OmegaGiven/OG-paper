@@ -135,7 +135,7 @@ reports features without tests and tests named here that don't exist.
 
 | ID | Feature | Where | Platforms | Tests |
 |---|---|---|---|---|
-| UI-01 | Menu (gear, top right) grouped in sections | gear button | W D M | ui:menu |
+| UI-01 | Menu (gear, top right) grouped in sections | gear button | W D M | ui:menu, ui:menu-tap |
 | UI-02 | Tool fan (undo, redo, tools) | Tool button (bottom right) | W D M | ui:draw-undo |
 | UI-03 | Quick toolbar with numbered slots and a hold slot per toolbar (the main toolbar’s is in use; tap it to use its tool; set it from the inventory) | Menu › UI settings › Quick toolbar | W D M | ui:tools-tour, ui:hold-slot, rust:hotbar::tests::slots_round_trip, rust:hotbar::tests::names_and_many_toolbars_survive |
 | UI-04 | Inventory: drag tools between slots (on a phone, toolbars past what fits beside it scroll sideways so it stays on the screen); drag onto the trash to delete; basic tools (undo, redo and every tool at its defaults, as the tool menu has them, then every plugin's tools; wrapping onto more lines as needed) to drag or tap onto a toolbar or the inventory, folded away with its title | Quick toolbar › bag | W D M | rust:hotbar::tests::inventory_keeps_a_free_row, todo, ui:basic-tools |
