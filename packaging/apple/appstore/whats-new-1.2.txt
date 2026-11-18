@@ -1,0 +1,1 @@
+Menus work by tap again: items in Settings, the main menu and the toolbar menu now do what you tap instead of closing the menu.
