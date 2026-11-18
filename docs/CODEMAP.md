@@ -57,7 +57,7 @@ Cloudflare Worker package mounted by omegagiven.com/ogstudio.org: `src/api.js` (
 | Sign-in (OG Studio or vault), profiles, switching | [VAULT.md](VAULT.md) | `og-vault.js`, `og-hosted.js`, `account.rs` |
 | Sync, offline merge, rooms | [SHARING.md](SHARING.md), [HOSTED.md](HOSTED.md) | `share.rs`, `net.rs`, `hosted/src/room.js` (vault: og-vault `paper.rs`) |
 | Self-hosted server | README "Run your own server" | `relay.rs`, `hub*.rs`, `Dockerfile` |
-| Store releases (App Store, Google Play, GitHub) | [RELEASING.md](RELEASING.md) | `.github/workflows/apple.yml`, `asc.yml`, `play.yml`, `release.yml`; `packaging/apple/asc/`, `packaging/android/`, `scripts/android-aab.sh` |
+| Store releases (App Store, Google Play, GitHub) | [RELEASING.md](RELEASING.md) | `.github/workflows/apple.yml`, `asc.yml`, `play.yml`, `release.yml`; `packaging/apple/asc/`, `packaging/android/`, `scripts/android-aab.sh`, `scripts/play-release.sh` |
 
 ## Build, test, deploy
 
@@ -67,4 +67,4 @@ Cloudflare Worker package mounted by omegagiven.com/ogstudio.org: `src/api.js` (
 - Vault test path (web): `scripts/deploy-vault-web.sh`. Android private mirror:
   `scripts/publish-android-vault.sh`. Public web: the `web-dist` branch (HQ).
 - Stores: GitHub Actions on the GitHub mirror (after `forge publish og-paper`): Apple release
-  (`apple.yml`), Google Play release (`play.yml`); see [RELEASING.md](RELEASING.md).
+  (`apple.yml`), Google Play release (`scripts/play-release.sh` via the forge; `play.yml` builds only); see [RELEASING.md](RELEASING.md).

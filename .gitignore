@@ -11,3 +11,4 @@ plugins/examples/audio-notes/target/
 plugins/examples/diagram-symbols/target/
 __pycache__/
 /dist-aab/
+/og-paper.aab

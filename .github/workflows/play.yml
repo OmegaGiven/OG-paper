@@ -1,10 +1,9 @@
 name: Google Play release
 
-# Run by hand (Actions > Google Play release > Run workflow). Builds the Play
-# bundle (.aab, signed with the upload key ANDROID_KEYSTORE_B64) and, with
-# "upload" on, puts it on a Play testing track through the service account
-# PLAY_SERVICE_ACCOUNT_JSON. Testing tracks first: production is a separate,
-# deliberate step in Play Console. One-time setup: docs/RELEASING.md.
+# Idle. Play releases go through the forge
+# (scripts/play-release.sh): the upload key and the Play service account stay
+# there, so the ANDROID_KEYSTORE_* and PLAY_SERVICE_ACCOUNT_JSON secrets this
+# workflow reads are deliberately not set on GitHub. See docs/RELEASING.md.
 on:
   workflow_dispatch:
     inputs:
@@ -19,7 +18,7 @@ on:
       upload:
         description: Upload to Google Play (off = build and sign only; the .aab is an artifact)
         type: boolean
-        default: true
+        default: false
       draft:
         description: Draft release (needed until the app's first review in Play Console)
         type: boolean
