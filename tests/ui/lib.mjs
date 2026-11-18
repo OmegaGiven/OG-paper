@@ -33,6 +33,10 @@ export const SIZES = {
   'ipad-shot': { width: 2064, height: 2752, deviceScaleFactor: 1, mobile: true, zoom: 2 },
   'iphone-preview': { width: 886, height: 1920, deviceScaleFactor: 1, mobile: true, zoom: 2 },
   'ipad-preview': { width: 1200, height: 1600, deviceScaleFactor: 1, mobile: true, zoom: 1.5 },
+  // Google Play: phone (at most 2:1), 7" and 10" tablet screenshots.
+  'android-shot': { width: 1080, height: 2160, deviceScaleFactor: 1, mobile: true, zoom: 2.5 },
+  'tab7-shot': { width: 1200, height: 1920, deviceScaleFactor: 1, mobile: true, zoom: 2 },
+  'tab10-shot': { width: 1600, height: 2560, deviceScaleFactor: 1, mobile: true, zoom: 2 },
 };
 /** Demos record at sizes made for publishing: 1920 x 1200 for desktop,
  *  1080 x 1920 (Shorts, TikTok, Reels) for phone. The page is laid out at
@@ -47,6 +51,10 @@ export const DEMO_SIZES = {
   'ipad-shot': { width: 2064, height: 2752, deviceScaleFactor: 1, mobile: true, zoom: 2 },
   'iphone-preview': { width: 886, height: 1920, deviceScaleFactor: 1, mobile: true, zoom: 2 },
   'ipad-preview': { width: 1200, height: 1600, deviceScaleFactor: 1, mobile: true, zoom: 1.5 },
+  // Google Play: phone (at most 2:1), 7" and 10" tablet screenshots.
+  'android-shot': { width: 1080, height: 2160, deviceScaleFactor: 1, mobile: true, zoom: 2.5 },
+  'tab7-shot': { width: 1200, height: 1920, deviceScaleFactor: 1, mobile: true, zoom: 2 },
+  'tab10-shot': { width: 1600, height: 2560, deviceScaleFactor: 1, mobile: true, zoom: 2 },
 };
 let SIZE_SET = SIZES;
 export const sizeOf = size => SIZE_SET[size];

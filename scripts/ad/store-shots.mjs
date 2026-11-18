@@ -1,7 +1,7 @@
 // App Store screenshots from the web app (the same app as the native
 // builds), with a caption bar. Needs a local server (scripts/serve-web.py)
 // and a headless Chromium-family browser on port 9334.
-//   node store-shots.mjs mac|iphone|ipad OUTDIR
+//   node store-shots.mjs mac|iphone|ipad|android|tab7|tab10 OUTDIR
 import { writeFileSync, mkdirSync } from 'fs';
 
 const KIND = process.argv[2];
@@ -12,6 +12,10 @@ const SIZES = {
   iphone: { width: 440, height: 956, deviceScaleFactor: 3, mobile: true },
   // 13" iPad: 2064 x 2752.
   ipad: { width: 1032, height: 1376, deviceScaleFactor: 2, mobile: true },
+  // Google Play: phone 1080 x 2160 (Play allows at most 2:1), 7" and 10" tablets.
+  android: { width: 432, height: 864, deviceScaleFactor: 2.5, mobile: true },
+  tab7: { width: 600, height: 960, deviceScaleFactor: 2, mobile: true },
+  tab10: { width: 800, height: 1280, deviceScaleFactor: 2, mobile: true },
 };
 const size = SIZES[KIND];
 
@@ -78,14 +82,18 @@ async function fresh(prefs) {
   // The tour card and toasts out of the way.
   await ev(`document.querySelectorAll('.og-card').forEach(c => c.hidden = true)`);
 }
+// Caption size: the App Store sets as before; Play tablets as big as the
+// scene shots (tests/ui/store-scenes.mjs caption), so a set matches.
+const capPx = KIND === 'mac' ? 30 : KIND.startsWith('tab') ? Math.round(23 * Math.min(size.width * size.deviceScaleFactor / 440, 3.2) / size.deviceScaleFactor) : 22;
+const capTop = KIND.startsWith('tab') ? `${Math.round(size.height * 0.075)}px` : '96px';
 async function caption(text, short) {
   if (KIND !== 'mac' && short) text = short;
   await ev(`(() => {
     let c = document.getElementById('shotcap');
     if (!c) { c = document.createElement('div'); c.id = 'shotcap'; document.body.append(c); }
     c.style.cssText = 'position:fixed;left:50%;transform:translateX(-50%);z-index:2147483647;pointer-events:none;white-space:nowrap;' +
-      'font:700 ${KIND === 'mac' ? 30 : 22}px system-ui,-apple-system,sans-serif;color:#fff;background:rgba(28,28,36,.88);' +
-      'padding:${KIND === 'mac' ? '12px 26px' : '9px 18px'};border-radius:16px;letter-spacing:.2px;top:${KIND === 'mac' ? '22px' : '96px'}';
+      'font:700 ${capPx}px system-ui,-apple-system,sans-serif;color:#fff;background:rgba(28,28,36,.88);' +
+      'padding:${KIND === 'mac' ? '12px 26px' : `${Math.round(capPx * 0.4)}px ${Math.round(capPx * 0.8)}px`};border-radius:16px;letter-spacing:.2px;top:${KIND === 'mac' ? '22px' : capTop}';
     c.textContent = ${JSON.stringify(text)};
   })()`);
   await sleep(300);
@@ -133,7 +141,7 @@ await shot('deep');
 await fresh('radialbar=off\nhints=off\n');
 await key('h', 'KeyH');
 if (KIND === 'mac') await tap(W / 2 - 200, H - 40);
-else if (KIND === 'ipad') await tap(45, 403);
+else if (KIND === 'ipad' || KIND.startsWith('tab')) await tap(45, 403);
 else await tap(36, 290);
 await caption('Keep your tools, exactly as you set them', 'Your tools, kept');
 await shot('tools');
