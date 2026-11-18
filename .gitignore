@@ -9,3 +9,5 @@ plugins/examples/starter/target/
 /out/
 plugins/examples/audio-notes/target/
 plugins/examples/diagram-symbols/target/
+__pycache__/
+/dist-aab/

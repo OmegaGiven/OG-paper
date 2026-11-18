@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The Play Store bundle's manifest (scripts/android-aab.sh fills in the
+     __NAME__s). Same app as cargo-apk's APK (crates/og-paper/Cargo.toml,
+     package.metadata.android), plus what Play's target API asks for. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="app.ogpaper"
+    android:versionCode="__VERSION_CODE__"
+    android:versionName="__VERSION_NAME__">
+    <uses-sdk android:minSdkVersion="29" android:targetSdkVersion="__TARGET_SDK__" />
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- enableOnBackInvokedCallback=false: from API 36 the back gesture
+         would otherwise no longer arrive as a key (the app maps it to Esc:
+         close menus, cancel an edit). -->
+    <application
+        android:label="OG Paper"
+        android:icon="@mipmap/ic_launcher"
+        android:hasCode="false"
+        android:enableOnBackInvokedCallback="false">
+        <activity
+            android:name="android.app.NativeActivity"
+            android:exported="true"
+            android:screenOrientation="unspecified"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|density">
+            <meta-data android:name="android.app.lib_name" android:value="og_paper" />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

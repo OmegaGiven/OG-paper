@@ -6,6 +6,8 @@
 
   listing.py --platform IOS --version 1.0 --build latest
       attach the newest processed build of that version
+  listing.py --platform IOS --version 1.2 --build 14 --wait 3600
+      attach build 14, waiting up to an hour for Apple to process it
   listing.py --platform IOS --version 1.0 --shots DIR --display APP_IPAD_PRO_3GEN_129
       replace that screenshot set (en-US) with the PNGs in DIR, in name order
   listing.py --platform MAC_OS --version 1.0 --notes FILE
@@ -95,13 +97,25 @@ def set_release(v, kind):
     print("release set to", kind)
 
 
-def attach_latest(aid, v, platform, ver):
-    builds = call("GET", "/v1/builds", **{
-        "filter[app]": aid, "filter[preReleaseVersion.version]": ver,
-        "filter[preReleaseVersion.platform]": platform,
-        "filter[processingState]": "VALID", "sort": "-uploadedDate", "limit": 1})["data"]
-    if not builds:
-        sys.exit("no processed build yet")
+def attach_build(aid, v, platform, ver, number="latest", wait=0):
+    """Attach a processed build of this version: the newest, or the one
+    with this build number. With wait (seconds), wait for Apple to finish
+    processing it (an upload takes 5 to 30 minutes)."""
+    q = {"filter[app]": aid, "filter[preReleaseVersion.version]": ver,
+         "filter[preReleaseVersion.platform]": platform,
+         "sort": "-uploadedDate", "limit": 1}
+    if number != "latest":
+        q["filter[version]"] = number
+    deadline = time.time() + wait
+    while True:
+        builds = call("GET", "/v1/builds", **q)["data"]
+        state = builds[0]["attributes"]["processingState"] if builds else "NOT_UPLOADED_YET"
+        if state == "VALID":
+            break
+        if state in ("FAILED", "INVALID") or time.time() > deadline:
+            sys.exit(f"build {number} of {platform} {ver}: {state}")
+        print(f"build {number}: {state}, waiting")
+        time.sleep(60)
     b = builds[0]
     call("PATCH", f"/v1/appStoreVersions/{v['id']}/relationships/build",
          {"data": {"type": "builds", "id": b["id"]}})
@@ -213,7 +227,9 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--platform", default="IOS")
     p.add_argument("--version", default="1.0")
-    p.add_argument("--build")
+    p.add_argument("--build", help="build number to attach, or latest")
+    p.add_argument("--wait", type=int, default=0,
+                   help="seconds to wait for the build to finish processing")
     p.add_argument("--shots")
     p.add_argument("--display")
     p.add_argument("--notes")
@@ -232,7 +248,7 @@ def main():
     if a.release:
         set_release(v, a.release)
     if a.build:
-        attach_latest(aid, v, a.platform, a.version)
+        attach_build(aid, v, a.platform, a.version, a.build, a.wait)
     if a.shots:
         replace_shots(v, a.shots, a.display)
     if a.notes:

@@ -24,7 +24,8 @@ Inside `crates/og-paper/src`:
 | `net.rs` | live connections: host/guest, relay links, WebSocket client (bearer for accounts) |
 | `relay.rs`, `hub.rs`, `hubconsole.rs`, `hubpage.rs`, `pages.rs` | self-hosted relay / page server and the Pages panel's servers |
 | `account.rs` | native accounts: OG Studio (poll sign-in) and vaults (PKCE + loopback), profiles, tokens ([VAULT.md](VAULT.md), [NATIVE-SIGN-IN.md](NATIVE-SIGN-IN.md)) |
-| `android.rs` | Android only (JNI): immersive mode (system bars hidden, edge swipe shows them) and the bar/cutout insets fed to egui as the safe area; back button = Esc; touch taps are hit-tested in `window_event` so a menu item gets its tap before the canvas closes the menu |
+| `android.rs` | Android only (JNI): immersive mode (system bars hidden, edge swipe shows them) and the bar/cutout insets fed to egui as the safe area; back button = Esc |
+| `egui_io.rs` | winit events into egui: `egui-winit` natively, its own translator on the web. Touch: every build hit-tests where a finger lands (web here, Android/iOS in `lib.rs` `window_event`), so a tap on a menu or panel goes to it, not to the canvas (which would close the menu) |
 | `web.rs` | the wasm bridge to `web/app/og-web.js` (`og_*` exports, events) |
 | `mcp.rs`, `script.rs`, `plugin.rs` | MCP server, commands API, plugins ([MCP.md](MCP.md), [PLUGINS.md](PLUGINS.md)) |
 | `export.rs`, `import.rs`, `pdf.rs`, `snapshot.rs` | files in and out |
@@ -56,7 +57,7 @@ Cloudflare Worker package mounted by omegagiven.com/ogstudio.org: `src/api.js` (
 | Sign-in (OG Studio or vault), profiles, switching | [VAULT.md](VAULT.md) | `og-vault.js`, `og-hosted.js`, `account.rs` |
 | Sync, offline merge, rooms | [SHARING.md](SHARING.md), [HOSTED.md](HOSTED.md) | `share.rs`, `net.rs`, `hosted/src/room.js` (vault: og-vault `paper.rs`) |
 | Self-hosted server | README "Run your own server" | `relay.rs`, `hub*.rs`, `Dockerfile` |
-| App Store / releases | `packaging/apple/`, `.github/workflows/` | |
+| Store releases (App Store, Google Play, GitHub) | [RELEASING.md](RELEASING.md) | `.github/workflows/apple.yml`, `asc.yml`, `play.yml`, `release.yml`; `packaging/apple/asc/`, `packaging/android/`, `scripts/android-aab.sh` |
 
 ## Build, test, deploy
 
@@ -65,3 +66,5 @@ Cloudflare Worker package mounted by omegagiven.com/ogstudio.org: `src/api.js` (
   `hosted/test/run-browser-e2e.sh`; vault `tests/vault/run-e2e.sh`, `tests/vault/run-native.sh`.
 - Vault test path (web): `scripts/deploy-vault-web.sh`. Android private mirror:
   `scripts/publish-android-vault.sh`. Public web: the `web-dist` branch (HQ).
+- Stores: GitHub Actions on the GitHub mirror (after `forge publish og-paper`): Apple release
+  (`apple.yml`), Google Play release (`play.yml`); see [RELEASING.md](RELEASING.md).

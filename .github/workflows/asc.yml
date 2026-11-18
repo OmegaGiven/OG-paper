@@ -1,0 +1,100 @@
+name: App Store Connect
+
+# Run by hand. Everything around a release that isn't the release itself
+# (that is "Apple release", apple.yml). See docs/RELEASING.md.
+#
+#   status    where OG Paper stands: versions, builds, listings, submissions (reads only)
+#   review    a version's whole listing, screenshots kept as artifact "listing" (reads only)
+#   listing   edit the version in preparation: screenshots, previews, description,
+#             notes, copyright, What's New (never submits)
+#   submit    send the prepared version to App Review (release stays as set: MANUAL)
+#   resubmit  after a rejection: cancel the rejected submission and submit again
+#   cancel    pull the version from review
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        type: choice
+        options: [status, review, listing, submit, resubmit, cancel]
+        default: status
+      platform:
+        type: choice
+        options: [IOS, MAC_OS]
+        default: IOS
+      version:
+        description: Version, e.g. 1.2 (not needed for status)
+        default: ""
+      shots:
+        description: "listing: screenshot folder under packaging/apple/appstore (empty = none)"
+        default: ""
+      display:
+        description: "listing: screenshot display type (APP_IPAD_PRO_3GEN_129, APP_IPHONE_67)"
+        default: APP_IPAD_PRO_3GEN_129
+      previews:
+        description: "listing: preview folder under packaging/apple/appstore (empty = none)"
+        default: ""
+      preview_type:
+        description: "listing: IPHONE_67 or IPAD_PRO_3GEN_129"
+        default: IPHONE_67
+      files:
+        description: "listing: description=FILE notes=FILE whats_new=FILE copyright=TEXT (space separated, files under packaging/apple/appstore)"
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: apple-release
+  cancel-in-progress: false
+
+jobs:
+  asc:
+    runs-on: ubuntu-latest
+    env:
+      ASC_KEY: ${{ secrets.APPLE_API_KEY }}
+      ASC_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+      ASC_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+      ACTION: ${{ inputs.action }}
+      PLATFORM: ${{ inputs.platform }}
+      VERSION: ${{ inputs.version }}
+      FILES: ${{ inputs.files }}
+    steps:
+      - uses: actions/checkout@v5
+      - run: pip install pyjwt cryptography
+      - name: ${{ inputs.action }}
+        run: |
+          set -euo pipefail
+          A=packaging/apple/appstore
+          cd packaging/apple/asc
+          need_version() { [ -n "$VERSION" ] || { echo "::error::$ACTION needs a version"; exit 1; }; }
+          case "$ACTION" in
+            status) ;;
+            review)
+              need_version
+              python3 review.py --platform "$PLATFORM" --version "$VERSION" --out "$GITHUB_WORKSPACE/listing" ;;
+            listing)
+              need_version
+              args=(--platform "$PLATFORM" --version "$VERSION")
+              if [ -n "${{ inputs.shots }}" ]; then args+=(--shots "../appstore/${{ inputs.shots }}" --display "${{ inputs.display }}"); fi
+              if [ -n "${{ inputs.previews }}" ]; then args+=(--previews "../appstore/${{ inputs.previews }}" --preview-type "${{ inputs.preview_type }}"); fi
+              for kv in $FILES; do
+                k=${kv%%=*} v=${kv#*=}
+                case "$k" in
+                  description) args+=(--description "../appstore/$v") ;;
+                  notes) args+=(--notes "../appstore/$v") ;;
+                  whats_new) args+=(--whats-new "../appstore/$v") ;;
+                  copyright) args+=(--copyright "${v//_/ }") ;;
+                  *) echo "::error::unknown $k"; exit 1 ;;
+                esac
+              done
+              python3 listing.py "${args[@]}" ;;
+            submit) need_version; python3 submit.py --platform "$PLATFORM" --version "$VERSION" ;;
+            resubmit) need_version; python3 submit.py --platform "$PLATFORM" --version "$VERSION" --fresh ;;
+            cancel) need_version; python3 submit.py --platform "$PLATFORM" --version "$VERSION" --cancel ;;
+          esac
+          python3 status.py
+      - uses: actions/upload-artifact@v4
+        if: inputs.action == 'review'
+        with:
+          name: listing
+          path: listing/

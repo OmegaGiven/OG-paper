@@ -10,7 +10,7 @@
 #              window on screen yet (the App Review "empty window")
 #   readonly   the home folder can't be written
 # A case fails if no UI reached the screen. Linux only; the Mac's own launch
-# test is in .github/workflows/appstore.yml.
+# test is in .github/workflows/apple.yml (job mac).
 set -uo pipefail
 bin=$(realpath "$1"); out=$2; expect_blank=${3:-}
 mkdir -p "$out"; out=$(realpath "$out")

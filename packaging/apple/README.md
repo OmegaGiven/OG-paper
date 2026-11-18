@@ -10,31 +10,15 @@
 - `macos/Info.plist.in`: the bundle's Info.plist (`__VERSION__` and
   `__BUILD__` are filled in by the workflow).
 
-## Mac App Store builds
+## Builds and releases
 
-GitHub Actions > **Mac App Store** > Run workflow. It builds a universal
-app, signs it, packages a signed `.pkg`, validates it with Apple and
-uploads it to App Store Connect (TestFlight), unless "upload" is off. The
-version must match the version being prepared in App Store Connect; the
-build number is the run number, so it always grows.
+`.github/workflows/apple.yml` builds, tests, signs and uploads both apps and prepares the
+version in App Store Connect; `asc.yml` does the rest (status, listing, submit). How to run
+them and the secrets they need: [docs/RELEASING.md](../../docs/RELEASING.md).
 
-Before signing, the workflow launches a copy in the real sandbox on a clean
-container (`tests/launch/mac-launch.sh`) and stops if the UI doesn't reach the
-screen. Its screenshots and `launch.log` are the `mac-launch-test` artifact. If
-the runner itself can't show a window, turn off "Stop if the launch test fails"
-and look at the artifact. The workflow uploads a build; it never submits for
-review (that is **App Store submit**).
+- `ios/assemble.sh`: the iOS app bundle (Info.plist, icon); signing is in the workflow.
+- `asc/`: App Store Connect API scripts (`status.py`, `next_build.py`, `listing.py`,
+  `submit.py`, `review.py`).
+- `appstore/`: store text (descriptions, What's New, review notes) and screenshots.
 
-Bundle ID `com.omegagiven.ogpaper`, team `FGFW7ZAJUC`. Repository secrets:
-
-| Secret | What |
-| --- | --- |
-| `APPLE_DIST_CERTIFICATE`, `_PASSWORD` | Apple Distribution certificate (.p12, base64) and its password |
-| `APPLE_DIST_SIGNING_IDENTITY` | `Apple Distribution: <account holder> (FGFW7ZAJUC)` |
-| `APPLE_INSTALLER_CERTIFICATE`, `_PASSWORD` | Mac Installer Distribution certificate (.p12, base64) and its password |
-| `APPLE_INSTALLER_SIGNING_IDENTITY` | `3rd Party Mac Developer Installer: <account holder> (FGFW7ZAJUC)` |
-| `APPLE_MAC_PROVISIONING_PROFILE` | the Mac App Store profile (base64) |
-| `APPLE_API_KEY`, `APPLE_API_KEY_ID`, `APPLE_API_ISSUER` | App Store Connect API key (.p8 contents), its ID and the issuer ID |
-
-`.p12` files made with OpenSSL 3 need `openssl pkcs12 -export -legacy`, or
-the Mac keychain refuses them.
+Bundle ID `com.omegagiven.ogpaper`, team `FGFW7ZAJUC`.

@@ -1,0 +1,85 @@
+name: Google Play release
+
+# Run by hand (Actions > Google Play release > Run workflow). Builds the Play
+# bundle (.aab, signed with the upload key ANDROID_KEYSTORE_B64) and, with
+# "upload" on, puts it on a Play testing track through the service account
+# PLAY_SERVICE_ACCOUNT_JSON. Testing tracks first: production is a separate,
+# deliberate step in Play Console. One-time setup: docs/RELEASING.md.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version name shown in the store, e.g. 1.0
+        default: "1.0"
+      track:
+        type: choice
+        description: internal = internal testing, alpha = closed testing, beta = open testing
+        options: [internal, alpha, beta]
+        default: internal
+      upload:
+        description: Upload to Google Play (off = build and sign only; the .aab is an artifact)
+        type: boolean
+        default: true
+      draft:
+        description: Draft release (needed until the app's first review in Play Console)
+        type: boolean
+        default: true
+      notes:
+        description: Release notes file under packaging/android (empty = none)
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: play-release
+  cancel-in-progress: false
+
+jobs:
+  play:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: play
+      - run: cargo install cargo-apk --locked
+      - name: Android SDK pieces (API 36)
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "build-tools;36.0.0" >/dev/null
+      - name: Build the bundle
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          [ -n "$KEYSTORE_B64" ] || { echo "::error::secret ANDROID_KEYSTORE_B64 is missing"; exit 1; }
+          echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/upload.keystore"
+          export KEYSTORE="$RUNNER_TEMP/upload.keystore" ANDROID_NDK_ROOT="$ANDROID_NDK_LATEST_HOME"
+          [ -n "$KEY_PASSWORD" ] || unset KEY_PASSWORD
+          [ -n "$KEY_ALIAS" ] || unset KEY_ALIAS
+          # The version code only grows: 1000 + this workflow's run number.
+          scripts/android-aab.sh "${{ inputs.version }}" "$((1000 + ${{ github.run_number }}))" og-paper.aab
+          rm -f "$RUNNER_TEMP/upload.keystore"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: og-paper-aab
+          path: og-paper.aab
+          retention-days: 30
+      - name: Upload to Google Play
+        if: inputs.upload
+        env:
+          PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+        run: |
+          set -euo pipefail
+          [ -n "$PLAY_SERVICE_ACCOUNT_JSON" ] || { echo "::error::secret PLAY_SERVICE_ACCOUNT_JSON is missing"; exit 1; }
+          pip install google-auth requests >/dev/null
+          args=(upload og-paper.aab --track "${{ inputs.track }}" --status "${{ inputs.draft && 'draft' || 'completed' }}")
+          if [ -n "${{ inputs.notes }}" ]; then args+=(--notes "packaging/android/${{ inputs.notes }}"); fi
+          python3 packaging/android/play.py "${args[@]}"
