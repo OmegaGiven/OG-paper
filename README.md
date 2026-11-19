@@ -4,6 +4,17 @@
 
 Write a sentence inside the dot of an "i", then zoom out until a whole notebook is a speck. Pick up the same canvas on your Windows laptop, Android phone, iPad or a browser. And if this project ever stops, your files still open: the format is openly documented, stored in SQLite, and readable with a tiny standard-library Python script.
 
+## Become a tester (Android)
+
+OG Paper is in Google's required closed test. We need **12 people for 14 days** before it can go public on Google Play. Takes two minutes, and you get the app early.
+
+1. **Join the tester group** (any Google account, free): <https://groups.google.com/g/ogpaper-testers>
+2. **Opt in on the web** (same Google account): <https://play.google.com/apps/testing/app.ogpaper>
+3. **Install from Google Play:** <https://play.google.com/store/apps/details?id=app.ogpaper>
+4. **Keep it installed for 14 days.** Opening it now and then helps. Tell us what breaks: omegagiven9@gmail.com.
+
+Android only, for now.
+
 > **Status: Phase 1 (the app), early alpha.** Drawing, files and the web app work on Windows, macOS, Linux, Android and the browser — see [What works today](#what-works-today). The Phase 0 spike flies from 10^-0.6 to 10^49 zoom over a 1M-stroke canvas at ~6,000 fps on desktop ([`docs/PHASE0.md`](docs/PHASE0.md)). Design spec: [`docs/DESIGN.md`](docs/DESIGN.md).
 
 ## Why
