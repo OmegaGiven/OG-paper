@@ -1,0 +1,1 @@
+Draw anything, then zoom in forever. Portals let a window show another part of your canvas, live, so a street can go on without end.
