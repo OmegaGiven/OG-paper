@@ -6320,14 +6320,6 @@ fn app_menu(ctx: &egui::Context, st: &mut UiState, g: &Geo, actions: &mut Vec<Ac
             if st.menu != Menu::App {
                 let info = format!("10^{:.1}", st.zoom_log10 + 0.0);
                 label_right(&p, pos2(g.app.x + g.r, g.app.y + g.r + 12.0), &info);
-                if BETA {
-                    let w = p
-                        .layout_no_wrap(info, egui::FontId::proportional(11.0), INKY)
-                        .size()
-                        .x
-                        + 10.0;
-                    beta_chip(&p, g.app.x + g.r - w, g.app.y + g.r + 12.0);
-                }
             }
         });
     if st.menu != Menu::App {
@@ -6352,9 +6344,8 @@ fn app_menu(ctx: &egui::Context, st: &mut UiState, g: &Geo, actions: &mut Vec<Ac
         - 16.0;
     let sections = app_sections(&items);
     let head_h = if st.touch_ui { 28.0 } else { 24.0 };
-    let beta_h = if BETA { head_h } else { 0.0 };
     let h = (items.len() as f32 * row_h + sections.len() as f32 * head_h)
-        .min((room - beta_h).max(row_h * 3.0));
+        .min(room.max(row_h * 3.0));
     let pivot = match (right, below) {
         (true, true) => Align2::RIGHT_TOP,
         (true, false) => Align2::RIGHT_BOTTOM,
@@ -6380,22 +6371,6 @@ fn app_menu(ctx: &egui::Context, st: &mut UiState, g: &Geo, actions: &mut Vec<Ac
                 })
                 .show(ui, |ui| {
                     ui.set_width(w);
-                    if BETA {
-                        let (rect, _) = ui.allocate_exact_size(vec2(w, head_h), Sense::hover());
-                        let p = ui.painter();
-                        let g = p.layout_no_wrap(
-                            "OG Paper".into(),
-                            egui::FontId::proportional(13.0),
-                            INKY,
-                        );
-                        let gw = g.size().x;
-                        p.galley(
-                            pos2(rect.left() + 10.0, rect.center().y - g.size().y * 0.5),
-                            g,
-                            INKY,
-                        );
-                        beta_chip(p, rect.left() + 10.0 + gw + 8.0 + 42.0, rect.center().y);
-                    }
                     // Scroll only when it does not fit, at exactly the room
                     // there is (a scroll area left to size itself comes out
                     // short).
@@ -6998,30 +6973,6 @@ fn app_icon(
 }
 
 /// A label whose right edge is at `at.x`, centred on `at.y`.
-/// The suite's Beta switch (og-design `src/beta.mjs`, kit 0.15.0): the whole OG
-/// suite is in beta until a full release is confirmed by a few users. Set to
-/// false to drop every chip here.
-pub const BETA: bool = true;
-
-/// The kit's Beta chip (`.og-beta`: accent-soft fill, accent text, 16 px high,
-/// small caps). Right edge at `right`, centred on `y`; returns its left edge.
-fn beta_chip(p: &egui::Painter, right: f32, y: f32) -> f32 {
-    let galley = p.layout_no_wrap(
-        "BETA".into(),
-        egui::FontId::proportional(10.0),
-        Color32::from_rgb(0x2f, 0x6f, 0x5e),
-    );
-    let size = vec2(galley.size().x + 12.0, 16.0);
-    let rect = Rect::from_min_size(pos2(right - size.x, y - 8.0), size);
-    p.rect_filled(rect, 8.0, Color32::from_rgb(0xe3, 0xf0, 0xec));
-    p.galley(
-        pos2(rect.left() + 6.0, rect.center().y - galley.size().y * 0.5),
-        galley,
-        Color32::from_rgb(0x2f, 0x6f, 0x5e),
-    );
-    rect.left()
-}
-
 fn label_right(p: &egui::Painter, at: Pos2, text: &str) {
     let font = egui::FontId::proportional(11.0);
     let galley = p.layout_no_wrap(text.to_string(), font, INKY);

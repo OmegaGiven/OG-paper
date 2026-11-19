@@ -18,7 +18,7 @@ Inside `crates/og-paper/src`:
 | --- | --- |
 | `lib.rs` | `App`: state, actions, the frame loop, commands (`Cmd`), data dir |
 | `render.rs`, `*.wgsl` | drawing on the GPU |
-| `ui.rs` | every menu, panel and card (egui), incl. Pages and the account section; the Beta chip (`BETA` switch, og-design kit 0.15.0 look) by the gear and atop the app menu |
+| `ui.rs` | every menu, panel and card (egui), incl. Pages and the account section |
 | `edit.rs`, `objects.rs`, `shapes.rs`, `textbox.rs`, … | tools and canvas objects |
 | `share.rs`, `seal.rs`, `wire.rs` | the change log, sealing (ChaCha20-Poly1305, Ed25519), frames ([SHARING.md](SHARING.md)) |
 | `net.rs` | live connections: host/guest, relay links, WebSocket client (bearer for accounts) |
