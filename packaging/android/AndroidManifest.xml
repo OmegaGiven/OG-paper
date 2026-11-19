@@ -15,6 +15,7 @@
         android:label="OG Paper"
         android:icon="@mipmap/ic_launcher"
         android:hasCode="false"
+        android:allowBackup="false"
         android:enableOnBackInvokedCallback="false">
         <activity
             android:name="android.app.NativeActivity"

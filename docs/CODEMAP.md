@@ -18,7 +18,7 @@ Inside `crates/og-paper/src`:
 | --- | --- |
 | `lib.rs` | `App`: state, actions, the frame loop, commands (`Cmd`), data dir |
 | `render.rs`, `*.wgsl` | drawing on the GPU |
-| `ui.rs` | every menu, panel and card (egui), incl. Pages and the account section |
+| `ui.rs` | every menu, panel and card (egui), incl. Pages and the account section; the Beta chip (`BETA` switch, og-design kit 0.15.0 look) by the gear and atop the app menu |
 | `edit.rs`, `objects.rs`, `shapes.rs`, `textbox.rs`, … | tools and canvas objects |
 | `share.rs`, `seal.rs`, `wire.rs` | the change log, sealing (ChaCha20-Poly1305, Ed25519), frames ([SHARING.md](SHARING.md)) |
 | `net.rs` | live connections: host/guest, relay links, WebSocket client (bearer for accounts) |
@@ -41,6 +41,7 @@ Inside `crates/og-paper/src`:
 | `vault/og-profiles.js`, `vault/og-app-login.js` | copies of og-vault `clients/og-profiles` |
 | `og-chat.js` | chat on hosted pages |
 | `sw.js` | service worker (offline) |
+| `vendor/pdfjs/` | our own pdf.js 4.10.38 (no third-party script origin) |
 | `pkg/` | the wasm build (not in git; `scripts/build-web.sh` or a runner) |
 
 ## Hosted (OG Studio server, `hosted/`)
@@ -58,6 +59,8 @@ Cloudflare Worker package mounted by omegagiven.com/ogstudio.org: `src/api.js` (
 | Sync, offline merge, rooms | [SHARING.md](SHARING.md), [HOSTED.md](HOSTED.md) | `share.rs`, `net.rs`, `hosted/src/room.js` (vault: og-vault `paper.rs`) |
 | Self-hosted server | README "Run your own server" | `relay.rs`, `hub*.rs`, `Dockerfile` |
 | Store releases (App Store, Google Play, GitHub) | [RELEASING.md](RELEASING.md) | `.github/workflows/apple.yml`, `asc.yml`, `play.yml`, `release.yml`; `packaging/apple/asc/`, `packaging/android/`, `scripts/android-aab.sh`, `scripts/play-release.sh` |
+
+Security: [SECURITY-AUDIT.md](SECURITY-AUDIT.md) (current pass, open owner items), [LAUNCH-AUDIT.md](LAUNCH-AUDIT.md) (hosted server).
 
 ## Build, test, deploy
 

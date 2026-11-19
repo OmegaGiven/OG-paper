@@ -1421,8 +1421,9 @@ export async function start({ mode = 'app' } = {}) {
     }
   }
   const isPdf = f => f.type === 'application/pdf' || /\.pdf$/i.test(f.name || '');
-  // PDFs are drawn by pdf.js, fetched the first time one is imported.
-  const PDFJS = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/';
+  // PDFs are drawn by pdf.js 4.10.38, our own copy (vendor/pdfjs/: no third-party
+  // script origin, works under a strict CSP), loaded the first time one is imported.
+  const PDFJS = new URL('./vendor/pdfjs/', import.meta.url).href;
   let pdfjs = null;
   async function addPdf(f, at) {
     const name = f.name || 'PDF';
@@ -1432,7 +1433,7 @@ export async function start({ mode = 'app' } = {}) {
         pdfjs = await import(PDFJS + 'pdf.min.mjs');
         pdfjs.GlobalWorkerOptions.workerSrc = PDFJS + 'pdf.worker.min.mjs';
       }
-      const doc = await pdfjs.getDocument({ data: new Uint8Array(await f.arrayBuffer()) }).promise;
+      const doc = await pdfjs.getDocument({ data: new Uint8Array(await f.arrayBuffer()), isEvalSupported: false }).promise;
       const total = Math.min(doc.numPages, 200);
       if (doc.numPages > total) say(`${name} has ${doc.numPages} pages; importing the first ${total}`);
       for (let i = 0; i < total; i++) {

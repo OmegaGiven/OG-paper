@@ -198,7 +198,33 @@ mod imp {
         if host.is_empty() || host.contains('@') {
             return None;
         }
-        Some(format!("{scheme}://{}", host.to_ascii_lowercase()))
+        let host = host.to_ascii_lowercase();
+        // Tokens and the sign-in code travel to this address: plain http only
+        // where the network is the person's own (LAN, tailnet, loopback).
+        if scheme == "http" && !private_host(&host) {
+            return None;
+        }
+        Some(format!("{scheme}://{host}"))
+    }
+
+    /// A host (with optional :port) that is not on the public internet: a
+    /// bare name, `.local`/`.lan`/`.home`/`.internal`, or a loopback, private,
+    /// link-local or tailnet (100.64/10) address.
+    pub(super) fn private_host(hostport: &str) -> bool {
+        let h = match hostport.strip_prefix('[') {
+            Some(r) => r.split(']').next().unwrap_or(""),
+            None => hostport.rsplit_once(':').map_or(hostport, |(h, p)| if p.chars().all(|c| c.is_ascii_digit()) { h } else { hostport }),
+        };
+        if let Ok(ip) = h.parse::<std::net::IpAddr>() {
+            return match ip {
+                std::net::IpAddr::V4(v) => {
+                    let o = v.octets();
+                    v.is_loopback() || v.is_private() || v.is_link_local() || (o[0] == 100 && (64..128).contains(&o[1]))
+                }
+                std::net::IpAddr::V6(v) => v.is_loopback() || (v.segments()[0] & 0xfe00) == 0xfc00 || (v.segments()[0] & 0xffc0) == 0xfe80,
+            };
+        }
+        !h.contains('.') || [".local", ".lan", ".home", ".internal", ".localdomain"].iter().any(|s| h.ends_with(s))
     }
 
     /// A connect link (`ogvault://connect?u=&id=&n=`, the same on an https
@@ -1238,6 +1264,13 @@ mod tests {
         assert_eq!(normalize("vault.ts.net/"), Some("https://vault.ts.net".into()));
         assert_eq!(normalize("HTTP://Host:8610/x?y"), Some("http://host:8610".into()));
         assert_eq!(normalize("ftp://x"), None);
+        // Plain http only on a private network; never to the public internet.
+        assert_eq!(normalize("http://192.168.0.137:8610"), Some("http://192.168.0.137:8610".into()));
+        assert_eq!(normalize("http://100.101.2.3:8610"), Some("http://100.101.2.3:8610".into()));
+        assert_eq!(normalize("http://vault.local"), Some("http://vault.local".into()));
+        assert_eq!(normalize("http://example.com"), None);
+        assert_eq!(normalize("http://8.8.8.8:80"), None);
+        assert_eq!(normalize("http://100.200.1.1"), None);
         assert_eq!(normalize("a b"), None);
         assert_eq!(
             parse_connect("ogvault://connect?u=https%3A%2F%2Fog-host1.ts.net%3A8610&id=6f1c&n=Home"),

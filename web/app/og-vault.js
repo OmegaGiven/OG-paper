@@ -109,10 +109,21 @@ export async function activeSession() {
   return p && t ? new VaultSession(p, t) : null;
 }
 
+/** Loopback, private, link-local, tailnet (100.64/10) or a bare / .local-style name. */
+export function privateHost(h) {
+  h = String(h).toLowerCase().replace(/^\[|\]$/g, '');
+  const m = h.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
+  if (m) { const [a, b] = [+m[1], +m[2]]; return a === 10 || a === 127 || (a === 172 && b >= 16 && b < 32) || (a === 192 && b === 168) || (a === 169 && b === 254) || (a === 100 && b >= 64 && b < 128); }
+  if (h.includes(':')) return h === '::1' || /^f[cd]/.test(h) || /^fe[89ab]/.test(h);
+  return !h.includes('.') || /\.(local|lan|home|internal|localdomain)$/.test(h);
+}
+
 /** Sign-in at a vault: probe it, then off to its sign-in page (this page comes back). */
 export async function signInAt(text) {
   const c = parseConnectLink(text);
   if (!c) return { ok: false, error: 'Enter a vault address' };
+  // Tokens go to this address: plain http only on a private network.
+  if (/^http:/i.test(c.address) && !privateHost(new URL(c.address).hostname)) return { ok: false, error: 'Use https for a vault on the internet' };
   const r = await startLogin({
     address: c.address, clientId: CLIENT_ID, redirectUri: location.origin + location.pathname,
     device: `OG Paper · ${deviceName()}`,

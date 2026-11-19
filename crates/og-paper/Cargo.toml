@@ -98,6 +98,8 @@ name = "android.permission.INTERNET"
 [package.metadata.android.application]
 label = "OG Paper"
 icon = "@mipmap/ic_launcher"
+# Tokens live in the app's private storage: keep them out of cloud backups and device-to-device transfer.
+allow_backup = false
 
 [package.metadata.android.application.activity]
 orientation = "unspecified"
