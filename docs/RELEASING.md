@@ -69,9 +69,14 @@ Package `app.ogpaper`, Play Console app id 4974630082929640996 (account 78478774
 Set up by task #844 on 2026-11-18; the earlier plan (GitHub secrets, first bundle by hand) is in
 [archive/RELEASING-PLAY-BEFORE-844.md](archive/RELEASING-PLAY-BEFORE-844.md).
 
-**State:** app is a Play Console *draft* (not public). Play App Signing is on with a
-Google-generated app signing key; our key is only the upload key. Internal testing has
-1.0 (1001), rolled out by the script (1000 was the first, rolled out in Play Console). Store listing, app content, closed test and production are not done.
+**State (2026-11-19, task #847):** app is a Play Console *draft* (not public). Play App Signing is on
+with a Google-generated app signing key; our key is only the upload key. Internal testing has
+1.0 (1001). Every "Finish setting up your app" item is done: store listing (`packaging/android/play/`),
+category Art & Design, contact omegagiven9@gmail.com + https://ogstudio.org/paper/, privacy policy
+https://ogstudio.org/paper/privacy/, content rating (IARC: Everyone / PEGI 3, "Users Interact"),
+target audience 13+, ads none, Data safety. Closed testing (alpha) has 1.0 (1001) saved with 178
+countries, the "Fulfillment testers" email list and feedback URL ogstudio.org/feedback; the
+15 changes wait in Publishing overview, not yet sent for review.
 
 ### Releasing a build (the forge path, no key on any laptop or on GitHub)
 
@@ -117,20 +122,14 @@ stay on the forge), so it stops at "secret ANDROID_KEYSTORE_B64 is missing". Rel
 
 ### Still the owner's (Play Console)
 
-1. **Testers**: Internal testing > Testers > Create email list (e.g. "OG Paper testers" with your
-   own Google account), tick it, Save; then open the opt-in link on the phone. Until a list is
-   ticked, the internal release reaches nobody. (The forge browser's `key Enter` sends no key
-   code, so agents can't add emails to Play's list field yet.)
-2. **Store listing**: text, icon, feature graphic and phone / 7" / 10" screenshots live in
-   `packaging/android/play/` and go up with `scripts/play-listing.sh` (one edit, committed).
-   The service account needs Play permission *Manage store presence* for that commit (without it:
-   403 "The caller does not have permission"). Category Art & Design, contact email and privacy
-   policy URL `https://ogstudio.org/paper/privacy/` (web-dist `privacy/`, source
-   `web/privacy/`) are set in Play Console.
-3. **App content**: privacy policy; ads = none; app access (sign-in optional); content rating
-   (users can share pages and chat = user interaction / UGC); target audience 13+; data safety
-   (optional OG Studio account: email, name, pages, chat; encrypted in transit; deletion on
-   request); account deletion URL.
-4. **Closed test**: new personal accounts need **12+ testers opted in for 14 days** on a closed
-   track (`--track alpha`) before *Apply for production*.
-5. **Production**: apply, then promote the tested release yourself.
+1. **Privacy page live**: `https://ogstudio.org/paper/privacy/` must answer 200 before review (Play's
+   quick checks block on the 404: privacy policy, account deletion and data deletion URLs). It is
+   on web-dist `80ca10a`; omegagiven-com needs `public/paper` bumped to it and deployed.
+2. **Testers**: this is a personal account, so Production needs a closed test with **12+ testers
+   opted in for 14 days**. Add Gmail addresses to an email list on Closed testing - Alpha >
+   Testers (the forge browser can't type into Play's email-chip field), Save.
+3. **Send for review**: Publishing overview > *Send 15 changes for review* (closed test + listing
+   + app content). Managed publishing is off, so the closed test goes live when approved; share
+   the opt-in link from the Testers tab.
+4. **Production**: after 14 days with 12+ testers: Dashboard > *Apply for production*, answer the
+   closed-test questions, then promote the tested release yourself.

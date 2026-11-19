@@ -4,12 +4,13 @@
 #
 #   scripts/play-listing.sh [--text-only] [--website URL]
 #
-# Sets title, short and full description (listing/*.txt), the contact website,
-# and replaces the icon, feature graphic and phone / 7" / 10" tablet
-# screenshots (phone/, tab7/, tab10/; regenerate with
+# Sets title, short and full description (listing/*.txt), and replaces the icon,
+# feature graphic and phone / 7" / 10" tablet screenshots when they differ
+# from Play's (re-uploading identical images makes the commit fail with 403) (phone/, tab7/, tab10/; regenerate with
 # `node tests/ui/features/store-play.mjs` and make-art.py). Commits one edit.
-# Contact email, category, privacy policy and the App content forms are
-# Play Console only (see docs/RELEASING.md).
+# --website sets the contact website, but this service account gets 403 on the
+# details commit: contact details, category, privacy policy and the App content
+# forms are set in Play Console (see docs/RELEASING.md).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 PKG=app.ogpaper
@@ -18,7 +19,7 @@ API=https://androidpublisher.googleapis.com/androidpublisher/v3/applications/$PK
 UP=https://androidpublisher.googleapis.com/upload/androidpublisher/v3/applications/$PKG
 DIR=packaging/android/play
 LANG_=en-US
-text_only="" website=https://ogstudio.org/paper/
+text_only="" website=""
 while [ $# -gt 0 ]; do
   case $1 in
     --text-only) text_only=1 ;;
@@ -70,14 +71,20 @@ PY
 call PUT "$API/edits/$edit/listings/$LANG_" --data-binary "$listing" >/dev/null
 echo "== listing text"
 
-details=$(call GET "$API/edits/$edit/details")
-details=$(python3 -c 'import json,sys; d=json.loads(sys.argv[1]); d["contactWebsite"]=sys.argv[2]; print(json.dumps(d))' "$details" "$website")
-call PUT "$API/edits/$edit/details" --data-binary "$details" >/dev/null
-echo "== contact website $website"
+if [ -n "$website" ]; then
+  details=$(call GET "$API/edits/$edit/details")
+  details=$(python3 -c 'import json,sys; d=json.loads(sys.argv[1]); d["contactWebsite"]=sys.argv[2]; print(json.dumps(d))' "$details" "$website")
+  call PUT "$API/edits/$edit/details" --data-binary "$details" >/dev/null
+  echo "== contact website $website"
+fi
 
 if [ -z "$text_only" ]; then
-  img() { # TYPE FILE...
+  img() { # TYPE FILE...: replaced only when the set differs from what Play has
     local type=$1; shift
+    local have want
+    have=$(call GET "$API/edits/$edit/listings/$LANG_/$type" | python3 -c 'import json,sys; print(" ".join(sorted(i.get("sha256","") for i in json.loads(sys.stdin.read() or "{}").get("images",[]))))')
+    want=$(sha256sum "$@" | cut -c1-64 | sort | tr '\n' ' ' | sed 's/ $//')
+    if [ "$have" = "$want" ]; then echo "== $type: unchanged"; return; fi
     call DELETE "$API/edits/$edit/listings/$LANG_/$type" >/dev/null
     for f in "$@"; do
       CT=image/png call POST "$UP/edits/$edit/listings/$LANG_/$type?uploadType=media" \
