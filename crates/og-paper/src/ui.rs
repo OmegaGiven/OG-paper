@@ -9357,6 +9357,8 @@ fn layout_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>
                         st.layout_open = false;
                         actions.push(Action::EditLayout);
                     }
+                    ui.add_space(8.0);
+                    ui.weak(format!("OG Paper {}", env!("CARGO_PKG_VERSION")));
                 });
         });
 }
