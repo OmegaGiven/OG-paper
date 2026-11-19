@@ -24,7 +24,7 @@ Inside `crates/og-paper/src`:
 | `net.rs` | live connections: host/guest, relay links, WebSocket client (bearer for accounts) |
 | `relay.rs`, `hub.rs`, `hubconsole.rs`, `hubpage.rs`, `pages.rs` | self-hosted relay / page server and the Pages panel's servers |
 | `account.rs` | native accounts: OG Studio (poll sign-in) and vaults (PKCE + loopback), profiles, tokens ([VAULT.md](VAULT.md), [NATIVE-SIGN-IN.md](NATIVE-SIGN-IN.md)) |
-| `android.rs` | Android only (JNI): immersive mode (system bars hidden, edge swipe shows them) and the bar/cutout insets fed to egui as the safe area; back button = Esc |
+| `android.rs` | Android only: the bar/cutout insets (JNI on the Activity) fed to egui as the safe area, so controls sit below the status bar; opt-in full screen (window flag, set once at start); back button = Esc |
 | `egui_io.rs` | winit events into egui: `egui-winit` natively, its own translator on the web. Touch: every build hit-tests where a finger lands (web here, Android/iOS in `lib.rs` `window_event`), so a tap on a menu or panel goes to it, not to the canvas (which would close the menu) |
 | `web.rs` | the wasm bridge to `web/app/og-web.js` (`og_*` exports, events) |
 | `mcp.rs`, `script.rs`, `plugin.rs` | MCP server, commands API, plugins ([MCP.md](MCP.md), [PLUGINS.md](PLUGINS.md)) |

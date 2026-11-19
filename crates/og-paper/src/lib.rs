@@ -1578,9 +1578,9 @@ impl App {
                 self.redraw();
             }
             Action::HideBars => {
+                // Android applies it from the next start (see
+                // `android::set_fullscreen`).
                 self.ui.fullscreen = !self.ui.fullscreen;
-                #[cfg(target_os = "android")]
-                android::set_immersive(self.ui.fullscreen);
                 let mut p = prefs::load();
                 p.insert(
                     "fullscreen".into(),
@@ -3886,8 +3886,6 @@ impl ApplicationHandler for App {
             }
         }
         self.ui.touch_ui = cfg!(any(target_os = "android", target_os = "ios")) || is_touch_web();
-        #[cfg(target_os = "android")]
-        android::set_immersive(self.ui.fullscreen);
         window.request_redraw();
     }
 
@@ -3944,12 +3942,8 @@ impl ApplicationHandler for App {
                 self.open_dropped(path, Some(self.cursor));
                 window.request_redraw();
             }
-            // The system gives the bars back after a dialog or a swipe away.
             #[cfg(target_os = "android")]
-            WindowEvent::Focused(true) => {
-                android::set_immersive(self.ui.fullscreen);
-                window.request_redraw();
-            }
+            WindowEvent::Focused(true) => window.request_redraw(),
             WindowEvent::ModifiersChanged(m) => self.mods = m.state(),
             WindowEvent::KeyboardInput { event, .. } => {
                 if let Key::Named(NamedKey::Space) = event.logical_key {
@@ -4054,7 +4048,9 @@ pub(crate) fn apply_prefs(ui: &mut UiState, prefs: &prefs::Prefs) {
     ui.radial_bar = prefs.get("radialbar").is_some_and(|v| v == "on");
     ui.dark = prefs.get("dark").is_some_and(|v| v == "on");
     ui.hints = prefs.get("hints").is_none_or(|v| v != "off");
-    ui.fullscreen = prefs.get("fullscreen").is_none_or(|v| v != "off");
+    // Android only, and off unless asked for: the window can't then reach
+    // under the status bar (see `android::set_fullscreen`).
+    ui.fullscreen = prefs.get("fullscreen").is_some_and(|v| v == "on");
     ui.spell = prefs.get("spell").is_none_or(|v| v != "off");
     spell::set_added(prefs.get("spellwords").map_or("", |s| s.as_str()));
     if ui.spell {
@@ -4371,6 +4367,8 @@ fn android_main(app: winit::platform::android::activity::AndroidApp) {
     if let Some(dir) = app.internal_data_path() {
         let _ = DATA_DIR.set(dir);
     }
+    android::set_app(&app);
+    android::set_fullscreen(&app, prefs::load().get("fullscreen").is_some_and(|v| v == "on"));
     launch::begin();
     let el = EventLoop::builder()
         .with_android_app(app)

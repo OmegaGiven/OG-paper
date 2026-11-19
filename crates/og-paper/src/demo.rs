@@ -735,6 +735,50 @@ mod tests {
     use super::*;
     use ogpaper_core::{query, DrawList, Params};
 
+    /// The try-mode demo as `.ogp` canvases for real-device store
+    /// screenshots (the native apps have no try mode): `street.ogp` looking
+    /// down the endless street and `deep.ogp` at "Zoom 10^24", framed for an
+    /// `OG_STORE_SIZE` = "W,H" physical-pixel screen, written to
+    /// `OG_STORE_OUT`. See packaging/android/play/README.md.
+    #[test]
+    #[ignore]
+    fn store_canvases() {
+        let out = std::path::PathBuf::from(std::env::var("OG_STORE_OUT").expect("OG_STORE_OUT"));
+        let size: Vec<f64> = std::env::var("OG_STORE_SIZE")
+            .expect("OG_STORE_SIZE")
+            .split(',')
+            .map(|v| v.trim().parse().unwrap())
+            .collect();
+        std::fs::create_dir_all(&out).unwrap();
+        for (file, mark, zoom) in [
+            ("street.ogp", "Endless street", 3.75),
+            ("deep.ogp", "Zoom 10^24", 1.0),
+        ] {
+            let mut app = crate::App::new(None);
+            app.headless = true;
+            app.size_override = Some([size[0], size[1]]);
+            let mut d = build();
+            let marks = d.bookmarks();
+            // Demo strokes have no permanent ids (the web snapshot needs
+            // none); a file skips strokes without one.
+            for s in &mut d.scene.strokes {
+                if s.uid == 0 {
+                    s.uid = crate::uid::new();
+                }
+            }
+            app.load_scene(d.scene, crate::home_camera());
+            app.objs = d.objs;
+            let b = marks.iter().find(|b| b.name == mark).expect(mark);
+            let mut cam = b.cam.clone();
+            cam.base_px = app.cam.base_px;
+            cam.zoom_at(app.view_px() / b.view_px * zoom, [0.0, 0.0]);
+            app.cam = cam;
+            app.ui.file_name = file.trim_end_matches(".ogp").into();
+            app.save_as(out.join(file));
+            assert!(out.join(file).exists(), "{file} not written");
+        }
+    }
+
     #[test]
     fn every_world_is_visible_when_framed() {
         let demo = build();

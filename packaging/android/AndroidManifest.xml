@@ -19,6 +19,7 @@
         <activity
             android:name="android.app.NativeActivity"
             android:exported="true"
+            android:launchMode="singleTask"
             android:screenOrientation="unspecified"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|density">
             <meta-data android:name="android.app.lib_name" android:value="og_paper" />

@@ -1,0 +1,1 @@
+Menus work by tap again: items in Settings, the main menu and the toolbar menu do what you tap instead of closing the menu. The settings button and the other controls at the top now sit below the status bar, so a tap always reaches them.

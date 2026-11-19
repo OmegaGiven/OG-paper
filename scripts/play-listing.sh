@@ -6,8 +6,10 @@
 #
 # Sets title, short and full description (listing/*.txt), and replaces the icon,
 # feature graphic and phone / 7" / 10" tablet screenshots when they differ
-# from Play's (re-uploading identical images makes the commit fail with 403) (phone/, tab7/, tab10/; regenerate with
-# `node tests/ui/features/store-play.mjs` and make-art.py). Commits one edit.
+# from Play's (re-uploading identical images makes the commit fail with 403)
+# (phone/, tab7/, tab10/: screenshots of the Android app, made as in
+# packaging/android/play/README.md; icon and graphic from make-art.py).
+# Commits one edit.
 # --website sets the contact website, but this service account gets 403 on the
 # details commit: contact details, category, privacy policy and the App content
 # forms are set in Play Console (see docs/RELEASING.md).

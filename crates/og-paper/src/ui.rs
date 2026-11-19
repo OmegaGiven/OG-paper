@@ -1032,7 +1032,7 @@ impl Default for UiState {
             radial_bar: false,
             dark: false,
             hints: true,
-            fullscreen: true,
+            fullscreen: false,
             spell: true,
             perf: false,
             perf_text: String::new(),
@@ -9225,7 +9225,7 @@ fn layout_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>
                             ui,
                             st.fullscreen,
                             "Full screen",
-                            "Hide the status and navigation bars (swipe from an edge to show them)",
+                            "Hide the status bar (swipe down from the top to show it). Applies from the next start",
                             Action::HideBars,
                         );
                     }

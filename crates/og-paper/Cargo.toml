@@ -101,6 +101,7 @@ icon = "@mipmap/ic_launcher"
 
 [package.metadata.android.application.activity]
 orientation = "unspecified"
+launch_mode = "singleTask"
 config_changes = "orientation|screenSize|screenLayout|keyboardHidden|density"
 
 # Handwriting to text (the Write tool): Apple's on-device Vision.
