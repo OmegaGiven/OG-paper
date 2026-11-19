@@ -121,10 +121,12 @@ stay on the forge), so it stops at "secret ANDROID_KEYSTORE_B64 is missing". Rel
    own Google account), tick it, Save; then open the opt-in link on the phone. Until a list is
    ticked, the internal release reaches nobody. (The forge browser's `key Enter` sends no key
    code, so agents can't add emails to Play's list field yet.)
-2. **Store listing**: short and full description (`packaging/apple/appstore/description.txt` is a
-   start; no mention of other platforms' stores), app icon 512×512, feature graphic 1024×500,
-   phone screenshots, category Art & Design, contact email, privacy policy URL
-   `https://omegagiven.github.io/OG-paper/privacy/`.
+2. **Store listing**: text, icon, feature graphic and phone / 7" / 10" screenshots live in
+   `packaging/android/play/` and go up with `scripts/play-listing.sh` (one edit, committed).
+   The service account needs Play permission *Manage store presence* for that commit (without it:
+   403 "The caller does not have permission"). Category Art & Design, contact email and privacy
+   policy URL `https://ogstudio.org/paper/privacy/` (web-dist `privacy/`, source
+   `web/privacy/`) are set in Play Console.
 3. **App content**: privacy policy; ads = none; app access (sign-in optional); content rating
    (users can share pages and chat = user interaction / UGC); target audience 13+; data safety
    (optional OG Studio account: email, name, pages, chat; encrypted in transit; deletion on
