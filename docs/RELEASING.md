@@ -70,14 +70,14 @@ Package `app.ogpaper`, Play Console app id 4974630082929640996 (account 78478774
 Set up by task #844 on 2026-11-18; the earlier plan (GitHub secrets, first bundle by hand) is in
 [archive/RELEASING-PLAY-BEFORE-844.md](archive/RELEASING-PLAY-BEFORE-844.md).
 
-**State (2026-11-19, task #847):** app is a Play Console *draft* (not public). Play App Signing is on
+**State (2026-11-19, task #884):** closed testing (alpha) has **1.2 (1002)** (the menu-tap fix
+plus the Android status-bar fix), and the whole setup (closed test, listing with screenshots from
+the Android app, app content: content rating IARC Everyone / PEGI 3, target audience 13+, ads none,
+Data safety, privacy policy https://ogstudio.org/paper/privacy/, app access "all functionality
+without special access", category Art & Design) passed Play's quick checks and is **in review**
+(the API commit sends changes for review, as managed publishing is off). Play App Signing is on
 with a Google-generated app signing key; our key is only the upload key. Internal testing has
-1.0 (1001). Every "Finish setting up your app" item is done: store listing (`packaging/android/play/`),
-category Art & Design, contact omegagiven9@gmail.com + https://ogstudio.org/paper/, privacy policy
-https://ogstudio.org/paper/privacy/, content rating (IARC: Everyone / PEGI 3, "Users Interact"),
-target audience 13+, ads none, Data safety. Closed testing (alpha) has 1.0 (1001) saved with 178
-countries, the "Fulfillment testers" email list and feedback URL ogstudio.org/feedback; the
-15 changes wait in Publishing overview, not yet sent for review.
+1.0 (1001). History: task #847 set it up, #884 sent it.
 
 ### Releasing a build (the forge path, no key on any laptop or on GitHub)
 
@@ -123,14 +123,14 @@ stay on the forge), so it stops at "secret ANDROID_KEYSTORE_B64 is missing". Rel
 
 ### Still the owner's (Play Console)
 
-1. **Privacy page live**: `https://ogstudio.org/paper/privacy/` must answer 200 before review (Play's
-   quick checks block on the 404: privacy policy, account deletion and data deletion URLs). It is
-   on web-dist `80ca10a`; omegagiven-com needs `public/paper` bumped to it and deployed.
-2. **Testers**: this is a personal account, so Production needs a closed test with **12+ testers
-   opted in for 14 days**. Add Gmail addresses to an email list on Closed testing - Alpha >
-   Testers (the forge browser can't type into Play's email-chip field), Save.
-3. **Send for review**: Publishing overview > *Send 15 changes for review* (closed test + listing
-   + app content). Managed publishing is off, so the closed test goes live when approved; share
-   the opt-in link from the Testers tab.
+1. **Privacy page live**: `https://ogstudio.org/paper/privacy/` still answered 404 when 1.2 went
+   to review (task #883's deploy of omegagiven-com was blocked). Deploy it (omegagiven-com
+   `cde2d8c`, `public/paper` at web-dist `80ca10a`) before the reviewer opens it, or the review
+   can fail on the privacy policy / account deletion URLs.
+2. **Testers**: a personal account needs a closed test with **12+ testers opted in for 14
+   days** before Production. Add their Gmail addresses to the "Fulfillment testers" list
+   (Closed testing - Alpha > Testers; the forge browser can't type into Play's email-chip
+   field), Save, and send them the opt-in link from that tab once the review passes.
+3. **Trader status** (banner in Play Console): declare trader / non-trader for the EU.
 4. **Production**: after 14 days with 12+ testers: Dashboard > *Apply for production*, answer the
    closed-test questions, then promote the tested release yourself.
