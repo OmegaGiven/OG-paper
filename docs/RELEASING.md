@@ -23,7 +23,8 @@ Actions > **Apple release** > Run workflow, or `gh workflow run apple.yml -R Ome
 
 - `ios_version`, `mac_version`: the version to build for each (empty skips it).
 - `whats_new`: file under `packaging/apple/appstore/` (default `whats-new.txt`; edit it first).
-  Leave it empty for a platform's first version (Mac 1.0), which has no What's New.
+  A platform's first version has no What's New; `listing.py` skips it there (Mac until 1.2 is live).
+  Note: `gh workflow run -f whats_new=` sends the default, not empty.
 - `notes`: App Review notes file (empty leaves them).
 - `submit`: off by default. On, it sends the version to App Review after the build is attached.
 

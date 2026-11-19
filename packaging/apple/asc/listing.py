@@ -200,6 +200,16 @@ def set_description(v, path):
 
 def set_whats_new(v, path):
     text = open(path).read().strip()
+    # A platform's first version has no What's New (App Store Connect
+    # refuses it with a 409), so skip it when nothing has been released yet.
+    aid = call("GET", "/v1/apps", **{"filter[bundleId]": BUNDLE})["data"][0]["id"]
+    released = [x for x in call("GET", f"/v1/apps/{aid}/appStoreVersions", limit=50)["data"]
+                 if x["attributes"]["platform"] == v["attributes"]["platform"]
+                 and x["attributes"]["appStoreState"] in ("READY_FOR_SALE", "REMOVED_FROM_SALE",
+                                                         "DEVELOPER_REMOVED_FROM_SALE")]
+    if not released:
+        print("what's new skipped: first", v["attributes"]["platform"], "version")
+        return
     for l in call("GET", f"/v1/appStoreVersions/{v['id']}/appStoreVersionLocalizations")["data"]:
         if l["attributes"]["locale"] == "en-US":
             call("PATCH", f"/v1/appStoreVersionLocalizations/{l['id']}", {"data": {
