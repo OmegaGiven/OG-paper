@@ -98,8 +98,7 @@ name = "android.permission.INTERNET"
 [package.metadata.android.application]
 label = "OG Paper"
 icon = "@mipmap/ic_launcher"
-# Tokens live in the app's private storage: keep them out of cloud backups and device-to-device transfer.
-allow_backup = false
+# (cargo-apk can't set allowBackup; tokens are kept in no_backup/ instead: account.rs, and the AAB manifest sets it false.)
 
 [package.metadata.android.application.activity]
 orientation = "unspecified"

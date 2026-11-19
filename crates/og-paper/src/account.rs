@@ -468,12 +468,33 @@ mod imp {
                     .unwrap_or("other")
                     .replace(|c: char| !c.is_ascii_alphanumeric(), "_")
             )));
-            #[cfg(not(test))]
+            #[cfg(all(not(test), target_os = "android"))]
+            // Android's auto-backup skips `no_backup/` (next to `files/`): the
+            // tokens must not leave the phone in a cloud backup or transfer.
+            return Some(crate::fonts_dir()?.parent()?.parent()?.join("no_backup").join(name));
+            #[cfg(all(not(test), not(target_os = "android")))]
+            Some(crate::fonts_dir()?.parent()?.join(name))
+        }
+
+        /// Before 0.2.230 the Android copies were in `files/` (backed up).
+        #[cfg(target_os = "android")]
+        fn old_path(name: &str) -> Option<PathBuf> {
             Some(crate::fonts_dir()?.parent()?.join(name))
         }
 
         pub fn load_file(name: &str) -> Option<String> {
-            std::fs::read_to_string(path(name)?).ok()
+            if let Ok(t) = std::fs::read_to_string(path(name)?) {
+                return Some(t);
+            }
+            #[cfg(target_os = "android")]
+            if let Some(old) = old_path(name) {
+                if let Ok(t) = std::fs::read_to_string(&old) {
+                    save_file(name, &t);
+                    let _ = std::fs::remove_file(old);
+                    return Some(t);
+                }
+            }
+            None
         }
 
         pub fn save_file(name: &str, text: &str) {
@@ -494,6 +515,10 @@ mod imp {
         #[allow(dead_code)]
         pub fn remove_file(name: &str) {
             if let Some(p) = path(name) {
+                let _ = std::fs::remove_file(p);
+            }
+            #[cfg(target_os = "android")]
+            if let Some(p) = old_path(name) {
                 let _ = std::fs::remove_file(p);
             }
         }
