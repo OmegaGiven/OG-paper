@@ -1,6 +1,6 @@
 [package]
 name = "og-paper"
-version = "0.1.0"
+version = "0.2.234"
 description = "OG Paper: an open-source infinite canvas"
 edition.workspace = true
 license.workspace = true
