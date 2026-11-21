@@ -2,7 +2,7 @@
 # Builds the OG Paper Android app on og-host2's forge runner and publishes it on our
 # private mirror: og-host1 /var/lib/og-host/apps/og-vault/dist/og-paper/{og-paper.apk,release.json},
 # which the vault serves at /api/v1/apps/paper/android(.apk) and lists on Home/Connect.
-# Not the public mirror, not GitHub.
+# The update mirrors (private, public) are scripts/release-mirror.sh [--public] --apk, after this.
 #   scripts/publish-android-vault.sh "What changed"
 # Signed with og-host2's /cache/android/keys/og-paper.keystore (made on first use), so every
 # build installs over the last one. An APK from GitHub's CI has another key: uninstall that
@@ -47,6 +47,7 @@ ma, mi, pa = (int(x) for x in sys.argv[1].split('.'))
 print(1 << 24 | ma << 16 | mi << 8 | pa)
 PY
 )"
+echo "$name $code" > target/release/apk/og-paper.version  # scripts/release-mirror.sh --apk reuses it
 sha="$(sha256sum "$apk" | cut -d' ' -f1)"
 size="$(stat -c %s "$apk")"
 rel="$(python3 -c 'import json,sys,time; print(json.dumps({"versionCode": int(sys.argv[1]), "versionName": sys.argv[2], "sha256": sys.argv[3], "size": int(sys.argv[4]), "notes": sys.argv[5], "publishedAt": int(time.time()*1000)}))' "$code" "$name" "$sha" "$size" "$notes")"

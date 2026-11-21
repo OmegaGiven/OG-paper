@@ -14,7 +14,8 @@ sed -e "s/__VERSION__/$VERSION/" -e "s/__BUILD__/$BUILD/" -e "s/__PLATFORM__/$PL
 WORK=$(mktemp -d)
 SET="$WORK/Assets.xcassets/AppIcon.appiconset"
 mkdir -p "$SET"
-cp "$HERE/../icon-1024.png" "$SET/icon-1024.png"
+# og-design kit tile `paper`, symbol only (vendor.sh ios / tiles/png/paper-ios-1024.png)
+cp "$HERE/../icon-ios-1024.png" "$SET/icon-1024.png"
 cat > "$SET/Contents.json" <<'JSON'
 {"images":[{"idiom":"universal","platform":"ios","size":"1024x1024","filename":"icon-1024.png"}],"info":{"version":1,"author":"og-paper"}}
 JSON

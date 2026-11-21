@@ -43,6 +43,7 @@ Inside `crates/og-paper/src`:
 | `sw.js` | service worker (offline) |
 | `vendor/pdfjs/` | our own pdf.js 4.10.38 (no third-party script origin) |
 | `pkg/` | the wasm build (not in git; `scripts/build-web.sh` or a runner) |
+| `paper-*.png`, `paper*.svg` | the og-design kit's `paper` tile (`tools/vendor.sh tile paper web/app`, kit 0.20.1): manifest, apple-touch (`paper-180.png`) and favicon (`paper-symbol.svg`) are the symbol only; `paper.svg` / `paper-1024.png` (symbol + PAPER) are for sites and stores. Delete the `OG-DESIGN-VERSION` stamp vendor.sh writes (it names the forge host). Android launcher: `vendor.sh launcher paper crates/og-paper/res`; iOS: `packaging/apple/icon-ios-1024.png` (kit `paper-ios-1024.png`). `packaging/make-icons.py` draws only the Mac icon, store art source and hub favicon |
 
 ## Hosted (OG Studio server, `hosted/`)
 
@@ -68,6 +69,8 @@ Security: [SECURITY-AUDIT.md](SECURITY-AUDIT.md) (current pass, open owner items
 - Web: `scripts/build-web.sh`; hosted tests `node --test hosted/test/*.test.js`, browser
   `hosted/test/run-browser-e2e.sh`; vault `tests/vault/run-e2e.sh`, `tests/vault/run-native.sh`.
 - Vault test path (web): `scripts/deploy-vault-web.sh`. Android private mirror:
-  `scripts/publish-android-vault.sh`. Public web: the `web-dist` branch (HQ).
+  `scripts/publish-android-vault.sh`. Update mirrors (web + APK, signed, leak-audited):
+  `scripts/release-mirror.sh --apk` (private :8499) and `scripts/release-mirror.sh --public --apk`
+  (ogstudio.org/releases; then the demo vault's `follow.sh`). Public web: the `web-dist` branch (HQ).
 - Stores: GitHub Actions on the GitHub mirror (after `forge publish og-paper`): Apple release
   (`apple.yml`), Google Play release (`scripts/play-release.sh` via the forge; `play.yml` builds only); see [RELEASING.md](RELEASING.md).

@@ -1,1 +1,1 @@
-Menus work by tap again: items in Settings, the main menu and the toolbar menu now do what you tap instead of closing the menu.
+New home-screen icon: the OG Paper symbol on its own.

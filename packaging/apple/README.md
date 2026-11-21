@@ -1,9 +1,11 @@
 # Apple App Store packaging
 
-- `icon-1024.*`: the store and iOS icon (full bleed; the system rounds
-  the corners). `icon-mac-1024.*`: the Mac icon (a rounded plate in the
-  standard margin). These, the web icons and the Android launcher icons
-  all come from `packaging/make-icons.py`.
+- `icon-ios-1024.png`: the iOS app icon, the og-design kit's `paper` tile, symbol only
+  (kit 0.20.1 `tiles/png/paper-ios-1024.png`). `icon-1024.*`: the store art source (Play icon and
+  feature graphic). `icon-mac-1024.*`: the Mac icon (a rounded plate in the standard margin).
+  `icon-1024.*`, `icon-mac-1024.*` and `packaging/icon.svg` come from `packaging/make-icons.py`;
+  the web (PWA, apple-touch, favicon) and Android launcher icons are the kit's, vendored with
+  `tools/vendor.sh tile paper web/app` and `launcher paper crates/og-paper/res`.
 - `macos/OGPaper.entitlements`: the Mac App Store sandbox: files the user
   picks, network client (joining) and server (hosting). Canvases, fonts,
   plugins and settings live in the app's container.

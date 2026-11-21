@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Draws the OG Paper icon and writes every size the apps use.
+"""Draws the OG Paper art for the Mac app icon, the Play store art and the hub page.
+
+Home-screen icons come from the og-design kit (tile `paper`, symbol only); see docs/CODEMAP.md.
 
 The icon: three rounded boxes nested toward the lower-right corner (zooming
 into it) with a paintbrush over them, off-white on near-black (the OG
@@ -76,9 +78,6 @@ if __name__ == "__main__":
         open(path, "w").write(svg(kind) + "\n")
     render("full", 1024, "packaging/apple/icon-1024.png", flatten=True)
     render("mac", 1024, "packaging/apple/icon-mac-1024.png")
-    render("tile", 192, "web/app/icon-192.png")
-    render("tile", 512, "web/app/icon-512.png")
-    render("full", 512, "web/app/icon-maskable-512.png")
-    for name, size in (("mdpi", 48), ("hdpi", 72), ("xhdpi", 96), ("xxhdpi", 144), ("xxxhdpi", 192)):
-        render("tile", size, f"crates/og-paper/res/mipmap-{name}/ic_launcher.png")
+    # Home-screen icons (PWA, apple-touch, Android launcher, iOS AppIcon) are the og-design kit's
+    # `paper` tile, symbol only (kit 0.20.1), vendored with its tools/vendor.sh: not drawn here.
     print("icons written")
