@@ -19,7 +19,7 @@
   listing.py --platform IOS --version 1.1 --create ...
       create the version first if App Store Connect has none yet (or
       renumber the version in preparation if it has another number)
-  listing.py --platform IOS --version 1.1 --release MANUAL
+  listing.py --platform IOS --version 1.1 --release AFTER_APPROVAL
       hold it after approval until someone presses Release
 
 It never submits for review. Needs ASC_KEY, ASC_KEY_ID, ASC_ISSUER."""

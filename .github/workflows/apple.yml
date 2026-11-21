@@ -10,7 +10,7 @@ name: Apple release
 #               packages, validates and uploads it (TestFlight)
 #   3. listing  makes the version in App Store Connect if it isn't there yet,
 #               waits for Apple to process the build, attaches it, sets What's
-#               New and release = MANUAL (someone presses Release after approval)
+#               New and release = AFTER_APPROVAL (live as soon as Apple approves)
 #   4. submit   only with "submit" on: sends the version to App Review
 #
 # An empty version skips that platform. No Mac needed: GitHub's macOS runners
@@ -35,7 +35,7 @@ on:
         type: boolean
         default: true
       submit:
-        description: Submit for App Review once the build is attached (release stays MANUAL)
+        description: Submit for App Review once the build is attached (release AFTER_APPROVAL: live as soon as Apple approves)
         type: boolean
         default: false
 
@@ -312,7 +312,7 @@ jobs:
           for pv in "IOS ${{ inputs.ios_version }}" "MAC_OS ${{ inputs.mac_version }}"; do
             set -- $pv
             [ -n "${2:-}" ] || continue
-            args=(--platform "$1" --version "$2" --create --release MANUAL
+            args=(--platform "$1" --version "$2" --create --release AFTER_APPROVAL
                   --build "${{ needs.number.outputs.build }}" --wait 5400)
             if [ -n "${{ inputs.whats_new }}" ]; then args+=(--whats-new "../appstore/${{ inputs.whats_new }}"); fi
             if [ -n "${{ inputs.notes }}" ]; then args+=(--notes "../appstore/${{ inputs.notes }}"); fi

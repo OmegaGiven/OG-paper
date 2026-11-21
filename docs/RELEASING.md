@@ -37,7 +37,7 @@ What it runs, in order:
    (artifact `mac-launch-test`), sign, `.pkg`, validate, upload. Both land in TestFlight.
 3. **App Store Connect**: makes the version if App Store Connect has none (or renumbers the one
    in preparation), waits for Apple to process the build (up to 90 minutes), attaches it, sets
-   What's New and notes, and sets release to **MANUAL**.
+   What's New and notes, and sets release to **AFTER_APPROVAL** (live as soon as Apple approves).
 4. With `submit` on: submits for review. After approval nobody but the owner presses
    **Release** in App Store Connect.
 

@@ -7,7 +7,7 @@ name: App Store Connect
 #   review    a version's whole listing, screenshots kept as artifact "listing" (reads only)
 #   listing   edit the version in preparation: screenshots, previews, description,
 #             notes, copyright, What's New (never submits)
-#   submit    send the prepared version to App Review (release stays as set: MANUAL)
+#   submit    send the prepared version to App Review (release stays as set: AFTER_APPROVAL)
 #   resubmit  after a rejection: cancel the rejected submission and submit again
 #   cancel    pull the version from review
 on:
